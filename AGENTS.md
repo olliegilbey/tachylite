@@ -59,7 +59,8 @@ Ordered by weight. When two collide, the earlier one wins.
 - **Read-only vault, explicit publish list.** Only `.md`, `.html`, images and PDF reach the output. Every other file type stays out.
 - **Functional core, I/O at the edges.** Rendering, link resolution and indexing are pure functions over data. Watching, serving and file writes stay thin at the edges.
 - **One code path for full and incremental builds.** A full build is an incremental build of every note. Two paths drift apart.
-- **The platform before a library.** HTML, CSS, a service worker and a few hundred lines of vanilla JS. No client framework, no npm, no client build step.
+- **The platform before a library.** HTML, CSS, a service worker and a few hundred lines of vanilla JS. No client framework, no npm and no client build step in anything that ships.
+- **Heavy repo, light binary.** The repo carries every test and check that keeps the binary light. Test tooling may use what it needs: the browser suite runs Playwright from its own directory, and it never ships.
 - **Every dependency pays rent.** A new crate states its cost in binary size and compile time in the PR.
 
 ## Hit every path
@@ -78,15 +79,16 @@ The likeliest defect here is a change that works in a full build and goes stale 
 
 The stack: Rust stable, edition 2024, one crate until a second earns its place. Client assets are plain files embedded in the binary. Write code that passes the gate set by construction:
 
-- The gate set: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, and the budget benches at CI's ceiling. `make check` runs them the way CI does; run it green before any push. The first build slice creates the Makefile and CI. Until then, run the cargo commands directly.
-- `cargo machete` runs in `make check` and fails on an unused crate.
+- The gate set: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, and the budget benches at CI's ceiling. `make check` runs them the way CI does; run it green before any push. CI also runs `make size` for both musl targets. The first build slice creates the Makefile and CI. Until then, run the cargo commands directly.
+- `cargo machete` and `cargo deny check` run in `make check`. They fail on an unused crate, a disallowed licence or a known advisory.
 - Dependencies track the newest releases. Add a crate with `cargo add`. `make upgrade` updates the stable toolchain and moves every crate to its latest version, across major versions.
 - `make budget` runs the timed budgets on the reference host. Put its numbers in the PR body.
 - Functions over structs where there is no real state.
 - Errors are explicit. A library function returns a typed error. The binary reports it once, at the top. Nothing is swallowed. No `unwrap` outside tests.
 - No `unsafe`.
-- Snapshot tests for rendering: one fixture note in, HTML out. Property tests where invariants live: link resolution, the manifest, exclusion.
-- Watcher and push tests await the event they expect. A test that sleeps to pass is wrong.
+- Test at the highest seam that can fail. The build seam takes a vault and checks the output directory. The live seam runs `tachylite serve` and checks HTTP and SSE. The browser seam drives headless Chromium through Playwright against a real server. Lower tests exist only where an invariant lives.
+- Snapshot tests for rendering: one fixture note in, HTML out. Property tests where invariants live: link resolution, the manifest, exclusion, and live output equal to a fresh full build after any sequence of edits.
+- Watcher, push and browser tests await the event they expect. A test that sleeps to pass is wrong. Clippy's `disallowed-methods` forbids sleeping, and the browser suite never uses fixed timeouts.
 - Default to no comment. Write one for a constraint, an external quirk, or an invariant the code cannot show, in one line where you can.
 - Client JS stays under the page-weight budget. No web fonts, no animation that repaints continuously.
 
@@ -96,8 +98,9 @@ The stack: Rust stable, edition 2024, one crate until a second earns its place. 
 - Repo files, test names, commits and PR bodies cite nothing outside the repo except public docs and GitHub issues.
 - Commits: Conventional Commits with a scope, `type(scope): message`, for example `feat(render): resolve relative wikilinks`. Squash-merge; the PR title becomes the commit.
 - Branches: `type/short-kebab-name`. Work on a branch, never on `main`.
-- PR body: the problem in a sentence or two, how you fixed it, which budgets it touches and their numbers before and after. End with the model and harness that did the work.
-- Agents push their own branch and open PRs. The maintainer merges.
+- PR body: fill in the PR template. It asks for the problem, the fix, the budgets before and after, the paths hit, new crates, and the model and harness that did the work.
+- The leak check: `../tachylite-docs/leak-check.sh` scans the branch's diff, commit messages and PR body against a private denylist. A git `pre-push` hook runs it. A contributor without `../tachylite-docs` leaves that box for the maintainer.
+- Agents push their own branch, open the PR, and merge it with `gh pr merge --squash` once it is ready. Ready means every checklist box in the template is ticked: `make check` green, the leak check passed, a fresh subagent reviewed the whole diff and its real findings are fixed, CI green, no review thread unresolved.
 
 ## Docs and work artifacts
 
