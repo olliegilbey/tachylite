@@ -1,0 +1,59 @@
+---
+source: tests/render.rs
+assertion_line: 20
+expression: welcome()
+---
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>welcome</title>
+</head>
+<body>
+<main>
+<h1>Welcome to the sample vault</h1>
+<p>This vault is synthetic. It exists to test rendering.</p>
+<h2>A table</h2>
+<table>
+<thead>
+<tr>
+<th>Fruit</th>
+<th>Price</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Apple</td>
+<td>$1</td>
+</tr>
+<tr>
+<td>Quince</td>
+<td>$3</td>
+</tr>
+</tbody>
+</table>
+<h2>Tasks</h2>
+<ul>
+<li><input type="checkbox" disabled="" /> Water the fern</li>
+<li><input type="checkbox" checked="" disabled="" /> Sweep the porch</li>
+</ul>
+<h2>Notes</h2>
+<p>A coffee here costs $5 or $10, depending on the cup.<sup class="footnote-ref"><a href="#fn-cup" id="fnref-cup" data-footnote-ref>1</a></sup></p>
+<p><del>This line is struck out.</del></p>
+<p>Read more at <a href="https://example.com/guide">https://example.com/guide</a> today.</p>
+<pre><code class="language-rust">fn main() {
+    println!(&quot;hello&quot;);
+}
+</code></pre>
+<!-- raw HTML omitted -->
+<section class="footnotes" data-footnotes>
+<ol>
+<li id="fn-cup">
+<p>Large cups cost more. <a href="#fnref-cup" class="footnote-backref" data-footnote-backref data-footnote-backref-idx="1" aria-label="Back to reference 1">↩</a></p>
+</li>
+</ol>
+</section>
+</main>
+</body>
+</html>

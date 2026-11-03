@@ -8,6 +8,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/olliegilbey/tachylite"
 
 [dependencies]
+comrak = { version = "0.59.0", default-features = false }
 
 [profile.release]
 lto = true
@@ -23,5 +24,6 @@ unwrap_used = "deny"
 expect_used = "deny"
 
 [dev-dependencies]
+insta = "1.49.0"
 proptest = "1.12.0"
 tempfile = "3.27.0"
