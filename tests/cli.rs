@@ -10,3 +10,49 @@ fn no_arguments_prints_usage_and_exits_2() {
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("usage: tachylite build <vault> <out>"));
 }
+
+fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for item in std::fs::read_dir(from).unwrap() {
+        let item = item.unwrap();
+        let target = to.join(item.file_name());
+        if item.file_type().unwrap().is_dir() {
+            copy_dir(&item.path(), &target);
+        } else {
+            std::fs::copy(item.path(), target).unwrap();
+        }
+    }
+}
+
+#[test]
+fn build_command_builds_fixture() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = dir.path().join("vault");
+    let out = dir.path().join("out");
+    copy_dir(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/vault"),
+        &vault,
+    );
+    let run = Command::new(env!("CARGO_BIN_EXE_tachylite"))
+        .args(["build".as_ref(), vault.as_os_str(), out.as_os_str()])
+        .output()
+        .unwrap();
+    assert_eq!(run.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&run.stderr).contains("built 3 notes, 3 files, 0 skipped"));
+    assert!(out.join("pages/welcome.html").is_file());
+}
+
+#[test]
+fn build_error_exits_1() {
+    let dir = tempfile::tempdir().unwrap();
+    let run = Command::new(env!("CARGO_BIN_EXE_tachylite"))
+        .args([
+            "build".as_ref(),
+            dir.path().join("missing").as_os_str(),
+            dir.path().join("out").as_os_str(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(run.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&run.stderr).starts_with("error: "));
+}
