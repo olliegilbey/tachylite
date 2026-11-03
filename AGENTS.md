@@ -98,8 +98,8 @@ The stack: Rust stable, edition 2024, one crate until a second earns its place. 
 - Repo files, test names, commits and PR bodies cite nothing outside the repo except public docs and GitHub issues.
 - Commits: Conventional Commits with a scope, `type(scope): message`, for example `feat(render): resolve relative wikilinks`. Squash-merge; the PR title becomes the commit.
 - Branches: `type/short-kebab-name`. Work on a branch, never on `main`.
-- PR body: the problem in a sentence or two, how you fixed it, which budgets it touches and their numbers before and after. End with the model and harness that did the work.
-- Agents push their own branch and open PRs. The maintainer merges.
+- PR body: fill in the PR template. It asks for the problem, the fix, the budgets before and after, the paths hit, new crates, and the model and harness that did the work.
+- Agents push their own branch, open the PR, and merge it with `gh pr merge --squash` once it is ready. Ready means every checklist box in the template is ticked: `make check` green, the leak check passed, a fresh subagent reviewed the whole diff and its real findings are fixed, CI green, no review thread unresolved.
 
 ## Docs and work artifacts
 
