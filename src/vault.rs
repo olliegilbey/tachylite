@@ -25,6 +25,7 @@ pub enum SkipReason {
     Symlink,
     NonUtf8Name,
     UrlClash,
+    Unreadable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,7 +96,18 @@ fn walk(vault: &Path, rel: &Path, scan: &mut Scan) -> Result<(), Error> {
         path: dir.clone(),
         source,
     };
-    for item in fs::read_dir(&dir).map_err(io)? {
+    let items = match fs::read_dir(&dir) {
+        Ok(items) => items,
+        Err(_) if !rel.as_os_str().is_empty() => {
+            scan.skipped.push(Skipped {
+                path: rel.to_path_buf(),
+                reason: SkipReason::Unreadable,
+            });
+            return Ok(());
+        }
+        Err(source) => return Err(io(source)),
+    };
+    for item in items {
         let item = item.map_err(io)?;
         let name = item.file_name();
         if excluded_segment(name.as_bytes()) {
@@ -117,6 +129,8 @@ fn walk(vault: &Path, rel: &Path, scan: &mut Scan) -> Result<(), Error> {
             });
         } else if file_type.is_dir() {
             walk(vault, &rel_path, scan)?;
+        } else if !file_type.is_file() {
+            continue;
         } else if let Some(kind) = classify(rel_str) {
             scan.entries.push(Entry {
                 path: rel_str.to_string(),

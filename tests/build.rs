@@ -213,3 +213,48 @@ fn invalid_utf8_note_still_renders() {
             .contains("ok")
     );
 }
+
+#[test]
+fn unreadable_note_is_skipped_not_fatal() {
+    use std::os::unix::fs::PermissionsExt;
+    let s = Setup::new();
+    let note = s.vault().join("welcome.md");
+    fs::set_permissions(&note, fs::Permissions::from_mode(0o000)).unwrap();
+    let result = build(&s.vault(), &s.out());
+    fs::set_permissions(&note, fs::Permissions::from_mode(0o644)).unwrap();
+    let summary = result.unwrap();
+    assert_eq!(summary.notes, 2);
+    assert!(
+        summary
+            .skipped
+            .iter()
+            .any(|k| k.path == Path::new("welcome.md")
+                && k.reason == tachylite::vault::SkipReason::Unreadable)
+    );
+    assert!(!s.out().join("pages/welcome.html").exists());
+}
+
+#[test]
+fn failed_scan_keeps_previous_output() {
+    use std::os::unix::fs::PermissionsExt;
+    let s = Setup::new();
+    build(&s.vault(), &s.out()).unwrap();
+    fs::set_permissions(s.vault(), fs::Permissions::from_mode(0o000)).unwrap();
+    let result = build(&s.vault(), &s.out());
+    fs::set_permissions(s.vault(), fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(result.is_err());
+    assert!(s.out().join("pages/welcome.html").is_file());
+}
+
+#[test]
+fn upper_case_asset_extension_is_published() {
+    let s = Setup::new();
+    fs::copy(
+        s.vault().join("img/dot.png"),
+        s.vault().join("img/photo.PNG"),
+    )
+    .unwrap();
+    let summary = build(&s.vault(), &s.out()).unwrap();
+    assert_eq!(summary.files, 4);
+    assert!(s.out().join("files/img/photo.PNG").is_file());
+}

@@ -26,6 +26,7 @@ fn run_build(vault: &Path, out: &Path) -> ExitCode {
                     SkipReason::Symlink => "symlink",
                     SkipReason::NonUtf8Name => "non-UTF-8 name",
                     SkipReason::UrlClash => "URL clash",
+                    SkipReason::Unreadable => "unreadable",
                 };
                 eprintln!("skipped {}: {reason}", skipped.path.display());
             }

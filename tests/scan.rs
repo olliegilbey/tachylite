@@ -114,3 +114,39 @@ fn non_utf8_names_are_skipped() {
         }]
     );
 }
+
+#[test]
+fn unreadable_folder_is_skipped_not_fatal() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("ok.md"), "fine").unwrap();
+    let locked = dir.path().join("locked");
+    fs::create_dir(&locked).unwrap();
+    fs::write(locked.join("x.md"), "hidden").unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+
+    let result = scan(dir.path());
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+    let scan = result.unwrap();
+    assert_eq!(scan.entries, vec![entry("ok.md", Kind::Note)]);
+    assert_eq!(
+        scan.skipped,
+        vec![Skipped {
+            path: PathBuf::from("locked"),
+            reason: SkipReason::Unreadable
+        }]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn fifo_named_like_a_note_is_not_published() {
+    let dir = tempfile::tempdir().unwrap();
+    let status = std::process::Command::new("mkfifo")
+        .arg(dir.path().join("pipe.md"))
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let scan = scan(dir.path()).unwrap();
+    assert_eq!(scan.entries, vec![]);
+}

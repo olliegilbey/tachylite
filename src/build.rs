@@ -1,10 +1,11 @@
 use std::fs;
 use std::io;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
 use crate::Error;
 use crate::render::{note_title, render_note};
-use crate::vault::{Kind, Skipped, scan};
+use crate::vault::{Kind, SkipReason, Skipped, scan};
 
 const MARKER: &str = ".tachylite-output";
 
@@ -42,12 +43,12 @@ pub fn build(vault: &Path, out: &Path) -> Result<Summary, Error> {
     }
     let vault = vault.canonicalize().map_err(io_err(vault))?;
     let out = resolve_out(out)?;
-    if out.starts_with(&vault) || vault.starts_with(&out) {
+    if overlaps(&vault, &out) {
         return Err(Error::Overlap { vault, out });
     }
+    let scan = scan(&vault)?;
     prepare_out(&out)?;
 
-    let scan = scan(&vault)?;
     let mut summary = Summary {
         notes: 0,
         files: 0,
@@ -55,7 +56,13 @@ pub fn build(vault: &Path, out: &Path) -> Result<Summary, Error> {
     };
     for entry in &scan.entries {
         let source = vault.join(&entry.path);
-        let bytes = fs::read(&source).map_err(io_err(&source))?;
+        let Ok(bytes) = fs::read(&source) else {
+            summary.skipped.push(Skipped {
+                path: PathBuf::from(&entry.path),
+                reason: SkipReason::Unreadable,
+            });
+            continue;
+        };
         match entry.kind {
             Kind::Note => {
                 let html = render_note(note_title(&entry.path), &String::from_utf8_lossy(&bytes));
@@ -91,6 +98,22 @@ fn resolve_out(out: &Path) -> Result<PathBuf, Error> {
     Ok(resolved)
 }
 
+fn identity(path: &Path) -> Option<(u64, u64)> {
+    fs::metadata(path).ok().map(|m| (m.dev(), m.ino()))
+}
+
+/// True if either path lies inside the other. Paths are compared as text and by device and
+/// inode, so a bind mount or a case-insensitive filesystem cannot hide the vault.
+fn overlaps(vault: &Path, out: &Path) -> bool {
+    if out.starts_with(vault) || vault.starts_with(out) {
+        return true;
+    }
+    let inside = |inner: &Path, outer: &Path| {
+        identity(outer).is_some_and(|id| inner.ancestors().any(|a| identity(a) == Some(id)))
+    };
+    inside(out, vault) || inside(vault, out)
+}
+
 /// Refuses a non-empty directory without the marker; otherwise marks it and clears old output.
 fn prepare_out(out: &Path) -> Result<(), Error> {
     if out.exists() {
@@ -120,4 +143,24 @@ fn write_file(path: &Path, bytes: &[u8]) -> Result<(), Error> {
     let tmp = PathBuf::from(tmp);
     fs::write(&tmp, bytes).map_err(io_err(&tmp))?;
     fs::rename(&tmp, path).map_err(io_err(path))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn overlap_is_found_by_identity_not_path_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = dir.path().join("vault");
+        fs::create_dir(&vault).unwrap();
+        fs::create_dir(dir.path().join("other")).unwrap();
+        std::os::unix::fs::symlink(&vault, dir.path().join("alias")).unwrap();
+        // `alias` names the vault's directory under a different path, as a bind mount or a
+        // case-insensitive filesystem would.
+        assert!(overlaps(&vault, &dir.path().join("alias/site")));
+        assert!(overlaps(&dir.path().join("alias"), &vault.join("site")));
+        assert!(overlaps(&vault.join("deep"), dir.path()));
+        assert!(!overlaps(&vault, &dir.path().join("other/site")));
+    }
 }
