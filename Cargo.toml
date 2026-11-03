@@ -1,0 +1,23 @@
+[package]
+name = "tachylite"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+description = "A fast, offline-first, read-only web viewer for Obsidian-style Markdown vaults."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/olliegilbey/tachylite"
+
+[dependencies]
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
