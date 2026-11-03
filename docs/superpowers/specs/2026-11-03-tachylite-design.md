@@ -175,6 +175,16 @@ Budgets run against a synthetic vault of 2,000 notes and about 20 MB of text. A 
 
 CI enforces the deterministic budgets as absolute limits: page weight, binary size and memory. Timed budgets are set on the reference host. `make budget` measures them there, and each PR reports the numbers before and after. CI also runs the timed benches with a ceiling at three times each budget, to catch gross regressions on noisy runners. Phone search time and save-to-screen are measured by hand on the reference phone.
 
+### Testing and QA
+
+The binary is light. The repo is heavy on purpose: it carries every test and check that keeps the binary light. Three seams carry the tests, highest first:
+
+- **Build seam.** A vault goes in, the output directory comes out. Snapshot tests of rendering, whole-output checks for exclusion and the publish list, page weight, the cold-build budget.
+- **Live seam.** `tachylite serve` against a temp vault, over HTTP and SSE. Push latency, headers, idle CPU, memory. A property test applies random create, edit, rename and delete sequences and checks the live output equals a fresh full build.
+- **Browser seam.** Playwright drives headless Chromium against a real server, emulating a mid-range phone and a desktop. Push to DOM, offline reads and sync, search latency under CPU throttling, layout, the sandbox, zero CSP violations, transfer sizes, and screenshots as CI artifacts. Playwright is test tooling only and never ships.
+
+The reference phone and a Raspberry Pi are checked by hand each release. An agent skill guides an integrated QA pass in a real browser.
+
 Release binaries are static musl builds for `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`, with no runtime dependencies. CI checks both builds. A Raspberry Pi is a portability aim, checked by hand once per release. It has no budgets of its own.
 
 ### Repository

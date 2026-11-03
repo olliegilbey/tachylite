@@ -36,7 +36,7 @@
 ### Task 1: Crate, gate and CI
 
 **Files:**
-- Create: `Cargo.toml`, `rust-toolchain.toml`, `clippy.toml`, `Makefile`, `.github/workflows/ci.yml`, `src/main.rs`, `src/lib.rs`, `src/error.rs`, `LICENSE-MIT`, `LICENSE-APACHE`, `README.md`
+- Create: `Cargo.toml`, `rust-toolchain.toml`, `clippy.toml`, `deny.toml`, `Makefile`, `.github/workflows/ci.yml`, `src/main.rs`, `src/lib.rs`, `src/error.rs`, `LICENSE-MIT`, `LICENSE-APACHE`, `README.md`
 - Test: `tests/cli.rs`
 
 **Interfaces:**
@@ -52,7 +52,7 @@
   - `[profile.release]`: `lto = true`, `codegen-units = 1`, `strip = true`, `panic = "abort"`.
   - `[lints.rust] unsafe_code = "forbid"`, and `[lints.clippy] unwrap_used = "deny"`, `expect_used = "deny"`.
 
-  `clippy.toml` sets `allow-unwrap-in-tests = true` and `allow-expect-in-tests = true`. `rust-toolchain.toml` sets `channel = "stable"` and `components = ["rustfmt", "clippy"]`.
+  `clippy.toml` sets `allow-unwrap-in-tests = true` and `allow-expect-in-tests = true`, and lists `std::thread::sleep` under `disallowed-methods`. `deny.toml` allows only permissive licences compatible with MIT OR Apache-2.0, and denies known advisories. `rust-toolchain.toml` sets `channel = "stable"` and `components = ["rustfmt", "clippy"]`.
 
 - [ ] **Step 2: Write the failing test** in `tests/cli.rs`:
 
@@ -70,7 +70,7 @@ fn no_arguments_prints_usage_and_exits_2() {
 - [ ] **Step 4: Implement** `fn main() -> ExitCode` in `src/main.rs`. Any arguments that are not `build <vault> <out>` print the usage line and return `ExitCode::from(2)`. Add `src/error.rs` with `Error` as specified above.
 
 - [ ] **Step 5: Write the Makefile.** Targets:
-  - `check`, the gate CI runs: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo machete`, `cargo test`, then `BUDGET_SCALE=$(BUDGET_SCALE) cargo test --release --test budgets -- --ignored`, with `BUDGET_SCALE ?= 3`.
+  - `check`, the gate CI runs: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo machete`, `cargo deny check`, `cargo test`, then `BUDGET_SCALE=$(BUDGET_SCALE) cargo test --release --test budgets -- --ignored`, with `BUDGET_SCALE ?= 3`.
   - `budget`: `BUDGET_SCALE=1 cargo test --release --test budgets -- --ignored --nocapture`.
   - `size`: `cargo build --release --target $(TARGET)`, with `TARGET ?= x86_64-unknown-linux-musl`. It prints the binary's byte count and fails above 10000000.
   - `upgrade`: `rustup update stable`, then `cargo upgrade --incompatible`, then `cargo update`.
@@ -78,7 +78,7 @@ fn no_arguments_prints_usage_and_exits_2() {
   Until Task 7, `tests/budgets.rs` holds no tests, so create it empty now.
 
 - [ ] **Step 6: Write `.github/workflows/ci.yml`.** It runs on pushes to `main` and on every pull request.
-  - Job `check` on `ubuntu-24.04`: `actions/checkout`, `rustup toolchain install`, `Swatinem/rust-cache`, `taiki-e/install-action` with `tool: cargo-machete`, then `make check`.
+  - Job `check` on `ubuntu-24.04`: `actions/checkout`, `rustup toolchain install`, `Swatinem/rust-cache`, `taiki-e/install-action` with `tool: cargo-machete,cargo-deny`, then `make check`.
   - Job `musl`, a matrix of `{os: ubuntu-24.04, target: x86_64-unknown-linux-musl}` and `{os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl}`: checkout, toolchain, `rustup target add ${{ matrix.target }}`, cache, then `make size TARGET=${{ matrix.target }}`.
 
 - [ ] **Step 7: Add the licences and README.** Copy the standard MIT and Apache-2.0 texts into `LICENSE-MIT` and `LICENSE-APACHE`; the MIT copyright line is `Copyright (c) 2026 Oliver Gilbey`. `README.md` gets four short sections:
