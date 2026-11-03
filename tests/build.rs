@@ -109,6 +109,22 @@ fn html_pages_and_assets_are_byte_identical() {
     }
 }
 
+fn dirs_under(root: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for item in fs::read_dir(&dir).unwrap() {
+            let path = item.unwrap().path();
+            if path.is_dir() {
+                found.push(path.strip_prefix(root).unwrap().to_path_buf());
+                stack.push(path);
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
 fn state(root: &Path) -> Vec<(PathBuf, u64, SystemTime, Vec<u8>)> {
     files_under(root)
         .into_iter()
@@ -128,9 +144,9 @@ fn state(root: &Path) -> Vec<(PathBuf, u64, SystemTime, Vec<u8>)> {
 #[test]
 fn vault_is_unchanged() {
     let s = Setup::new();
-    let before = state(&s.vault());
+    let before = (state(&s.vault()), dirs_under(&s.vault()));
     build(&s.vault(), &s.out()).unwrap();
-    assert_eq!(state(&s.vault()), before);
+    assert_eq!((state(&s.vault()), dirs_under(&s.vault())), before);
 }
 
 #[test]
@@ -220,6 +236,9 @@ fn unreadable_note_is_skipped_not_fatal() {
     let s = Setup::new();
     let note = s.vault().join("welcome.md");
     fs::set_permissions(&note, fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::read(&note).is_ok() {
+        return; // Running as root: permissions cannot make a file unreadable.
+    }
     let result = build(&s.vault(), &s.out());
     fs::set_permissions(&note, fs::Permissions::from_mode(0o644)).unwrap();
     let summary = result.unwrap();
@@ -229,7 +248,10 @@ fn unreadable_note_is_skipped_not_fatal() {
             .skipped
             .iter()
             .any(|k| k.path == Path::new("welcome.md")
-                && k.reason == tachylite::vault::SkipReason::Unreadable)
+                && k.reason
+                    == tachylite::vault::SkipReason::Unreadable(
+                        std::io::ErrorKind::PermissionDenied
+                    ))
     );
     assert!(!s.out().join("pages/welcome.html").exists());
 }
@@ -240,6 +262,10 @@ fn failed_scan_keeps_previous_output() {
     let s = Setup::new();
     build(&s.vault(), &s.out()).unwrap();
     fs::set_permissions(s.vault(), fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::read_dir(s.vault()).is_ok() {
+        fs::set_permissions(s.vault(), fs::Permissions::from_mode(0o755)).unwrap();
+        return; // Running as root: permissions cannot make a folder unreadable.
+    }
     let result = build(&s.vault(), &s.out());
     fs::set_permissions(s.vault(), fs::Permissions::from_mode(0o755)).unwrap();
     assert!(result.is_err());

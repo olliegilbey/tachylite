@@ -23,10 +23,10 @@ fn run_build(vault: &Path, out: &Path) -> ExitCode {
         Ok(summary) => {
             for skipped in &summary.skipped {
                 let reason = match skipped.reason {
-                    SkipReason::Symlink => "symlink",
-                    SkipReason::NonUtf8Name => "non-UTF-8 name",
-                    SkipReason::UrlClash => "URL clash",
-                    SkipReason::Unreadable => "unreadable",
+                    SkipReason::Symlink => "symlink".to_string(),
+                    SkipReason::NonUtf8Name => "non-UTF-8 name".to_string(),
+                    SkipReason::UrlClash => "URL clash".to_string(),
+                    SkipReason::Unreadable(kind) => format!("unreadable ({kind})"),
                 };
                 eprintln!("skipped {}: {reason}", skipped.path.display());
             }

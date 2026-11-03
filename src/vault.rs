@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::fs;
+use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
@@ -25,7 +26,7 @@ pub enum SkipReason {
     Symlink,
     NonUtf8Name,
     UrlClash,
-    Unreadable,
+    Unreadable(io::ErrorKind),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,10 +99,10 @@ fn walk(vault: &Path, rel: &Path, scan: &mut Scan) -> Result<(), Error> {
     };
     let items = match fs::read_dir(&dir) {
         Ok(items) => items,
-        Err(_) if !rel.as_os_str().is_empty() => {
+        Err(e) if !rel.as_os_str().is_empty() => {
             scan.skipped.push(Skipped {
                 path: rel.to_path_buf(),
-                reason: SkipReason::Unreadable,
+                reason: SkipReason::Unreadable(e.kind()),
             });
             return Ok(());
         }

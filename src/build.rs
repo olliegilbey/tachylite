@@ -56,12 +56,15 @@ pub fn build(vault: &Path, out: &Path) -> Result<Summary, Error> {
     };
     for entry in &scan.entries {
         let source = vault.join(&entry.path);
-        let Ok(bytes) = fs::read(&source) else {
-            summary.skipped.push(Skipped {
-                path: PathBuf::from(&entry.path),
-                reason: SkipReason::Unreadable,
-            });
-            continue;
+        let bytes = match fs::read(&source) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                summary.skipped.push(Skipped {
+                    path: PathBuf::from(&entry.path),
+                    reason: SkipReason::Unreadable(e.kind()),
+                });
+                continue;
+            }
         };
         match entry.kind {
             Kind::Note => {
@@ -102,8 +105,9 @@ fn identity(path: &Path) -> Option<(u64, u64)> {
     fs::metadata(path).ok().map(|m| (m.dev(), m.ino()))
 }
 
-/// True if either path lies inside the other. Paths are compared as text and by device and
-/// inode, so a bind mount or a case-insensitive filesystem cannot hide the vault.
+/// True if either path lies inside the other: as text, or by device and inode along the
+/// ancestors, which catches an alias of the vault directory such as a bind mount of it.
+/// It does not see a vault mounted somewhere below the output.
 fn overlaps(vault: &Path, out: &Path) -> bool {
     if out.starts_with(vault) || vault.starts_with(out) {
         return true;
