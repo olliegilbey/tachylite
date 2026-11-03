@@ -79,7 +79,7 @@ The likeliest defect here is a change that works in a full build and goes stale 
 
 The stack: Rust stable, edition 2024, one crate until a second earns its place. Client assets are plain files embedded in the binary. Write code that passes the gate set by construction:
 
-- The gate set: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, and the budget benches at CI's ceiling. `make check` runs them the way CI does; run it green before any push. The first build slice creates the Makefile and CI. Until then, run the cargo commands directly.
+- The gate set: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, and the budget benches at CI's ceiling. `make check` runs them the way CI does; run it green before any push. CI also runs `make size` for both musl targets. The first build slice creates the Makefile and CI. Until then, run the cargo commands directly.
 - `cargo machete` and `cargo deny check` run in `make check`. They fail on an unused crate, a disallowed licence or a known advisory.
 - Dependencies track the newest releases. Add a crate with `cargo add`. `make upgrade` updates the stable toolchain and moves every crate to its latest version, across major versions.
 - `make budget` runs the timed budgets on the reference host. Put its numbers in the PR body.
@@ -99,6 +99,7 @@ The stack: Rust stable, edition 2024, one crate until a second earns its place. 
 - Commits: Conventional Commits with a scope, `type(scope): message`, for example `feat(render): resolve relative wikilinks`. Squash-merge; the PR title becomes the commit.
 - Branches: `type/short-kebab-name`. Work on a branch, never on `main`.
 - PR body: fill in the PR template. It asks for the problem, the fix, the budgets before and after, the paths hit, new crates, and the model and harness that did the work.
+- The leak check: `../tachylite-docs/leak-check.sh` scans the branch's diff, commit messages and PR body against a private denylist. A git `pre-push` hook runs it. A contributor without `../tachylite-docs` leaves that box for the maintainer.
 - Agents push their own branch, open the PR, and merge it with `gh pr merge --squash` once it is ready. Ready means every checklist box in the template is ticked: `make check` green, the leak check passed, a fresh subagent reviewed the whole diff and its real findings are fixed, CI green, no review thread unresolved.
 
 ## Docs and work artifacts

@@ -85,7 +85,7 @@ The binary serves the files itself, so it controls compression (precompressed Br
   4. Then aliases.
   An unresolved link renders as a visibly broken link. The build logs every broken and ambiguous link.
   An excluded note does not exist to the resolver. A link to it renders and logs exactly like a link to a missing note, so the output never reveals that it exists.
-- URLs keep the vault path. A note drops `.md` and keeps its case, and the path is percent-encoded: `people/Jane Doe.md` is served at `/people/Jane%20Doe`. An `.html` page keeps its extension. There are no slugs, so two notes never share a URL.
+- URLs keep the vault path. A note drops `.md` and keeps its case, and the path is percent-encoded: `people/Jane Doe.md` is served at `/people/Jane%20Doe`. An `.html` page keeps its extension. There are no slugs. Two notes whose paths differ only in the case of `.md` (`a.md`, `a.MD`) would share a URL: the first in byte order wins, and the build logs the other.
 - Embeds: `![[image.png]]` shows an image. `![[note]]` transcludes a note, depth limited. `![[page.html]]` embeds a sandboxed iframe.
 - Links to HTML: `[[page.html]]` and `[label](page.html)` open the page full screen, scripts running. The page runs exactly as written, with no Tachylite shell around it. The browser's back button returns to the note.
 - Obsidian callouts (`> [!note]`) and `==highlight==`.
@@ -145,14 +145,14 @@ Only these file types reach the output: `.md` (rendered), `.html` (sandboxed), i
 
 - A service worker caches the app shell, every note page and the search index.
 - The build writes a manifest listing every page with a content hash.
-- On reconnect, the client fetches the manifest and downloads only pages whose hash changed. A first sync is the whole set: about 6 MB compressed for the reference vault. Images and PDFs load on demand and stay cached once opened.
+- On reconnect, the client fetches the manifest and downloads only pages whose hash changed. A first sync is the whole set: a few MB compressed for a few thousand notes. Images and PDFs load on demand and stay cached once opened.
 - The site is installable as a PWA.
 
 ### Configuration
 
 Optional `tachylite.toml` in the vault root:
 
-- `exclude`: globs. Dotfolders are excluded by default (`.git`, `.obsidian`, `.claude`, `.trash`), plus `target/` and `node_modules/`. Excluded means never published. Tachylite may still read config from an excluded folder, such as `.obsidian/daily-notes.json`.
+- `exclude`: globs. Any file or folder whose name starts with `.` is excluded by default (`.git`, `.obsidian`, `.trash`, `.draft.md`), plus `target/` and `node_modules/`. Excluded means never published. Tachylite may still read config from an excluded folder, such as `.obsidian/daily-notes.json`.
 - `daily`: folder and date format, overriding the Obsidian config.
 - `pins`: list of links.
 - `title`: site name.
@@ -165,7 +165,7 @@ Budgets run against a synthetic vault of 2,000 notes and about 20 MB of text. A 
 |---|---|
 | File event to SSE push sent for the changed note itself | ≤ 10 ms |
 | Dependent pages (backlinks, transclusions) and manifest updated and pushed | ≤ 250 ms |
-| Save to screen, phone on a direct connection | ≤ 100 ms (end-to-end, measured manually against the reference setup) |
+| Save to screen, phone on a direct connection | ≤ 100 ms end to end. Headless Chrome measures it on localhost in CI; the reference phone, by hand |
 | Cold full build, 2,000 notes | ≤ 1 s on a modern 16-core x86 machine |
 | Typical note page, HTML + CSS + JS, compressed | ≤ 30 KB, no web fonts |
 | Search, per keystroke, mid-range phone, offline | ≤ 50 ms |
@@ -173,7 +173,7 @@ Budgets run against a synthetic vault of 2,000 notes and about 20 MB of text. A 
 | Resident memory, 2,000-note vault | ≤ 50 MB |
 | Release binary | ≤ 10 MB, stripped |
 
-CI enforces the deterministic budgets as absolute limits: page weight, binary size and memory. Timed budgets are set on the reference host. `make budget` measures them there, and each PR reports the numbers before and after. CI also runs the timed benches with a ceiling at three times each budget, to catch gross regressions on noisy runners. Phone search time and save-to-screen are measured by hand on the reference phone.
+CI enforces the deterministic budgets as absolute limits: page weight, binary size and memory. Timed budgets are set on the reference host. `make budget` measures them there, and each PR reports the numbers before and after. CI also runs the timed benches with a ceiling at three times each budget, to catch gross regressions on noisy runners. Headless Chrome measures save-to-screen and search time in CI, on localhost with CPU throttling. Both are also measured by hand on the reference phone.
 
 ### Testing and QA
 

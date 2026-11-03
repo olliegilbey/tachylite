@@ -21,7 +21,9 @@
 - Budgets: cold full build of 2,000 notes ≤ 1 s on the reference host. Release binary ≤ 10,000,000 bytes, stripped. CI runs timed budgets at `BUDGET_SCALE=3`.
 - No `unwrap` or `expect` outside tests. No `unsafe`. Lints enforce both (Task 1).
 - Fixture and generated content is synthetic. No real names, places or vault content.
-- New crates come from `cargo add`, at the latest version. The PR states each crate's binary-size and compile-time cost.
+- New crates come from `cargo add`, at the latest version, in the task that first uses them. The PR states each crate's binary-size and compile-time cost.
+- Each integration test file starts with `#![allow(clippy::unwrap_used, clippy::expect_used)]`, so test helpers outside `#[test]` functions pass the lints.
+- All CLI output goes to stderr.
 
 ## Review Focus
 
@@ -40,14 +42,15 @@
 - Test: `tests/cli.rs`
 
 **Interfaces:**
-- Produces: `tachylite::Error`, an enum in `src/error.rs`, re-exported from `lib.rs`. It implements `Display` and `std::error::Error`, with `source()`. Variants: `Io { path: PathBuf, source: io::Error }`, `VaultNotDir(PathBuf)`, `Overlap { vault: PathBuf, out: PathBuf }`, `OutNotOurs(PathBuf)`. Display texts:
+- Produces: `tachylite::Error`, an enum in `src/error.rs`, re-exported from `lib.rs`. It implements `Display` and `std::error::Error`, with `source()`. Variants: `Io { path: PathBuf, source: io::Error }`, `VaultNotDir(PathBuf)`, `Overlap { vault: PathBuf, out: PathBuf }`, `OutNotOurs(PathBuf)`, `OutNotClean(PathBuf)`. Display texts:
   - `Io`: `{path}: {source}`
   - `VaultNotDir`: `vault {path} is not a directory`
   - `Overlap`: `output {out} and vault {vault} overlap; the output must live outside the vault`
   - `OutNotOurs`: `output {path} is not empty and has no .tachylite-output marker; refusing to write there`
+  - `OutNotClean`: `output {path} has . or .. after its last existing directory; give a plain path`
 - Produces: the binary prints `usage: tachylite build <vault> <out>` to stderr and exits 2 on any other arguments.
 
-- [ ] **Step 1: Scaffold.** Run `cargo init --name tachylite`. Then `cargo add comrak --no-default-features` and `cargo add --dev insta proptest tempfile`. Set these in `Cargo.toml`:
+- [ ] **Step 1: Scaffold.** Run `cargo init --name tachylite`. Add no crates yet: each task adds the crates it first uses, so `cargo machete` passes at every commit. Set these in `Cargo.toml`:
   - `edition = "2024"`, `rust-version = "1.99"`, `license = "MIT OR Apache-2.0"`, `repository = "https://github.com/olliegilbey/tachylite"`, and a one-line description.
   - `[profile.release]`: `lto = true`, `codegen-units = 1`, `strip = true`, `panic = "abort"`.
   - `[lints.rust] unsafe_code = "forbid"`, and `[lints.clippy] unwrap_used = "deny"`, `expect_used = "deny"`.
@@ -104,18 +107,21 @@ fn no_arguments_prints_usage_and_exits_2() {
 - Produces, in `src/vault.rs` (each type derives `Debug, Clone, PartialEq, Eq`):
   - `pub enum Kind { Note, Html, Asset }`
   - `pub struct Entry { pub path: String, pub kind: Kind }`, where `path` is vault-relative with `/` separators.
-  - `pub enum SkipReason { Symlink, NonUtf8Name }`
-  - `pub struct Skipped { pub path: PathBuf, pub reason: SkipReason }`
+  - `pub enum SkipReason { Symlink, NonUtf8Name, UrlClash }`
+  - `pub struct Skipped { pub path: PathBuf, pub reason: SkipReason }`, where `path` is vault-relative.
   - `pub struct Scan { pub entries: Vec<Entry>, pub skipped: Vec<Skipped> }`, with entries sorted by `path`.
   - `pub fn classify(path: &str) -> Option<Kind>`: pure. It applies the publish list and the default exclusions.
   - `pub fn scan(vault: &Path) -> Result<Scan, Error>`
+
+- [ ] **Step 0: Add crates.** `cargo add --dev proptest tempfile`.
 
 - [ ] **Step 1: Write the fixture vault** in `tests/fixtures/vault/`. All content is synthetic.
   - `welcome.md`: YAML frontmatter (`title`, `tags`). Two heading levels. A GFM table. A task list using `[ ]` and `[x]`. A footnote. A fenced `rust` code block. The text `costs $5 or $10`. A strikethrough. A bare autolink. A raw `<script>alert(1)</script>` line.
   - `people/Jane Doe.md`: a short note (the space in the name is deliberate).
   - `Upper.MD`: a one-line note.
   - `maps/route.html`, a small HTML page with a `<script>`. `img/dot.png`, a valid 1x1 PNG. `docs/guide.pdf`, any bytes.
-  - These must stay out of the output: `.obsidian/app.json`, `.env`, `scripts/tool.py`, `data/table.json`, `target/stale.md`, `node_modules/pkg/readme.md` and `notes/.hidden/secret.md`.
+  - These must stay out of the output: `.obsidian/app.json`, `.env`, `.draft.md`, `scripts/tool.py`, `data/table.json`, `target/stale.md`, `node_modules/pkg/readme.md` and `notes/.hidden/secret.md`.
+  - Common global gitignores drop `.env` and `node_modules/`, so stage the fixture vault with `git add -f`. The test `fixture_vault_has_exclusion_cases` asserts that each of these files exists, so a fixture that lost one fails loudly.
 
 - [ ] **Step 2: Write the failing tests.**
   - Unit `classify_publish_list`, a table that expects:
@@ -132,14 +138,15 @@ fn no_arguments_prints_usage_and_exits_2() {
     - `people/Jane Doe.md` (Note)
     - `welcome.md` (Note)
   - `tests/scan.rs::symlinks_are_skipped_not_followed`: in a tempdir vault, `link.md` is a symlink to a file outside, and `out/` is a symlinked dir to a folder holding `x.md`. Neither is an entry. Both are in `skipped` with `SkipReason::Symlink`.
+  - `tests/scan.rs::case_clash_keeps_first`: a vault with `a.MD` and `a.md` yields one `Note` entry, `a.MD` (first in byte order). `a.md` is in `skipped` with `UrlClash`, because both would be served at the same URL.
   - `tests/scan.rs::non_utf8_names_are_skipped`: a file named with the bytes `b"bad\xff.md"`, created through `OsStr::from_bytes`, is in `skipped` with `NonUtf8Name`.
 
-- [ ] **Step 3: Run them.** `cargo test vault scan` fails: the functions don't exist.
+- [ ] **Step 3: Run them.** `cargo test vault` and `cargo test --test scan` fail: the functions don't exist.
 
 - [ ] **Step 4: Implement** `classify` and `scan`.
   - `scan` recurses with `std::fs::read_dir`. It checks each directory segment against the default exclusions before descending, so an excluded tree is never read.
   - It uses `DirEntry::file_type()` and never follows a symlink.
-  - It sorts entries by `path`.
+  - It sorts entries by `path`. Of two notes whose paths differ only in the case of `.md`, the first in byte order is kept and the second is skipped as `UrlClash`.
 
 - [ ] **Step 5: Run the tests.** `cargo test` passes.
 
@@ -157,6 +164,8 @@ fn no_arguments_prints_usage_and_exits_2() {
 - Produces:
   - `pub fn note_title(path: &str) -> &str`: the file stem of the last segment. `people/Jane Doe.md` gives `Jane Doe`.
   - `pub fn render_note(title: &str, markdown: &str) -> String`: a complete HTML document.
+
+- [ ] **Step 0: Add crates.** `cargo add comrak --no-default-features` and `cargo add --dev insta`.
 
 - [ ] **Step 1: Write the failing tests** in `tests/render.rs`:
   - `welcome_snapshot`: `insta::assert_snapshot!(render_note("welcome", &fixture("welcome.md")))`.
@@ -217,6 +226,7 @@ fn no_arguments_prints_usage_and_exits_2() {
   - `refuses_out_inside_vault`: `build(vault, vault/"site")` returns `Err(Error::Overlap { .. })`, and `vault/site` does not exist afterwards.
   - `refuses_vault_inside_out`: `build(dir/"v", dir)` returns `Err(Error::Overlap { .. })`.
   - `refuses_out_inside_vault_through_a_symlink`: `out` is a symlink to a folder inside the vault. Expect `Err(Error::Overlap { .. })`.
+  - `refuses_dot_dot_after_missing_dir`: `build(vault, dir/"nope/../v/site")`, where `dir/v` is the vault, returns `Err(Error::OutNotClean(_))`. Neither `dir/nope` nor `vault/site` exists afterwards.
   - `refuses_foreign_non_empty_out`: the output holds `keep.txt` and no marker. Expect `Err(Error::OutNotOurs(_))`, and `keep.txt` survives.
   - `rebuild_drops_deleted_note`: build, delete `people/Jane Doe.md` from the vault copy, build again. `pages/people/Jane Doe.html` is gone.
   - `invalid_utf8_note_still_renders`: a note holding `b"ok \xff ok"` produces a page that contains `ok`.
@@ -225,7 +235,7 @@ fn no_arguments_prints_usage_and_exits_2() {
 
 - [ ] **Step 3: Implement `build`.**
   1. Error with `VaultNotDir` unless the vault is a directory. Canonicalise it.
-  2. Resolve the output without creating it. Canonicalise its deepest existing ancestor, then re-append the missing components. Error with `Overlap` if either path starts with the other.
+  2. Resolve the output without creating it. Canonicalise its deepest existing ancestor, then re-append the missing components. A missing component that is `.` or `..` is an error, `OutNotClean`, because the check could not see where it leads. Error with `Overlap` if either path starts with the other.
   3. If the output exists, is not empty, and has no `.tachylite-output`, error with `OutNotOurs`.
   4. Otherwise create the output and the marker, and remove `pages/` and `files/` if present.
   5. `scan` the vault. For each `Note`, read the bytes, decode with `String::from_utf8_lossy`, render, and write to `page_path`. For each `Html` or `Asset`, `std::fs::copy` it to `file_path`.
@@ -254,7 +264,7 @@ fn no_arguments_prints_usage_and_exits_2() {
 - [ ] **Step 2: Run them.** `cargo test --test cli` fails.
 
 - [ ] **Step 3: Implement.** `main` calls `build`.
-  - It prints one `skipped <path>: <reason>` line per skipped entry, where `reason` is `symlink` or `non-UTF-8 name`.
+  - It prints one `skipped <path>: <reason>` line per skipped entry to stderr, where `reason` is `symlink`, `non-UTF-8 name` or `URL clash`.
   - It then prints `built {notes} notes, {files} files, {skipped} skipped`.
   - On `Err(e)`, it prints `error: {e}` once and returns exit code 1.
 
@@ -335,7 +345,7 @@ fn cold_full_build_2000_notes() {
 
 - [ ] **Step 2: Run it.** `make budget`. Record the milliseconds.
 
-- [ ] **Step 3: Parallelise only if it is over 1 s.** Render notes in parallel inside `build`: split the entries into `std::thread::available_parallelism()` chunks under `std::thread::scope`. Add no crate for this. Run `make budget` again.
+- [ ] **Step 3: Parallelise only if it is over 1 s.** Render notes in parallel inside `build`: split the entries into `std::thread::available_parallelism()` chunks under `std::thread::scope`. Add no crate for this. Run `make budget` again. CI's runners have 4 vCPUs against the reference host's 16, so check the CI run's printed time sits well under its 3 s ceiling. If it doesn't, raise it in the PR.
 
 - [ ] **Step 4: Verify.** `make check` passes.
 
