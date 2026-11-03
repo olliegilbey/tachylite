@@ -107,7 +107,7 @@ fn no_arguments_prints_usage_and_exits_2() {
 - Produces, in `src/vault.rs` (each type derives `Debug, Clone, PartialEq, Eq`):
   - `pub enum Kind { Note, Html, Asset }`
   - `pub struct Entry { pub path: String, pub kind: Kind }`, where `path` is vault-relative with `/` separators.
-  - `pub enum SkipReason { Symlink, NonUtf8Name, UrlClash }`
+  - `pub enum SkipReason { Symlink, NonUtf8Name, UrlClash, Unreadable(io::ErrorKind) }`. An unreadable folder or note is skipped and listed, never fatal. Only regular files are published.
   - `pub struct Skipped { pub path: PathBuf, pub reason: SkipReason }`, where `path` is vault-relative.
   - `pub struct Scan { pub entries: Vec<Entry>, pub skipped: Vec<Skipped> }`, with entries sorted by `path`.
   - `pub fn classify(path: &str) -> Option<Kind>`: pure. It applies the publish list and the default exclusions.
@@ -235,10 +235,10 @@ fn no_arguments_prints_usage_and_exits_2() {
 
 - [ ] **Step 3: Implement `build`.**
   1. Error with `VaultNotDir` unless the vault is a directory. Canonicalise it.
-  2. Resolve the output without creating it. Canonicalise its deepest existing ancestor, then re-append the missing components. A missing component that is `.` or `..` is an error, `OutNotClean`, because the check could not see where it leads. Error with `Overlap` if either path starts with the other.
+  2. Resolve the output without creating it. Canonicalise its deepest existing ancestor, then re-append the missing components. A missing component that is `.` or `..` is an error, `OutNotClean`, because the check could not see where it leads. Error with `Overlap` if either path starts with the other, or if an ancestor of one has the other's device and inode.
   3. If the output exists, is not empty, and has no `.tachylite-output`, error with `OutNotOurs`.
-  4. Otherwise create the output and the marker, and remove `pages/` and `files/` if present.
-  5. `scan` the vault. For each `Note`, read the bytes, decode with `String::from_utf8_lossy`, render, and write to `page_path`. For each `Html` or `Asset`, `std::fs::copy` it to `file_path`.
+  4. `scan` the vault first, so a failed scan leaves the previous output intact.
+  5. Otherwise create the output and the marker, and remove `pages/` and `files/` if present. Then, For each `Note`, read the bytes, decode with `String::from_utf8_lossy`, render, and write to `page_path`. For each `Html` or `Asset`, `std::fs::copy` it to `file_path`.
 
   Every write goes through one private `write_file(path, bytes)`. It creates the parent directories, writes `<path>.tmp`, then renames, so a reader never sees half a file. Map every `io::Error` to `Error::Io` with its path.
 
@@ -264,7 +264,7 @@ fn no_arguments_prints_usage_and_exits_2() {
 - [ ] **Step 2: Run them.** `cargo test --test cli` fails.
 
 - [ ] **Step 3: Implement.** `main` calls `build`.
-  - It prints one `skipped <path>: <reason>` line per skipped entry to stderr, where `reason` is `symlink`, `non-UTF-8 name` or `URL clash`.
+  - It prints one `skipped <path>: <reason>` line per skipped entry to stderr, where `reason` is `symlink`, `non-UTF-8 name`, `URL clash` or `unreadable (<error kind>)`.
   - It then prints `built {notes} notes, {files} files, {skipped} skipped`.
   - On `Err(e)`, it prints `error: {e}` once and returns exit code 1.
 
