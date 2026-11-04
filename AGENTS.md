@@ -28,7 +28,7 @@ The smallest thing that works, made fast, beats the clever thing. Fight scope cr
 - **page**: any HTML at a URL that the manifest lists. Clients cache every page for offline use.
 - **note page**: the page rendered from one note.
 - **html page**: an `.html` file from the vault, served with its content unchanged and a sandbox header.
-- **index page**: a page generated from many notes: a tag page, a folder index, recent notes, the board. Index pages live under the reserved prefix `/.tachylite/`.
+- **index page**: a page generated from many notes: a tag page, a folder index, recent notes, the board. Index pages live under the reserved prefix `/.tachylite/`, except the home page at `/`.
 - **asset**: an image or PDF. It is not in the manifest. A client fetches it on first open and keeps it cached.
 - **output**: the directory Tachylite writes. It lives outside the vault.
 - **manifest**: the list of every page with its content hash. Clients sync against it.

@@ -86,7 +86,7 @@ The binary serves the files itself, so it controls compression (precompressed Br
   An unresolved link renders as a visibly broken link. The build logs every broken and ambiguous link.
   An excluded note does not exist to the resolver. A link to it renders and logs exactly like a link to a missing note, so the output never reveals that it exists.
 - URLs keep the vault path. A note drops `.md` and keeps its case, and the path is percent-encoded: `people/Jane Doe.md` is served at `/people/Jane%20Doe`. An `.html` page keeps its extension. There are no slugs. Two notes whose paths differ only in the case of `.md` (`a.md`, `a.MD`) would share a URL: the first in byte order wins, and the build logs the other.
-- Everything Tachylite generates lives under one reserved prefix, `/.tachylite/`: index pages, the SSE endpoint, the manifest, the service worker and client assets. A vault path never starts with `.`, because dot names are always excluded, so no note can collide with a generated page. A vault may hold `tasks.md`, `Today.md`, or a folder note `people.md` beside `people/`, and each keeps its plain URL. The prefix mirrors `.obsidian`: a dot folder belongs to the app.
+- Everything Tachylite generates lives under one reserved prefix, `/.tachylite/`: index pages, the SSE endpoint, the manifest, the service worker and client assets. Dot names are always excluded, so no vault path starts with `.`. No vault file can collide with a generated page. A vault may hold `tasks.md`, `Today.md`, or a folder note `people.md` beside `people/`. Each keeps its plain URL. The prefix mirrors `.obsidian`: a dot folder belongs to the app.
 - `/` is the home page: the folder index of the vault root, with the pins at the top.
 - Embeds: `![[image.png]]` shows an image. `![[note]]` transcludes a note, depth limited. `![[page.html]]` embeds a sandboxed iframe.
 - Links to HTML: `[[page.html]]` and `[label](page.html)` open the page full screen, scripts running. The page runs exactly as written, with no Tachylite shell around it. The browser's back button returns to the note.
@@ -148,13 +148,13 @@ Only these file types reach the output: `.md` (rendered), `.html` (sandboxed), i
 - A service worker caches the app shell, every note page and the search index.
 - The build writes a manifest listing every page with a content hash.
 - On reconnect, the client fetches the manifest and downloads only pages whose hash changed. A first sync is the whole set: a few MB compressed for a few thousand notes. Images and PDFs load on demand and stay cached once opened.
-- The site is installable as a PWA. The service worker script lives under `/.tachylite/`, so the server sends it with `Service-Worker-Allowed: /` to let it control the whole site.
+- The site is installable as a PWA. The service worker script lives under `/.tachylite/`, so the server sends it with `Service-Worker-Allowed: /`, and the page registers it with `scope: '/'`. Both are needed for it to control the whole site.
 
 ### Configuration
 
 Optional `tachylite.toml` in the vault root:
 
-- `exclude`: globs, added to the defaults. Any file or folder whose name starts with `.` is always excluded (`.git`, `.obsidian`, `.trash`, `.draft.md`); config cannot publish it, because the reserved prefix depends on it. `target/` and `node_modules/` are excluded by default. Excluded means never published. Tachylite may still read config from an excluded folder, such as `.obsidian/daily-notes.json`.
+- `exclude`: globs, added to the defaults. Any file or folder whose name starts with `.` is always excluded (`.git`, `.obsidian`, `.trash`, `.draft.md`); config cannot publish it, because the reserved prefix depends on it. `target/` and `node_modules/` are always excluded as well. Excluded means never published. Tachylite may still read config from an excluded folder, such as `.obsidian/daily-notes.json`.
 - `daily`: folder and date format, overriding the Obsidian config.
 - `pins`: list of links.
 - `title`: site name.
