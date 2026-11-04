@@ -28,7 +28,7 @@ The smallest thing that works, made fast, beats the clever thing. Fight scope cr
 - **page**: any HTML at a URL that the manifest lists. Clients cache every page for offline use.
 - **note page**: the page rendered from one note.
 - **html page**: an `.html` file from the vault, served with its content unchanged and a sandbox header.
-- **index page**: a page generated from many notes: a tag page, a folder index, `/recent`, `/tasks`.
+- **index page**: a page generated from many notes: a tag page, a folder index, recent notes, the board. Index pages live under the reserved prefix `/.tachylite/`.
 - **asset**: an image or PDF. It is not in the manifest. A client fetches it on first open and keeps it cached.
 - **output**: the directory Tachylite writes. It lives outside the vault.
 - **manifest**: the list of every page with its content hash. Clients sync against it.
@@ -41,7 +41,7 @@ The smallest thing that works, made fast, beats the clever thing. Fight scope cr
 - **budget**: a performance limit with a test that enforces it.
 - **task**: one checkbox line in a note, with one of four statuses: todo, doing, done, cancelled. Avoid "todo" and "ticket" as synonyms.
 - **task list**: the tasks in one note, in line order.
-- **board**: the `/tasks` view, grouped by status.
+- **board**: the `/.tachylite/tasks` view, grouped by status.
 
 ## The four ways to hurt yourself
 
@@ -68,7 +68,7 @@ Ordered by weight. When two collide, the earlier one wins.
 The likeliest defect here is a change that works in a full build and goes stale in an incremental one. Before calling a feature done, walk this list and say which entries applied:
 
 - **Full build.** `tachylite build` renders it.
-- **Incremental rebuild.** Editing, creating, renaming and deleting the source note each update it, and every page that depends on it: backlinks, transclusions, tag pages, folder indexes, `/recent`, `/tasks`.
+- **Incremental rebuild.** Editing, creating, renaming and deleting the source note each update it, and every page that depends on it: backlinks, transclusions, tag pages, folder indexes, recent notes, the board.
 - **Push.** An open client receives the new HTML.
 - **Manifest and offline.** The page hash changes, and an offline client picks it up on reconnect.
 - **Search.** The index reflects it within 5 s.
