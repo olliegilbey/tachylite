@@ -1,0 +1,11 @@
+{
+  "name": "tachylite-browser",
+  "private": true,
+  "description": "The browser seam: Playwright against a real tachylite serve.",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1"
+  }
+}

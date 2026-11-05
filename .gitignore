@@ -1,1 +1,5 @@
 /target/
+/browser/node_modules/
+/browser/.tmp/
+/browser/test-results/
+/browser/playwright-report/
