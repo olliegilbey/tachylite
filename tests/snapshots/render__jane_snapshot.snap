@@ -1,0 +1,21 @@
+---
+source: tests/render.rs
+expression: "built(\"people/Jane Doe\")"
+---
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="tachylite-version" content="2746c81334a5892b">
+<title>Jane Doe</title>
+<script src="/.tachylite/live.js" defer></script>
+</head>
+<body>
+<main>
+<h1 id="jane-doe">Jane Doe</h1>
+<p>Jane Doe is a fictional gardener in the sample vault.</p>
+<section class="backlinks"><h2>Backlinks</h2><ul><li><a href="/notes/links">links</a></li></ul></section>
+</main>
+</body>
+</html>

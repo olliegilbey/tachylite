@@ -54,7 +54,7 @@ fn reserved_characters_in_names() {
     ] {
         let r = server.get(path);
         assert_eq!(r.status, 200, "{path}");
-        assert!(r.text().contains(&format!("<h1>{title}</h1>")), "{path}");
+        assert!(r.text().contains(&format!("\">{title}</h1>")), "{path}");
     }
 }
 
@@ -111,7 +111,7 @@ fn same_length_edit_in_one_mtime_tick_changes_the_etag() {
     file.set_modified(mtime).unwrap();
     let after = get(server.addr, "/n", &[("If-None-Match", &etag)]);
     assert_eq!(after.status, 200, "a stale page was revalidated");
-    assert!(after.text().contains("<h1>dog</h1>"));
+    assert!(after.text().contains("\">dog</h1>"));
 }
 
 #[test]

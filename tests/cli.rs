@@ -49,7 +49,19 @@ fn build_command_builds_fixture() {
         .output()
         .unwrap();
     assert_eq!(run.status.code(), Some(0));
-    assert!(String::from_utf8_lossy(&run.stderr).contains("built 3 notes, 3 files, 0 skipped"));
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        stderr.contains("built 4 notes, 3 files, 0 skipped"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("broken link in notes/links.md: nobody\n"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("broken link in notes/links.md: missing.md\n"),
+        "{stderr}"
+    );
     assert!(out.join("pages/welcome.html").is_file());
 }
 

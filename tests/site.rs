@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use proptest::prelude::*;
 use tachylite::config::Exclude;
+use tachylite::render::Broken;
 use tachylite::site::{Change, Delta, Push, Site, Source, Write};
 use tachylite::vault::{Entry, ReadError, SkipReason, Skipped, classify};
 
@@ -225,6 +226,138 @@ fn unreadable_note_is_skipped_and_unpublished() {
     );
 }
 
+/// The keys of the pages a delta pushes, in order.
+fn pushed(delta: &Delta) -> Vec<&str> {
+    delta
+        .pushes
+        .iter()
+        .filter_map(|p| match p {
+            Push::Page { key, .. } => Some(key.as_str()),
+            Push::Gone { .. } => None,
+        })
+        .collect()
+}
+
+fn html<'a>(delta: &'a Delta, key: &str) -> &'a str {
+    delta
+        .pushes
+        .iter()
+        .find_map(|p| match p {
+            Push::Page { key: k, html, .. } if k == key => Some(&**html),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no page pushed for {key}"))
+}
+
+fn broken(from: &str, target: &str, matches: usize) -> Broken {
+    Broken {
+        from: from.into(),
+        target: target.into(),
+        matches,
+    }
+}
+
+fn synced(mem: &mut Mem, exclude: Exclude) -> (Site, Delta) {
+    let mut site = Site::new(exclude);
+    let delta = site.apply(vec![sync_all(mem)], mem);
+    (site, delta)
+}
+
+#[test]
+fn link_adds_backlink() {
+    let mut mem = Mem::with(&[("a.md", "# A"), ("b.md", "# B")]);
+    let (mut site, first) = synced(&mut mem, Exclude::default());
+    assert!(!html(&first, "b").contains("backlinks"));
+    mem.0.insert("a.md".into(), b"[[b]]".to_vec());
+    let delta = site.apply(vec![touch("a.md")], &mut mem);
+    assert_eq!(pushed(&delta), ["a", "b"]);
+    assert_eq!(delta.writes.len(), 2);
+    assert!(html(&delta, "a").contains("<a href=\"/b\">b</a>"));
+    assert!(
+        html(&delta, "b").contains("<h2>Backlinks</h2><ul><li><a href=\"/a\">a</a></li></ul>"),
+        "{}",
+        html(&delta, "b")
+    );
+}
+
+#[test]
+fn deleting_the_linker_removes_the_backlink() {
+    let mut mem = Mem::with(&[("a.md", "[[b]]"), ("b.md", "# B")]);
+    let (mut site, first) = synced(&mut mem, Exclude::default());
+    assert!(html(&first, "b").contains("backlinks"));
+    mem.0.remove("a.md");
+    let delta = site.apply(vec![touch("a.md")], &mut mem);
+    assert_eq!(pushed(&delta), ["b"]);
+    assert!(!html(&delta, "b").contains("backlinks"));
+}
+
+#[test]
+fn rename_target_breaks_links() {
+    let mut mem = Mem::with(&[("a.md", "[[b]]"), ("b.md", "# B")]);
+    let (mut site, first) = synced(&mut mem, Exclude::default());
+    assert!(first.broken.is_empty());
+    let bytes = mem.0.remove("b.md").unwrap();
+    mem.0.insert("c.md".into(), bytes);
+    let delta = site.apply(vec![touch("b.md"), touch("c.md")], &mut mem);
+    assert_eq!(pushed(&delta), ["a", "c"]);
+    assert!(html(&delta, "a").contains("<a class=\"broken-link\">b</a>"));
+    assert_eq!(delta.broken, [broken("a.md", "b", 0)]);
+}
+
+#[test]
+fn create_fixes_broken_link() {
+    let mut mem = Mem::with(&[("a.md", "[[b]]")]);
+    let (mut site, first) = synced(&mut mem, Exclude::default());
+    assert_eq!(first.broken, [broken("a.md", "b", 0)]);
+    mem.0.insert("b.md".into(), b"# B".to_vec());
+    let delta = site.apply(vec![touch("b.md")], &mut mem);
+    assert_eq!(pushed(&delta), ["a", "b"]);
+    assert!(html(&delta, "a").contains("<a href=\"/b\">b</a>"));
+    assert!(html(&delta, "b").contains("<li><a href=\"/a\">a</a></li>"));
+    assert!(delta.broken.is_empty());
+}
+
+#[test]
+fn create_makes_link_ambiguous() {
+    let mut mem = Mem::with(&[("x/r.md", "# r"), ("y/a.md", "[[r]]")]);
+    let (mut site, first) = synced(&mut mem, Exclude::default());
+    assert!(html(&first, "y/a").contains("<a href=\"/x/r\">r</a>"));
+    mem.0.insert("z/r.md".into(), b"# r".to_vec());
+    let delta = site.apply(vec![touch("z/r.md")], &mut mem);
+    assert_eq!(pushed(&delta), ["x/r", "y/a", "z/r"]);
+    assert!(html(&delta, "y/a").contains("<a class=\"broken-link\">r</a>"));
+    assert!(!html(&delta, "x/r").contains("backlinks"));
+    assert_eq!(delta.broken, [broken("y/a.md", "r", 2)]);
+}
+
+#[test]
+fn excluded_note_has_no_backlink_and_breaks_links() {
+    let mut mem = Mem::with(&[
+        ("a.md", "[[s]] and [[b]]"),
+        ("b.md", "# B"),
+        ("private/s.md", "[[b]]"),
+    ]);
+    let (_, delta) = synced(&mut mem, Exclude::new(&["private".to_string()]).unwrap());
+    assert_eq!(pushed(&delta), ["a", "b"]);
+    assert!(html(&delta, "a").contains("<a class=\"broken-link\">s</a>"));
+    assert!(html(&delta, "b").contains("<ul><li><a href=\"/a\">a</a></li></ul>"));
+    assert_eq!(delta.broken, [broken("a.md", "s", 0)]);
+    for push in &delta.pushes {
+        if let Push::Page { html, .. } = push {
+            assert!(!html.contains("private"), "{html}");
+        }
+    }
+}
+
+#[test]
+fn unchanged_backlinks_render_nothing() {
+    let mut mem = Mem::with(&[("a.md", "[[b]] one"), ("b.md", "# B")]);
+    let (mut site, _) = synced(&mut mem, Exclude::default());
+    mem.0.insert("a.md".into(), b"[[b]] two".to_vec());
+    let delta = site.apply(vec![touch("a.md")], &mut mem);
+    assert_eq!(pushed(&delta), ["a"]);
+}
+
 const PATHS: [&str; 10] = [
     "a.md",
     "a.MD",
@@ -237,7 +370,15 @@ const PATHS: [&str; 10] = [
     "d/e/m.md",
     ".h.md",
 ];
-const CONTENTS: [&str; 3] = ["# one", "two *b*", "- [ ] three"];
+const CONTENTS: [&str; 7] = [
+    "# one",
+    "two *b*",
+    "- [ ] three",
+    "[[a]]",
+    "[[d/n]] and [[../x]]",
+    "[[n]]",
+    "[[m]] [[y]] [[p.png]]",
+];
 
 /// A source where every file is mid-save.
 struct MidSave;

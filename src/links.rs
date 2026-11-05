@@ -2,17 +2,19 @@
 //! Matching ignores case, and a note's `.md` is optional.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
-/// The published paths, bucketed for lookup by folded path and by basename key.
+/// The published paths, bucketed for lookup by folded path and by basename key. Each path is
+/// one shared allocation, so the link graph can hold many references to it cheaply.
 #[derive(Debug, Clone, Default)]
 pub struct Index {
-    by_path: HashMap<String, Vec<String>>,
-    by_key: HashMap<String, Vec<String>>,
+    by_path: HashMap<String, Vec<Arc<str>>>,
+    by_key: HashMap<String, Vec<Arc<str>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Resolved {
-    Found(String),
+    Found(Arc<str>),
     Missing,
     /// This many published paths tie, so the link is broken.
     Ambiguous(usize),
@@ -28,26 +30,40 @@ impl Index {
     }
 
     pub fn insert(&mut self, path: &str) {
-        add(&mut self.by_path, fold(path), path);
-        add(&mut self.by_key, key(path), path);
+        if self.get(path).is_some() {
+            return;
+        }
+        let shared: Arc<str> = Arc::from(path);
+        self.by_path
+            .entry(fold(path))
+            .or_default()
+            .push(Arc::clone(&shared));
+        self.by_key.entry(key(path)).or_default().push(shared);
     }
 
     pub fn remove(&mut self, path: &str) {
         drop_from(&mut self.by_path, fold(path), path);
         drop_from(&mut self.by_key, key(path), path);
     }
-}
 
-fn add(map: &mut HashMap<String, Vec<String>>, k: String, path: &str) {
-    let bucket = map.entry(k).or_default();
-    if !bucket.iter().any(|p| p == path) {
-        bucket.push(path.to_string());
+    /// The shared copy of a published path.
+    pub fn get(&self, path: &str) -> Option<Arc<str>> {
+        self.by_path
+            .get(&fold(path))?
+            .iter()
+            .find(|p| ***p == *path)
+            .cloned()
+    }
+
+    /// The published paths whose key is `key`.
+    pub fn bucket(&self, key: &str) -> &[Arc<str>] {
+        self.by_key.get(key).map_or(&[], Vec::as_slice)
     }
 }
 
-fn drop_from(map: &mut HashMap<String, Vec<String>>, k: String, path: &str) {
+fn drop_from(map: &mut HashMap<String, Vec<Arc<str>>>, k: String, path: &str) {
     if let Some(bucket) = map.get_mut(&k) {
-        bucket.retain(|p| p != path);
+        bucket.retain(|p| **p != *path);
         if bucket.is_empty() {
             map.remove(&k);
         }
@@ -93,9 +109,12 @@ pub fn resolve(index: &Index, from: &str, target: &str) -> Resolved {
             Some(many) => Resolved::Ambiguous(many.len()),
         };
     }
-    let Some(candidates) = index.by_key.get(&key(target)) else {
-        return Resolved::Missing;
-    };
+    let candidates = index.bucket(&key(target));
+    match candidates {
+        [] => return Resolved::Missing,
+        [one] => return Resolved::Found(Arc::clone(one)),
+        _ => {}
+    }
     let here = folder(from);
     let steps = |p: &str| distance(&here, &folder(p));
     let Some(nearest) = candidates.iter().map(|p| steps(p)).min() else {
@@ -122,8 +141,12 @@ fn distance(a: &[&str], b: &[&str]) -> usize {
     a.len() + b.len() - 2 * common
 }
 
-/// Applies `target`'s segments to `base`. `None` when it climbs above the root or names no file.
+/// Applies `target`'s segments to `base`. `None` when it climbs above the root or names a
+/// folder, so a found path always has the target's last segment as its basename.
 fn normalize<'a>(mut base: Vec<&'a str>, target: &'a str) -> Option<String> {
+    if matches!(target.rsplit('/').next(), Some("" | "." | "..")) {
+        return None;
+    }
     for segment in target.split('/') {
         match segment {
             "" | "." => {}

@@ -67,11 +67,12 @@ fn files_under(root: &Path) -> Vec<PathBuf> {
 fn builds_fixture() {
     let s = Setup::new();
     let summary: Summary = build(&s.vault(), &s.out()).unwrap();
-    assert_eq!((summary.notes, summary.files), (3, 3));
+    assert_eq!((summary.notes, summary.files), (4, 3));
     for path in [
         "pages/welcome.html",
         "pages/people/Jane Doe.html",
         "pages/Upper.html",
+        "pages/notes/links.html",
         "files/maps/route.html",
         "files/img/dot.png",
         "files/docs/guide.pdf",
@@ -246,7 +247,7 @@ fn unreadable_note_is_skipped_not_fatal() {
     let result = build(&s.vault(), &s.out());
     fs::set_permissions(&note, fs::Permissions::from_mode(0o644)).unwrap();
     let summary = result.unwrap();
-    assert_eq!(summary.notes, 2);
+    assert_eq!(summary.notes, 3);
     assert!(
         summary
             .skipped

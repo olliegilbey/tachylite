@@ -15,7 +15,7 @@ fn fixture() -> Index {
 }
 
 fn found(path: &str) -> Resolved {
-    Resolved::Found(path.to_string())
+    Resolved::Found(path.into())
 }
 
 #[test]
@@ -114,6 +114,18 @@ fn insert_and_remove_change_what_resolves() {
     assert_eq!(resolve(&index, "c/x.md", "a/README"), Resolved::Missing);
     index.remove("b/README.md");
     assert_eq!(resolve(&index, "c/x.md", "README"), Resolved::Missing);
+    assert_eq!(index.get("b/README.md"), None);
+}
+
+#[test]
+fn get_and_bucket_share_the_published_paths() {
+    let index = Index::new(["a/README.md", "b/readme.md", "c.md"]);
+    assert_eq!(index.get("a/README.md").as_deref(), Some("a/README.md"));
+    assert_eq!(index.get("a/readme.md"), None, "get is exact");
+    let mut bucket: Vec<&str> = index.bucket("readme").iter().map(|p| &**p).collect();
+    bucket.sort();
+    assert_eq!(bucket, ["a/README.md", "b/readme.md"]);
+    assert!(index.bucket("nothing").is_empty());
 }
 
 #[test]
@@ -191,5 +203,17 @@ proptest! {
                 Resolved::Missing => prop_assert!(false, "{bare} from {from} is missing"),
             }
         }
+    }
+}
+
+#[test]
+fn a_link_to_a_folder_is_missing() {
+    let index = fixture();
+    for target in ["people/..", "notes/deep/..", "notes/", "./", "notes/."] {
+        assert_eq!(
+            resolve(&index, "notes/a.md", target),
+            Resolved::Missing,
+            "{target}"
+        );
     }
 }

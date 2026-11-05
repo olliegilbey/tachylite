@@ -13,9 +13,10 @@ use rustix::fs::inotify::{self, CreateFlags, ReadFlags, WatchFlags};
 use tokio::sync::broadcast;
 
 use crate::config::{self, Config, Exclude};
+use crate::output::Writer;
 use crate::site::{Change, Push, Site, Source};
 use crate::vault::{ReadError, VaultDir, scan_under};
-use crate::{Error, output, report};
+use crate::{Error, report};
 
 /// What the watch thread shares with the HTTP thread.
 #[derive(Clone)]
@@ -305,18 +306,11 @@ impl Watcher {
             vault: &self.vault,
             unsaved: &unsaved,
         };
-        let delta = self.site.apply(changes, &mut batch);
-        let failed = output::apply(&self.out, &delta, &self.vault)?;
-        report::skipped(&delta.skipped);
-        report::skipped(&failed);
-        {
-            let mut versions = self
-                .live
-                .versions
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            for push in &delta.pushes {
-                match push {
+        let live = &self.live;
+        let mut writer = Writer::new(&self.out, &self.vault, |push: Push| {
+            {
+                let mut versions = live.versions.lock().unwrap_or_else(PoisonError::into_inner);
+                match &push {
                     Push::Page { key, version, .. } => {
                         versions.insert(key.clone(), version.clone());
                     }
@@ -325,11 +319,14 @@ impl Watcher {
                     }
                 }
             }
-        }
-        for push in delta.pushes {
             // An error only means no client is listening.
-            let _ = self.live.pushes.send(Arc::new(push));
-        }
+            let _ = live.pushes.send(Arc::new(push));
+        });
+        let report = self.site.apply_to(changes, &mut batch, &mut writer);
+        let failed = writer.finish()?;
+        report::skipped(&report.skipped);
+        report::skipped(&failed);
+        report::broken(&report.broken);
         Ok(())
     }
 }

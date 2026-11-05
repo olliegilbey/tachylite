@@ -136,7 +136,7 @@ proptest! {
         // arrives, every earlier change is applied.
         let mut settle = |mark: &str| {
             fs::write(d.vault().join("zz-barrier.md"), format!("# {mark}")).unwrap();
-            let heading = format!("<h1>{mark}</h1>");
+            let heading = format!("\">{mark}</h1>");
             while !barrier.expect("page").data.contains(&heading) {}
         };
 
