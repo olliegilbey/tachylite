@@ -10,6 +10,7 @@ pub enum Error {
     OutNotOurs(PathBuf),
     OutNotClean(PathBuf),
     NoOpenat2,
+    Bind { port: u16, source: io::Error },
 }
 
 impl fmt::Display for Error {
@@ -37,6 +38,9 @@ impl fmt::Display for Error {
                 f,
                 "this kernel has no openat2 (Linux 5.6+); Tachylite needs it to read the vault safely"
             ),
+            Error::Bind { port, source } => {
+                write!(f, "cannot serve on 127.0.0.1:{port}: {source}")
+            }
         }
     }
 }
@@ -44,7 +48,7 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Error::Io { source, .. } => Some(source),
+            Error::Io { source, .. } | Error::Bind { source, .. } => Some(source),
             _ => None,
         }
     }

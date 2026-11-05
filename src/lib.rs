@@ -5,5 +5,7 @@ pub mod budget_vault;
 pub mod build;
 pub mod output;
 pub mod render;
+pub mod report;
+pub mod serve;
 pub mod site;
 pub mod vault;

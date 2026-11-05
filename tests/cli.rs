@@ -8,7 +8,18 @@ fn no_arguments_prints_usage_and_exits_2() {
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("usage: tachylite build <vault> <out>"));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("usage: tachylite build <vault> <out>"));
+    assert!(stderr.contains("tachylite serve <vault> <out> [--port <port>]"));
+}
+
+#[test]
+fn bad_port_prints_usage_and_exits_2() {
+    let out = Command::new(env!("CARGO_BIN_EXE_tachylite"))
+        .args(["serve", "v", "o", "--port", "http"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
 }
 
 fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
