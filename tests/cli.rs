@@ -51,7 +51,7 @@ fn build_command_builds_fixture() {
     assert_eq!(run.status.code(), Some(0));
     let stderr = String::from_utf8_lossy(&run.stderr);
     assert!(
-        stderr.contains("built 4 notes, 3 files, 0 skipped"),
+        stderr.contains("built 5 notes, 3 files, 0 skipped"),
         "{stderr}"
     );
     assert!(

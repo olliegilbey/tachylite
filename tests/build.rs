@@ -67,12 +67,13 @@ fn files_under(root: &Path) -> Vec<PathBuf> {
 fn builds_fixture() {
     let s = Setup::new();
     let summary: Summary = build(&s.vault(), &s.out()).unwrap();
-    assert_eq!((summary.notes, summary.files), (4, 3));
+    assert_eq!((summary.notes, summary.files), (5, 3));
     for path in [
         "pages/welcome.html",
         "pages/people/Jane Doe.html",
         "pages/Upper.html",
         "pages/notes/links.html",
+        "pages/notes/syntax.html",
         "files/maps/route.html",
         "files/img/dot.png",
         "files/docs/guide.pdf",
@@ -247,7 +248,7 @@ fn unreadable_note_is_skipped_not_fatal() {
     let result = build(&s.vault(), &s.out());
     fs::set_permissions(&note, fs::Permissions::from_mode(0o644)).unwrap();
     let summary = result.unwrap();
-    assert_eq!(summary.notes, 3);
+    assert_eq!(summary.notes, 4);
     assert!(
         summary
             .skipped
@@ -412,4 +413,26 @@ fn config_is_not_published() {
     let out = dir.path().join("out");
     build(&dir.path().join("vault"), &out).unwrap();
     assert!(!all_output_text(&out).contains("exclude"));
+}
+
+#[test]
+fn comments_reach_no_output() {
+    let vault = bare(&[
+        ("target.md", "# Target"),
+        (
+            "a.md",
+            "inline %%zebra [[target]]%% one\n\n%%\nzebra block [[target]]\n%%\n\n\
+             wrap %%zebra\n[[target]]%% two\n\nacross %%zebra\n\n[[target]] zebra%% three\n\n\
+             > [!note] %%zebra%%\n> four\n\nlast %%zebra [[target]]",
+        ),
+    ]);
+    let out = vault.path().join("out");
+    build(&vault.path().join("vault"), &out).unwrap();
+    assert!(!all_output_text(&out).contains("zebra"));
+    let target = fs::read_to_string(out.join("pages/target.html")).unwrap();
+    assert!(!target.contains("backlinks"), "{target}");
+    let a = fs::read_to_string(out.join("pages/a.html")).unwrap();
+    for kept in ["one", "two", "three", "four"] {
+        assert!(a.contains(kept), "{kept} not in {a}");
+    }
 }

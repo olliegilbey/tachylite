@@ -47,6 +47,7 @@ fn fixture_vault_entries() {
             entry("img/dot.png", Kind::Asset),
             entry("maps/route.html", Kind::Html),
             entry("notes/links.md", Kind::Note),
+            entry("notes/syntax.md", Kind::Note),
             entry("people/Jane Doe.md", Kind::Note),
             entry("welcome.md", Kind::Note),
         ]

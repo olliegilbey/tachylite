@@ -323,3 +323,71 @@ fn property_wikilink_resolves_and_counts_as_target() {
         }]
     );
 }
+
+#[test]
+fn syntax_snapshot() {
+    insta::assert_snapshot!(built("notes/syntax"));
+}
+
+fn plain(markdown: &str) -> String {
+    render_body("a.md", markdown, &Index::default()).html
+}
+
+#[test]
+fn tags_render_as_links() {
+    let html = plain("x #a/b-c, and #Über #t/ ok\n\n# Head #h");
+    for want in [
+        "x <a class=\"tag\" href=\"/.tachylite/tags/a/b-c\">#a/b-c</a>, and ",
+        "<a class=\"tag\" href=\"/.tachylite/tags/%C3%BCber\">#Über</a> ",
+        "<a class=\"tag\" href=\"/.tachylite/tags/t\">#t</a>/ ok",
+        "<h1 id=\"head-h\">Head <a class=\"tag\" href=\"/.tachylite/tags/h\">#h</a></h1>",
+    ] {
+        assert!(html.contains(want), "{want} not in {html}");
+    }
+}
+
+#[test]
+fn not_tags() {
+    let html = plain("C#x #123 `#c` [#l](u) https://e.com/#a (#p) #\n\n```\n#f\n```");
+    assert!(!html.contains("class=\"tag\""), "{html}");
+}
+
+#[test]
+fn callouts_and_highlight() {
+    let html = plain("> [!tip]- Folded\n> body\n\n==mark==");
+    assert!(
+        html.contains(
+            "<div class=\"callout\" data-callout=\"tip\" data-callout-fold=\"collapsed\">"
+        )
+    );
+    assert!(html.contains("<mark>mark</mark>"));
+}
+
+#[test]
+fn stray_comment_hides_to_its_pair() {
+    let html = plain("one %%zebra\nyak%% two\n\nthree %%lynx\n\n- moth\n\nnewt%% four\n\nfive");
+    for gone in ["zebra", "yak", "lynx", "moth", "newt"] {
+        assert!(!html.contains(gone), "{gone} in {html}");
+    }
+    for kept in ["one", "two", "three", "four", "five"] {
+        assert!(html.contains(kept), "{kept} not in {html}");
+    }
+}
+
+#[test]
+fn unclosed_stray_comment_hides_to_end() {
+    let index = Index::new(["b.md"]);
+    let body = render_body("a.md", "one %%zebra [[b]]\n\n# yak\n\n- moth", &index);
+    for gone in ["zebra", "yak", "moth", "<h1"] {
+        assert!(!body.html.contains(gone), "{gone} in {}", body.html);
+    }
+    assert!(body.html.contains("one"));
+    assert!(body.targets.is_empty());
+}
+
+#[test]
+fn comments_in_code_stay() {
+    let html = plain("`%%` and\n\n```\n%%\n```\n\nafter");
+    assert_eq!(html.matches("%%").count(), 2, "{html}");
+    assert!(html.contains("after"));
+}

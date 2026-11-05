@@ -377,10 +377,11 @@ impl Site {
         let mut aliased = Vec::new();
         for (path, bytes) in fresh.iter().filter(|(p, _)| won.contains(*p)) {
             let meta = front::meta(&String::from_utf8_lossy(bytes));
-            let old: HashSet<String> = self.index.aliases(path).iter().map(|a| key(a)).collect();
-            let new: HashSet<String> = meta.aliases.iter().map(|a| key(a)).collect();
-            keys.extend(old.symmetric_difference(&new).cloned());
             if self.index.aliases(path) != meta.aliases.as_slice() {
+                let old: HashSet<String> =
+                    self.index.aliases(path).iter().map(|a| key(a)).collect();
+                let new: HashSet<String> = meta.aliases.iter().map(|a| key(a)).collect();
+                keys.extend(old.symmetric_difference(&new).cloned());
                 aliased.push((path.clone(), meta.aliases));
             }
             if self.titles.get(path) == meta.title.as_ref() {

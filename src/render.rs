@@ -1,4 +1,5 @@
-use std::collections::BTreeSet;
+use std::borrow::Cow;
+use std::collections::{BTreeSet, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
@@ -22,6 +23,9 @@ fn options() -> Options<'static> {
     options.extension.tasklist = true;
     options.extension.footnotes = true;
     options.extension.wikilinks_title_after_pipe = true;
+    options.extension.ofm_callouts = true;
+    options.extension.ofm_comments = true;
+    options.extension.highlight = true;
     options
 }
 
@@ -196,12 +200,31 @@ pub fn render_body(from: &str, markdown: &str, index: &Index) -> Body {
     let arena = Arena::new();
     let options = options();
     let root = parse_document(&arena, markdown, &options);
+    if markdown.contains("%%") {
+        hide_stray_comments(root);
+    }
     let mut rewrites = Vec::new();
+    let mut texts = Vec::new();
     let mut anchorizer = Anchorizer::new();
     let mut ids = Vec::new();
     for node in root.descendants() {
         if let NodeValue::Heading(_) = node.data().value {
             ids.push(anchorizer.anchorize(&node.collect_text()));
+            continue;
+        }
+        if let NodeValue::Text(text) = &node.data().value {
+            if !text.contains('#') {
+                continue;
+            }
+            let linked = node.ancestors().any(|a| {
+                matches!(
+                    a.data().value,
+                    NodeValue::Link(_) | NodeValue::WikiLink(_) | NodeValue::Image(_)
+                )
+            });
+            if !linked {
+                texts.push(node);
+            }
             continue;
         }
         let raw = match &node.data().value {
@@ -224,11 +247,118 @@ pub fn render_body(from: &str, markdown: &str, index: &Index) -> Body {
     for (node, open) in rewrites {
         wrap(&arena, node, open);
     }
+    for node in texts {
+        link_tags(&arena, node);
+    }
     let mut html = props;
     // Writing into a String cannot fail.
     let _ = format_html(root, &options, &mut html);
     body.html = add_ids(&html, &ids);
     body
+}
+
+/// The byte ranges of the `#tags` in `text`, `#` included. A tag starts the text or follows
+/// whitespace, and holds letters, digits, `_`, `-` and `/`, with at least one non-digit.
+fn tags(text: &str, at_start: bool) -> Vec<(usize, usize)> {
+    let mut found = Vec::new();
+    let mut prev: Option<char> = None;
+    let mut skip_to = 0;
+    for (i, c) in text.char_indices() {
+        let boundary = prev.map_or(at_start, char::is_whitespace);
+        prev = Some(c);
+        if c != '#' || i < skip_to || !boundary {
+            continue;
+        }
+        let rest = &text[i + 1..];
+        let len = rest
+            .find(|c: char| !(c.is_alphanumeric() || matches!(c, '_' | '-' | '/')))
+            .unwrap_or(rest.len());
+        let tag = rest[..len].trim_end_matches('/');
+        if tag.chars().any(|c| !c.is_ascii_digit()) {
+            found.push((i, i + 1 + tag.len()));
+            skip_to = i + 1 + tag.len();
+        }
+    }
+    found
+}
+
+/// Splits a text node around its tags, which become tag links.
+fn link_tags<'a>(arena: &'a Arena<'a>, node: &'a AstNode<'a>) {
+    let at_start = node
+        .previous_sibling()
+        .is_none_or(|p| matches!(p.data().value, NodeValue::SoftBreak | NodeValue::LineBreak));
+    let text = match &node.data().value {
+        NodeValue::Text(text) => text.to_string(),
+        _ => return,
+    };
+    let found = tags(&text, at_start);
+    if found.is_empty() {
+        return;
+    }
+    let alloc = |value: NodeValue| arena.alloc(AstNode::from(value));
+    let mut last = 0;
+    for (start, end) in found {
+        if start > last {
+            node.insert_before(alloc(NodeValue::Text(Cow::Owned(text[last..start].into()))));
+        }
+        node.insert_before(alloc(NodeValue::Raw(tag_link(&text[start + 1..end]))));
+        last = end;
+    }
+    if last < text.len() {
+        node.insert_before(alloc(NodeValue::Text(Cow::Owned(text[last..].into()))));
+    }
+    node.detach();
+}
+
+/// Hides the comments comrak leaves open. A `%%` it did not pair, because the comment wraps
+/// a line or a block or is never closed, hides everything to the next such `%%`, or to the
+/// end of the note. Hiding is the safe side: a comment is never published.
+fn hide_stray_comments<'a>(root: &'a AstNode<'a>) {
+    let nodes: Vec<&'a AstNode<'a>> = root.descendants().collect();
+    let mut marks = Vec::new();
+    for (i, node) in nodes.iter().enumerate() {
+        if let NodeValue::Text(text) = &node.data().value {
+            marks.extend(text.match_indices("%%").map(|(at, _)| (i, at)));
+        }
+    }
+    if marks.is_empty() {
+        return;
+    }
+    // Last first, so an earlier pair's offsets stay valid.
+    for pair in marks.chunks(2).rev() {
+        let ((s, s_at), end) = (pair[0], pair.get(1).copied());
+        let stop = end.map_or(nodes.len(), |(e, _)| e);
+        if let Some((e, e_at)) = end {
+            if e == s {
+                edit(nodes[s], |t| t.replace_range(s_at..e_at + 2, ""));
+                continue;
+            }
+            edit(nodes[e], |t| t.replace_range(..e_at + 2, ""));
+        }
+        edit(nodes[s], |t| t.truncate(s_at));
+        let keep: HashSet<*const AstNode<'a>> = end
+            .map(|(e, _)| nodes[e].ancestors().map(|a| a as *const _).collect())
+            .unwrap_or_default();
+        let hidden: HashSet<*const AstNode<'a>> = nodes[s + 1..stop]
+            .iter()
+            .map(|n| *n as *const _)
+            .filter(|n| !keep.contains(n))
+            .collect();
+        for node in &nodes[s + 1..stop] {
+            let top = node
+                .parent()
+                .is_none_or(|p| !hidden.contains(&(p as *const _)));
+            if hidden.contains(&(*node as *const _)) && top {
+                node.detach();
+            }
+        }
+    }
+}
+
+fn edit(node: &AstNode<'_>, change: impl FnOnce(&mut String)) {
+    if let NodeValue::Text(text) = &mut node.data_mut().value {
+        change(text.to_mut());
+    }
 }
 
 /// Replaces a link node with raw tags around its children. comrak's own link markup would
