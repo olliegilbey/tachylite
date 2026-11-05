@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use proptest::prelude::*;
+use tachylite::config::Exclude;
 use tachylite::site::{Change, Delta, Push, Site, Source, Write};
 use tachylite::vault::{Entry, ReadError, SkipReason, Skipped, classify};
 
@@ -33,7 +34,7 @@ impl Mem {
             .keys()
             .filter(|p| under.is_empty() || p.starts_with(&format!("{under}/")))
             .filter_map(|p| {
-                classify(p).map(|kind| Entry {
+                classify(p, &Exclude::default()).map(|kind| Entry {
                     path: p.clone(),
                     kind,
                 })
@@ -69,7 +70,7 @@ fn sync_all(mem: &Mem) -> Change {
 
 fn full(mem: &Mem) -> (Out, Delta) {
     let mut source = mem.clone();
-    let delta = Site::new().apply(vec![sync_all(mem)], &mut source);
+    let delta = Site::new(Exclude::default()).apply(vec![sync_all(mem)], &mut source);
     let mut out = Out::new();
     fold(&mut out, &delta, mem);
     (out, delta)
@@ -121,7 +122,7 @@ fn full_sync_writes_every_page() {
 #[test]
 fn unchanged_touch_writes_and_pushes_nothing() {
     let mut mem = Mem::with(&[("a.md", "# A")]);
-    let mut site = Site::new();
+    let mut site = Site::new(Exclude::default());
     site.apply(vec![sync_all(&mem)], &mut mem);
     let delta = site.apply(vec![touch("a.md")], &mut mem);
     assert!(delta.writes.is_empty() && delta.pushes.is_empty() && delta.deletes.is_empty());
@@ -130,7 +131,7 @@ fn unchanged_touch_writes_and_pushes_nothing() {
 #[test]
 fn edited_note_is_written_and_pushed() {
     let mut mem = Mem::with(&[("a.md", "# A")]);
-    let mut site = Site::new();
+    let mut site = Site::new(Exclude::default());
     site.apply(vec![sync_all(&mem)], &mut mem);
     mem.0.insert("a.md".into(), b"# Edited".to_vec());
     let delta = site.apply(vec![touch("a.md")], &mut mem);
@@ -148,7 +149,7 @@ fn edited_note_is_written_and_pushed() {
 #[test]
 fn deleted_note_is_deleted_and_gone() {
     let mut mem = Mem::with(&[("a.md", "# A")]);
-    let mut site = Site::new();
+    let mut site = Site::new(Exclude::default());
     site.apply(vec![sync_all(&mem)], &mut mem);
     mem.0.remove("a.md");
     let delta = site.apply(vec![touch("a.md")], &mut mem);
@@ -175,7 +176,7 @@ fn folder_page_clash() {
 #[test]
 fn deleting_the_winner_promotes_the_loser() {
     let mut mem = Mem::with(&[("a.MD", "# upper"), ("a.md", "# lower")]);
-    let mut site = Site::new();
+    let mut site = Site::new(Exclude::default());
     let first = site.apply(vec![sync_all(&mem)], &mut mem);
     assert_eq!(first.skipped, [clash("a.md")]);
     mem.0.remove("a.MD");
@@ -194,7 +195,7 @@ fn deleting_the_winner_promotes_the_loser() {
 #[test]
 fn excluded_touch_is_ignored() {
     let mut mem = Mem::with(&[(".obsidian/x.md", "# hidden")]);
-    let mut site = Site::new();
+    let mut site = Site::new(Exclude::default());
     let delta = site.apply(vec![touch(".obsidian/x.md")], &mut mem);
     assert!(delta.writes.is_empty() && delta.pushes.is_empty() && delta.deletes.is_empty());
 }
@@ -211,7 +212,7 @@ fn unreadable_note_is_skipped_and_unpublished() {
         }
     }
     let mut mem = Mem::with(&[("a.md", "# A")]);
-    let mut site = Site::new();
+    let mut site = Site::new(Exclude::default());
     site.apply(vec![sync_all(&mem)], &mut mem);
     let delta = site.apply(vec![touch("a.md")], &mut Denied);
     assert_eq!(delta.deletes, ["pages/a.html"]);
@@ -253,7 +254,7 @@ impl Source for MidSave {
 #[test]
 fn mid_save_keeps_published_pages() {
     let mut mem = Mem::with(&[("a.md", "# A"), ("i.png", "png")]);
-    let mut site = Site::new();
+    let mut site = Site::new(Exclude::default());
     site.apply(vec![sync_all(&mem)], &mut mem);
     let delta = site.apply(vec![touch("a.md"), touch("i.png")], &mut MidSave);
     assert_eq!(delta, Delta::default());
@@ -269,7 +270,7 @@ fn mid_save_keeps_published_pages() {
 #[test]
 fn mid_save_new_file_waits_for_its_save() {
     let mut mem = Mem::with(&[("a.md", "# A")]);
-    let mut site = Site::new();
+    let mut site = Site::new(Exclude::default());
     site.apply(vec![sync_all(&mem)], &mut mem);
     let delta = site.apply(vec![touch("b.md"), touch("j.png")], &mut MidSave);
     assert_eq!(delta, Delta::default());
@@ -281,7 +282,7 @@ fn mid_save_new_file_waits_for_its_save() {
 #[test]
 fn mid_save_loser_does_not_block_promotion() {
     let mut mem = Mem::with(&[("a.MD", "# upper"), ("a.md", "# lower")]);
-    let mut site = Site::new();
+    let mut site = Site::new(Exclude::default());
     site.apply(vec![sync_all(&mem)], &mut mem);
     // a.MD wins; deleting it promotes a.md, which is mid-save.
     struct Mixed;
@@ -369,7 +370,7 @@ proptest! {
     #[test]
     fn incremental_equals_full(ops in prop::collection::vec(op(), 1..30), batch in 1usize..4) {
         let mut mem = Mem::default();
-        let mut site = Site::new();
+        let mut site = Site::new(Exclude::default());
         let mut out = Out::new();
         let mut last_push: BTreeMap<String, Push> = BTreeMap::new();
 

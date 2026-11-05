@@ -277,7 +277,11 @@ mod tests {
         let unique: HashSet<&str> = v.iter().map(|(p, _)| p.as_str()).collect();
         assert_eq!(unique.len(), v.len());
         for (path, _) in &v {
-            assert_eq!(classify(path), Some(Kind::Note), "{path}");
+            assert_eq!(
+                classify(path, &crate::config::Exclude::default()),
+                Some(Kind::Note),
+                "{path}"
+            );
         }
     }
 

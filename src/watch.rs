@@ -12,8 +12,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use rustix::fs::inotify::{self, CreateFlags, ReadFlags, WatchFlags};
 use tokio::sync::broadcast;
 
+use crate::config::{Config, Exclude};
 use crate::site::{Change, Push, Site, Source};
-use crate::vault::{ReadError, VaultDir, excluded_segment, scan_under};
+use crate::vault::{ReadError, VaultDir, scan_under};
 use crate::{Error, output, report};
 
 /// What the watch thread shares with the HTTP thread.
@@ -86,7 +87,12 @@ fn within(path: &str, folder: &str) -> bool {
 impl Watcher {
     /// Watches every published folder, then applies a full sync. Watching first means no
     /// change is lost between the scan and the first event.
-    pub fn start(vault: VaultDir, out: PathBuf, live: Live) -> Result<Watcher, Error> {
+    pub fn start(
+        vault: VaultDir,
+        out: PathBuf,
+        live: Live,
+        config: Config,
+    ) -> Result<Watcher, Error> {
         let inotify = inotify::init(CreateFlags::CLOEXEC).map_err(|e| Error::Watch {
             path: vault.root().to_path_buf(),
             source: e.into(),
@@ -96,7 +102,7 @@ impl Watcher {
             dirs: HashMap::new(),
             vault,
             out,
-            site: Site::new(),
+            site: Site::new(config.exclude),
             live,
         };
         watcher.watch_tree("")?;
@@ -174,11 +180,14 @@ impl Watcher {
                 continue;
             }
             let Some(name) = event.name else { continue };
-            if excluded_segment(name.as_bytes()) {
+            if Exclude::segment(name.as_bytes()) {
                 continue;
             }
             let Some(name) = name.to_str() else { continue };
             let path = join(&dir, name);
+            if self.site.exclude().path(&path) {
+                continue;
+            }
             if event.flags.contains(ReadFlags::ISDIR) {
                 if event
                     .flags
@@ -213,7 +222,7 @@ impl Watcher {
     }
 
     fn sync(&self, under: &str) -> Result<Change, Error> {
-        let scan = scan_under(self.vault.root(), under)?;
+        let scan = scan_under(self.vault.root(), under, self.site.exclude())?;
         report::skipped(&scan.skipped);
         Ok(Change::Sync {
             under: under.to_string(),
@@ -243,11 +252,10 @@ impl Watcher {
         for item in items.flatten() {
             let name = item.file_name();
             let is_dir = item.file_type().is_ok_and(|t| t.is_dir());
-            if !is_dir || excluded_segment(name.as_bytes()) {
-                continue;
-            }
-            if let Some(name) = name.to_str() {
-                self.watch_tree(&join(rel, name))?;
+            let Some(name) = name.to_str() else { continue };
+            let child = join(rel, name);
+            if is_dir && !self.site.exclude().path(&child) {
+                self.watch_tree(&child)?;
             }
         }
         Ok(())

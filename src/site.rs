@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::config::Exclude;
 use crate::render::{note_title, render_note};
 use crate::vault::{Entry, Kind, ReadError, SkipReason, Skipped, VaultDir, classify};
 
@@ -61,6 +62,7 @@ pub enum Push {
 
 #[derive(Debug, Default)]
 pub struct Site {
+    exclude: Exclude,
     /// Every readable, publishable file, winner or not.
     entries: BTreeMap<String, Kind>,
     /// Vault paths whose output is written.
@@ -121,8 +123,15 @@ fn winners(entries: &BTreeMap<String, Kind>) -> (BTreeSet<String>, Vec<String>) 
 }
 
 impl Site {
-    pub fn new() -> Site {
-        Site::default()
+    pub fn new(exclude: Exclude) -> Site {
+        Site {
+            exclude,
+            ..Site::default()
+        }
+    }
+
+    pub fn exclude(&self) -> &Exclude {
+        &self.exclude
     }
 
     pub fn apply(&mut self, changes: Vec<Change>, source: &mut impl Source) -> Delta {
@@ -131,7 +140,7 @@ impl Site {
         for change in changes {
             match change {
                 Change::Touch(path) => {
-                    if classify(&path).is_some() {
+                    if classify(&path, &self.exclude).is_some() {
                         touched.insert(path);
                     }
                 }
@@ -195,7 +204,7 @@ impl Site {
 
         let mut gone_keys = Vec::new();
         for path in self.winners.difference(&won) {
-            let kind = classify(path).unwrap_or(Kind::Asset);
+            let kind = classify(path, &self.exclude).unwrap_or(Kind::Asset);
             let (_, out) = claim(path, kind);
             delta.deletes.push(out);
             if kind == Kind::Note {
@@ -268,7 +277,7 @@ impl Site {
         fresh: &mut HashMap<String, Vec<u8>>,
         skipped: &mut Vec<Skipped>,
     ) -> bool {
-        let Some(kind) = classify(path) else {
+        let Some(kind) = classify(path, &self.exclude) else {
             return false;
         };
         let result = match kind {

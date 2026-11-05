@@ -43,10 +43,11 @@ pub fn open(vault: &Path, out: &Path) -> Result<(VaultDir, PathBuf), Error> {
 /// every file. Never writes inside the vault.
 pub fn build(vault: &Path, out: &Path) -> Result<Summary, Error> {
     let (mut dir, out) = open(vault, out)?;
-    let scan = scan(dir.root())?;
+    let config = crate::config::load(&dir)?;
+    let scan = scan(dir.root(), &config.exclude)?;
     output::prepare(&out)?;
 
-    let delta = Site::new().apply(
+    let delta = Site::new(config.exclude).apply(
         vec![Change::Sync {
             under: String::new(),
             entries: scan.entries,

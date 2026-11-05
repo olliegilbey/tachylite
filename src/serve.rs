@@ -307,7 +307,8 @@ pub fn serve(vault: &Path, out: &Path, port: u16) -> Result<(), Error> {
         pushes,
         versions: Arc::new(Mutex::new(HashMap::new())),
     };
-    let watcher = Watcher::start(vault, out.clone(), live.clone())?;
+    let config = crate::config::load(&vault)?;
+    let watcher = Watcher::start(vault, out.clone(), live.clone(), config)?;
     let (failed_tx, failed_rx) = oneshot::channel();
     std::thread::spawn(move || {
         // The receiver is gone only if the server already stopped.
