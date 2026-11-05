@@ -85,7 +85,10 @@ The binary serves the files itself, so it controls compression (precompressed Br
   2. A path with a `/` resolves from the vault root.
   3. A bare name matches by basename. When several files share it (`README` in many folders), the nearest one wins: same folder, then the fewest folder steps away. A tie is a broken link.
   4. Then aliases.
-  An unresolved link renders as a visibly broken link. The build logs every broken and ambiguous link.
+  Matching ignores case, and a note's `.md` is optional. Any other file needs its extension: `[[route.html]]`, `[[dot.png]]`. A link whose last segment names a folder (`[[people/..]]`) is missing. Aliases (step 4) need frontmatter, so they resolve from slice 4.
+  A Markdown link with no URL scheme, such as `[Jane](people/Jane%20Doe.md)`, is percent-decoded and resolved the same way. A link with a scheme, or one that starts with `/` or `#`, stays as written.
+  `[[note#Heading]]` links to the heading's id, a GitHub-style slug. Tachylite writes the ids itself, without comrak's anchor link per heading.
+  An unresolved link renders as `<a class="broken-link">label</a>`, with no `href`. The build logs every broken and ambiguous link: `broken link in <note>: <target>`, or `ambiguous link in <note>: <target> matches <n> files`.
   An excluded note does not exist to the resolver. A link to it renders and logs exactly like a link to a missing note, so the output never reveals that it exists.
 - URLs keep the vault path. A note drops `.md` and keeps its case, and the path is percent-encoded: `people/Jane Doe.md` is served at `/people/Jane%20Doe`. An `.html` page keeps its extension. There are no slugs. Two notes whose paths differ only in the case of `.md` (`a.md`, `a.MD`) would share a URL: the first in byte order wins, and the build logs the other.
 - Everything Tachylite generates lives under one reserved prefix, `/.tachylite/`: index pages, the SSE endpoint, the manifest, the service worker and client assets. Dot names are always excluded, so no vault path starts with `.`. No vault file can collide with a generated page. A vault may hold `tasks.md`, `Today.md`, or a folder note `people.md` beside `people/`. Each keeps its plain URL. The prefix mirrors `.obsidian`: a dot folder belongs to the app.
@@ -98,7 +101,7 @@ The binary serves the files itself, so it controls compression (precompressed Br
 - Dataview, block references and image sizing are out of scope for v1.
 - Tags: `#tag` in the body and frontmatter `tags`. Each tag gets an index page at `/.tachylite/tags/<tag>`.
 - Mermaid blocks render on the client. The Mermaid script loads only on pages that contain a Mermaid block.
-- Backlinks list at the foot of each note.
+- Backlinks list at the foot of each note, in `<section class="backlinks">`, one entry per linking note, sorted by path. A note's links to itself do not count. When a link changes, the pages that depend on it re-render in the same batch: the linker, the old and new targets, and any note whose link now resolves differently.
 
 ### Rich content and security
 
