@@ -29,7 +29,7 @@ Put a `tachylite.toml` in the vault root to keep notes out of the site:
 exclude = ["private", "journal/*.md", "**/draft-*.md"]
 ```
 
-- A pattern matches a path from the vault root. `*` stays inside one folder, `**` crosses folders, and case matters.
+- A pattern matches a path from the vault root. `*` stays inside one folder, `**` crosses folders, and case matters. A leading `/` or `./` and a trailing `/` are ignored, so `/private/` works too.
 - A pattern that matches a folder hides everything in it, so `private` and `private/**` do the same.
 - Dot names, `target/` and `node_modules/` are always hidden.
 - An excluded note is gone from every output. A link to it shows as a broken link, the same as a link to a note that does not exist.

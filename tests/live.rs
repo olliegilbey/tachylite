@@ -319,11 +319,9 @@ fn pid(server: &Server) -> Pid {
     Pid::from_raw(i32::try_from(server.child.id()).unwrap()).unwrap()
 }
 
-#[test]
-fn queue_overflow_resyncs_the_vault() {
-    let (d, server) = with_notes(&[("a.md", "# a")]);
-    let mut gone = server.subscribe("/a", &version(&server, "/a"), None);
-    let mut late = server.subscribe("/z", "", None);
+/// Stops the server and writes enough new notes to overflow its inotify queue. Returns the
+/// queue limit, or `None` when the host's limit is too large to fill.
+fn overflow(d: &Dirs, server: &Server) -> Option<usize> {
     let limit: usize = fs::read_to_string("/proc/sys/fs/inotify/max_queued_events")
         .unwrap()
         .trim()
@@ -331,12 +329,12 @@ fn queue_overflow_resyncs_the_vault() {
         .unwrap();
     if limit > 65_536 {
         eprintln!("skipped: max_queued_events is {limit}, too many files to write");
-        return;
+        return None;
     }
-    kill_process(pid(&server), Signal::STOP).unwrap();
+    kill_process(pid(server), Signal::STOP).unwrap();
     // Returns once every thread has stopped, or if the child exits. NOWAIT reaps nothing.
     let status = waitid(
-        WaitId::Pid(pid(&server)),
+        WaitId::Pid(pid(server)),
         WaitIdOptions::STOPPED | WaitIdOptions::EXITED | WaitIdOptions::NOWAIT,
     )
     .unwrap()
@@ -346,6 +344,31 @@ fn queue_overflow_resyncs_the_vault() {
     for i in 0..limit / 2 + 2_000 {
         fs::write(d.vault().join(format!("n{i}.md")), "# n").unwrap();
     }
+    Some(limit)
+}
+
+#[test]
+fn queue_overflow_reloads_the_config() {
+    let (d, server) = with_notes(&[("a.md", "# a"), ("p/x.md", "# x")]);
+    let mut hidden = server.subscribe("/p/x", &version(&server, "/p/x"), None);
+    if overflow(&d, &server).is_none() {
+        return;
+    }
+    // The kernel drops this save's events: the queue is already full.
+    fs::write(d.vault().join("tachylite.toml"), "exclude = [\"p\"]\n").unwrap();
+    kill_process(pid(&server), Signal::CONT).unwrap();
+    hidden.expect("gone");
+    assert_eq!(server.get("/p/x").status, 404);
+}
+
+#[test]
+fn queue_overflow_resyncs_the_vault() {
+    let (d, server) = with_notes(&[("a.md", "# a")]);
+    let mut gone = server.subscribe("/a", &version(&server, "/a"), None);
+    let mut late = server.subscribe("/z", "", None);
+    let Some(limit) = overflow(&d, &server) else {
+        return;
+    };
     // These events come after the overflow, so the kernel drops them.
     fs::remove_file(d.vault().join("a.md")).unwrap();
     fs::write(d.vault().join("z.md"), "# late").unwrap();

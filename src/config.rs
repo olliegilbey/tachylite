@@ -24,7 +24,18 @@ impl Exclude {
     pub fn new(globs: &[String]) -> Result<Exclude, String> {
         let globs = globs
             .iter()
-            .map(|g| Pattern::new(g).map_err(|e| format!("exclude {g:?}: {}", e.msg)))
+            .map(|g| {
+                // Gitignore habits: `/private`, `./private` and `private/` all name the folder.
+                let bare = g
+                    .strip_prefix("./")
+                    .or_else(|| g.strip_prefix('/'))
+                    .unwrap_or(g);
+                let bare = bare.strip_suffix('/').unwrap_or(bare);
+                if bare.is_empty() {
+                    return Err(format!("exclude {g:?}: names no file or folder"));
+                }
+                Pattern::new(bare).map_err(|e| format!("exclude {g:?}: {}", e.msg))
+            })
             .collect::<Result<_, _>>()?;
         Ok(Exclude { globs })
     }
@@ -53,14 +64,19 @@ pub struct Config {
 
 /// Reads `tachylite.toml` from the vault root. A missing file is the default config.
 pub fn load(vault: &VaultDir) -> Result<Config, Error> {
+    reload(vault).map(Option::unwrap_or_default)
+}
+
+/// Reads the config like `load`, but `None` when the file is missing or mid-save. A running
+/// server keeps its previous config then: a missing config would publish what it excludes.
+pub fn reload(vault: &VaultDir) -> Result<Option<Config>, Error> {
     let bytes = match vault.read(FILE) {
         Ok(bytes) => bytes,
-        Err(ReadError::Missing) => return Ok(Config::default()),
+        Err(ReadError::Missing | ReadError::MidSave) => return Ok(None),
         Err(ReadError::Skip(reason)) => return Err(config_error(format!("{reason:?}"))),
-        Err(ReadError::MidSave) => return Ok(Config::default()),
     };
     let text = String::from_utf8(bytes).map_err(|_| config_error("not UTF-8".into()))?;
-    parse(&text).map_err(config_error)
+    parse(&text).map(Some).map_err(config_error)
 }
 
 fn config_error(message: String) -> Error {

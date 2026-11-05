@@ -40,3 +40,20 @@ fn built_in_exclusions_need_no_config() {
 fn a_bad_glob_is_an_error() {
     assert!(Exclude::new(&["a/***".to_string()]).is_err());
 }
+
+#[test]
+fn gitignore_style_patterns_match_the_folder() {
+    for glob in ["private", "private/", "/private", "./private", "/private/"] {
+        let exclude = Exclude::new(&[glob.to_string()]).unwrap();
+        assert!(exclude.path("private/a.md"), "{glob}");
+        assert!(exclude.path("private"), "{glob}");
+        assert!(!exclude.path("public/a.md"), "{glob}");
+    }
+}
+
+#[test]
+fn a_pattern_that_names_nothing_is_an_error() {
+    for glob in ["/", "./", ""] {
+        assert!(Exclude::new(&[glob.to_string()]).is_err(), "{glob:?}");
+    }
+}

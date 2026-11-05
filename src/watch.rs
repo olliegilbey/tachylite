@@ -162,8 +162,9 @@ impl Watcher {
         for event in events {
             if event.flags.contains(ReadFlags::QUEUE_OVERFLOW) {
                 eprintln!("inotify queue overflowed; rescanning the vault");
-                self.watch_tree("")?;
-                return Ok((vec![self.sync("")?], HashSet::new()));
+                // The lost events may include a save of the config.
+                self.reload_config();
+                return self.resync();
             }
             if event.flags.contains(ReadFlags::IGNORED) {
                 self.dirs.remove(&event.wd);
@@ -222,18 +223,8 @@ impl Watcher {
                 *touched.entry(path).or_default() |= save;
             }
         }
-        if reload {
-            match config::load(&self.vault) {
-                Ok(config) => {
-                    self.site.set_exclude(config.exclude);
-                    for wd in self.dirs.drain().map(|(wd, _)| wd).collect::<Vec<_>>() {
-                        let _ = inotify::remove_watch(&self.inotify, wd);
-                    }
-                    self.watch_tree("")?;
-                    return Ok((vec![self.sync("")?], HashSet::new()));
-                }
-                Err(e) => eprintln!("{e}; keeping the previous config"),
-            }
+        if reload && self.reload_config() {
+            return self.resync();
         }
         let unsaved = touched
             .iter()
@@ -242,6 +233,31 @@ impl Watcher {
             .collect();
         changes.extend(touched.into_keys().map(Change::Touch));
         Ok((changes, unsaved))
+    }
+
+    /// Rereads `tachylite.toml`. Returns true when a config was read and is now in force. A
+    /// missing, mid-save or broken file keeps the previous config.
+    fn reload_config(&mut self) -> bool {
+        match config::reload(&self.vault) {
+            Ok(Some(config)) => {
+                self.site.set_exclude(config.exclude);
+                true
+            }
+            Ok(None) => false,
+            Err(e) => {
+                eprintln!("{e}; keeping the previous config");
+                false
+            }
+        }
+    }
+
+    /// Rewatches the tree under the current exclusions and resyncs the root.
+    fn resync(&mut self) -> Result<(Vec<Change>, HashSet<String>), Error> {
+        for wd in self.dirs.drain().map(|(wd, _)| wd).collect::<Vec<_>>() {
+            let _ = inotify::remove_watch(&self.inotify, wd);
+        }
+        self.watch_tree("")?;
+        Ok((vec![self.sync("")?], HashSet::new()))
     }
 
     fn sync(&self, under: &str) -> Result<Change, Error> {
