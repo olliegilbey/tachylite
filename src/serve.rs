@@ -332,6 +332,7 @@ pub fn serve(vault: &Path, out: &Path, port: u16) -> Result<(), Error> {
         match future::select(pin!(server), failed_rx).await {
             Either::Left((served, _)) => served.map_err(|source| Error::Bind { port, source }),
             Either::Right((Ok(error), _)) => Err(error),
+            // Unreachable in release: a panic aborts the process (`panic = "abort"`).
             Either::Right((Err(_), _)) => Ok(()),
         }
     })

@@ -44,7 +44,7 @@ These are the build paths this plan takes. Each one is cheap to change now and c
 2. **A phone that slept through pushes.** Expected: on reconnect it gets the current page at once. Tasks 6 and 8.
 3. **Folders moving.** A folder renamed, deleted, created with notes already inside, or moved in from outside the vault. Expected: pages follow, with no stale output. If the vault root itself goes away, `serve` exits with a clear error. Tasks 6 and 7.
 4. **Reserved URL characters in names.** `C# notes.md`, `50% off.md`, `a+b.md` and non-ASCII names. Expected: each serves at its percent-encoded path and gets its own pushes. Tasks 5 and 6.
-5. **Swaps after the scan.** A note replaced by a symlink to a file outside the vault, or by a FIFO. Expected: the page is removed and the path is listed as skipped. Nothing outside the vault is published, and nothing hangs. Tasks 1 and 6.
+5. **Swaps after the scan.** A note replaced by a symlink to a file outside the vault, or by a FIFO. Expected: the page is removed. A symlink is listed as skipped; a FIFO reads as missing, as the scan ignores non-regular files. Nothing outside the vault is published, and nothing hangs. Tasks 1 and 6.
 
 Known limits, accepted for this slice:
 - HTTP/1.1 allows six connections per origin. A desktop with more than five Tachylite tabs on plain localhost stalls. Behind `tailscale serve` the browser speaks HTTP/2, which has no such cap. Slice 6's service worker can share one stream if it matters.

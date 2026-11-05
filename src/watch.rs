@@ -153,6 +153,7 @@ impl Watcher {
         let mut touched: BTreeMap<String, bool> = BTreeMap::new();
         for event in events {
             if event.flags.contains(ReadFlags::QUEUE_OVERFLOW) {
+                eprintln!("inotify queue overflowed; rescanning the vault");
                 self.watch_tree("")?;
                 return Ok((vec![self.sync("")?], HashSet::new()));
             }

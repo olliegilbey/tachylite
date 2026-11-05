@@ -8,6 +8,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use common::{Dirs, Server, version_of};
+use rustix::process::{Pid, Signal, WaitId, WaitIdOptions, kill_process, waitid};
 
 fn with_notes(notes: &[(&str, &str)]) -> (Dirs, Server) {
     let d = Dirs::empty();
@@ -313,22 +314,9 @@ fn delete_then_create_saves_never_push_half_a_note() {
     }
 }
 
-/// Sends a signal to the server's own child, by the PID captured at spawn.
-fn signal(server: &Server, sig: &str) {
-    let pid = server.child.id().to_string();
-    assert!(
-        Command::new("kill")
-            .args([sig, &pid])
-            .status()
-            .unwrap()
-            .success()
-    );
-}
-
-fn state(server: &Server) -> char {
-    let stat = fs::read_to_string(format!("/proc/{}/stat", server.child.id())).unwrap();
-    // The state follows the parenthesised command name.
-    stat.rsplit_once(") ").unwrap().1.chars().next().unwrap()
+/// The server's own child, by the PID captured at spawn.
+fn pid(server: &Server) -> Pid {
+    Pid::from_raw(i32::try_from(server.child.id()).unwrap()).unwrap()
 }
 
 #[test]
@@ -336,23 +324,38 @@ fn queue_overflow_resyncs_the_vault() {
     let (d, server) = with_notes(&[("a.md", "# a")]);
     let mut gone = server.subscribe("/a", &version(&server, "/a"), None);
     let mut late = server.subscribe("/z", "", None);
-    signal(&server, "-STOP");
-    while state(&server) != 'T' {
-        std::thread::yield_now();
-    }
-    // Each new note queues CREATE and CLOSE_WRITE, so this overflows the queue.
     let limit: usize = fs::read_to_string("/proc/sys/fs/inotify/max_queued_events")
         .unwrap()
         .trim()
         .parse()
         .unwrap();
-    for i in 0..limit / 2 + 100 {
+    if limit > 65_536 {
+        eprintln!("skipped: max_queued_events is {limit}, too many files to write");
+        return;
+    }
+    kill_process(pid(&server), Signal::STOP).unwrap();
+    // Returns once every thread has stopped, or if the child exits. NOWAIT reaps nothing.
+    let status = waitid(
+        WaitId::Pid(pid(&server)),
+        WaitIdOptions::STOPPED | WaitIdOptions::EXITED | WaitIdOptions::NOWAIT,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(status.stopped(), "the server exited instead of stopping");
+    // Each new note queues CREATE and CLOSE_WRITE, so this overflows the queue.
+    for i in 0..limit / 2 + 2_000 {
         fs::write(d.vault().join(format!("n{i}.md")), "# n").unwrap();
     }
     // These events come after the overflow, so the kernel drops them.
     fs::remove_file(d.vault().join("a.md")).unwrap();
     fs::write(d.vault().join("z.md"), "# late").unwrap();
-    signal(&server, "-CONT");
+    kill_process(pid(&server), Signal::CONT).unwrap();
+    assert!(
+        server
+            .wait_line(|l| l.contains("overflowed"), Duration::from_secs(10))
+            .is_some(),
+        "the queue did not overflow"
+    );
     gone.expect("gone");
     assert!(late.expect("page").data.contains("<h1>late</h1>"));
     assert_eq!(server.get(&format!("/n{}", limit / 2)).status, 200);

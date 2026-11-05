@@ -50,7 +50,9 @@ impl fmt::Display for Error {
                 let errno = source.raw_os_error().map(Errno::from_raw_os_error);
                 match errno {
                     Some(Errno::NOSPC) => f.write_str(" (raise fs.inotify.max_user_watches)"),
-                    Some(Errno::MFILE) => f.write_str(" (raise fs.inotify.max_user_instances)"),
+                    Some(Errno::MFILE) => {
+                        f.write_str(" (raise fs.inotify.max_user_instances or ulimit -n)")
+                    }
                     _ => Ok(()),
                 }
             }
