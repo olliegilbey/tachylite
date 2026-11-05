@@ -120,9 +120,13 @@ fn rename_folder_moves_its_pages() {
 
 #[test]
 fn unchanged_save_pushes_nothing() {
-    let (d, server) = with_notes(&[("a.md", "# a")]);
+    let (d, server) = with_notes(&[("a.md", "# a"), ("bar.md", "# b0")]);
     let mut events = server.subscribe("/a", &version(&server, "/a"), None);
+    let mut barrier = server.subscribe("/bar", &version(&server, "/bar"), None);
     fs::write(d.vault().join("a.md"), "# a").unwrap();
+    // The barrier's push means the watcher has handled the unchanged save.
+    fs::write(d.vault().join("bar.md"), "# b1").unwrap();
+    barrier.expect("page");
     fs::write(d.vault().join("a.md"), "# changed").unwrap();
     // Events on one stream arrive in order, so the first is the real change.
     assert!(events.expect("page").data.contains("<h1>changed</h1>"));
