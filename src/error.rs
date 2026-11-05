@@ -9,6 +9,7 @@ pub enum Error {
     Overlap { vault: PathBuf, out: PathBuf },
     OutNotOurs(PathBuf),
     OutNotClean(PathBuf),
+    NoOpenat2,
 }
 
 impl fmt::Display for Error {
@@ -31,6 +32,10 @@ impl fmt::Display for Error {
                 f,
                 "output {} has . or .. after its last existing directory; give a plain path",
                 path.display()
+            ),
+            Error::NoOpenat2 => write!(
+                f,
+                "this kernel has no openat2 (Linux 5.6+); Tachylite needs it to read the vault safely"
             ),
         }
     }

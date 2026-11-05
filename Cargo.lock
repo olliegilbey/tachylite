@@ -510,6 +510,7 @@ dependencies = [
  "comrak",
  "insta",
  "proptest",
+ "rustix",
  "tempfile",
 ]
 

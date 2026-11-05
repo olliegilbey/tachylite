@@ -5,7 +5,7 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::Error;
 use crate::render::{note_title, render_note};
-use crate::vault::{Kind, SkipReason, Skipped, scan};
+use crate::vault::{Kind, ReadError, Skipped, VaultDir, scan};
 
 const MARKER: &str = ".tachylite-output";
 
@@ -46,6 +46,7 @@ pub fn build(vault: &Path, out: &Path) -> Result<Summary, Error> {
     if overlaps(&vault, &out) {
         return Err(Error::Overlap { vault, out });
     }
+    let dir = VaultDir::open(&vault)?;
     let scan = scan(&vault)?;
     prepare_out(&out)?;
 
@@ -55,29 +56,32 @@ pub fn build(vault: &Path, out: &Path) -> Result<Summary, Error> {
         skipped: scan.skipped,
     };
     for entry in &scan.entries {
-        let source = vault.join(&entry.path);
-        let bytes = match fs::read(&source) {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                summary.skipped.push(Skipped {
-                    path: PathBuf::from(&entry.path),
-                    reason: SkipReason::Unreadable(e.kind()),
-                });
-                continue;
-            }
+        let skip = |reason| Skipped {
+            path: PathBuf::from(&entry.path),
+            reason,
         };
         match entry.kind {
-            Kind::Note => {
-                let html = render_note(note_title(&entry.path), &String::from_utf8_lossy(&bytes));
-                write_file(&page_path(&out, &entry.path), html.as_bytes())?;
-                summary.notes += 1;
-            }
-            Kind::Html | Kind::Asset => {
-                write_file(&file_path(&out, &entry.path), &bytes)?;
-                summary.files += 1;
-            }
+            Kind::Note => match dir.read(&entry.path) {
+                Ok(bytes) => {
+                    let html =
+                        render_note(note_title(&entry.path), &String::from_utf8_lossy(&bytes));
+                    write_file(&page_path(&out, &entry.path), html.as_bytes())?;
+                    summary.notes += 1;
+                }
+                Err(ReadError::Missing) => {}
+                Err(ReadError::Skip(reason)) => summary.skipped.push(skip(reason)),
+            },
+            Kind::Html | Kind::Asset => match dir.open_file(&entry.path) {
+                Ok(mut file) => {
+                    copy_file(&mut file, &file_path(&out, &entry.path))?;
+                    summary.files += 1;
+                }
+                Err(ReadError::Missing) => {}
+                Err(ReadError::Skip(reason)) => summary.skipped.push(skip(reason)),
+            },
         }
     }
+    summary.skipped.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(summary)
 }
 
@@ -139,13 +143,25 @@ fn prepare_out(out: &Path) -> Result<(), Error> {
 
 /// Writes through a temp file and a rename, so a reader never sees half a file.
 fn write_file(path: &Path, bytes: &[u8]) -> Result<(), Error> {
+    write_via_tmp(path, |tmp| fs::write(tmp, bytes))
+}
+
+/// Streams a file into place, so a large asset is never held in memory.
+fn copy_file(from: &mut fs::File, path: &Path) -> Result<(), Error> {
+    write_via_tmp(path, |tmp| {
+        let mut to = fs::File::create(tmp)?;
+        io::copy(from, &mut to).map(|_| ())
+    })
+}
+
+fn write_via_tmp(path: &Path, write: impl FnOnce(&Path) -> io::Result<()>) -> Result<(), Error> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(io_err(parent))?;
     }
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
     let tmp = PathBuf::from(tmp);
-    fs::write(&tmp, bytes).map_err(io_err(&tmp))?;
+    write(&tmp).map_err(io_err(&tmp))?;
     fs::rename(&tmp, path).map_err(io_err(path))
 }
 

@@ -1,8 +1,12 @@
 use std::collections::HashSet;
-use std::fs;
-use std::io;
+use std::fs::{self, File};
+use std::io::{self, Read};
+use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+
+use rustix::fs::{Mode, OFlags, ResolveFlags, openat2};
+use rustix::io::Errno;
 
 use crate::Error;
 
@@ -221,5 +225,74 @@ mod tests {
                 && ["md", "html", "png", "pdf"].contains(&ext.to_lowercase().as_str());
             prop_assert_eq!(classify(&path).is_some(), !excluded && published, "{}", path);
         }
+    }
+}
+
+/// Why a vault file could not be read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadError {
+    /// Gone, or not a regular file. The scan ignores both silently, so reads do too.
+    Missing,
+    Skip(SkipReason),
+}
+
+/// An open vault directory. Every read resolves beneath it and never follows a symlink.
+#[derive(Debug)]
+pub struct VaultDir {
+    fd: OwnedFd,
+    root: PathBuf,
+}
+
+const RESOLVE: ResolveFlags = ResolveFlags::BENEATH
+    .union(ResolveFlags::NO_SYMLINKS)
+    .union(ResolveFlags::NO_MAGICLINKS);
+
+impl VaultDir {
+    pub fn open(root: &Path) -> Result<VaultDir, Error> {
+        let io_err = |source: io::Error| Error::Io {
+            path: root.to_path_buf(),
+            source,
+        };
+        let root = root.canonicalize().map_err(io_err)?;
+        let dir_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
+        let fd = rustix::fs::open(&root, dir_flags, Mode::empty()).map_err(|e| io_err(e.into()))?;
+        match openat2(&fd, ".", dir_flags, Mode::empty(), RESOLVE) {
+            Ok(_) => {}
+            Err(Errno::NOSYS) => return Err(Error::NoOpenat2),
+            Err(e) => return Err(io_err(e.into())),
+        }
+        Ok(VaultDir { fd, root })
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Opens a vault-relative path for reading. A FIFO opens without blocking and reads as missing.
+    pub fn open_file(&self, rel: &str) -> Result<File, ReadError> {
+        let flags = OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC | OFlags::NOCTTY;
+        let file = match openat2(&self.fd, rel, flags, Mode::empty(), RESOLVE) {
+            Ok(fd) => File::from(fd),
+            Err(Errno::NOENT | Errno::NOTDIR) => return Err(ReadError::Missing),
+            Err(Errno::LOOP) => return Err(ReadError::Skip(SkipReason::Symlink)),
+            Err(e) => {
+                return Err(ReadError::Skip(SkipReason::Unreadable(
+                    io::Error::from(e).kind(),
+                )));
+            }
+        };
+        match file.metadata() {
+            Ok(meta) if meta.is_file() => Ok(file),
+            Ok(_) => Err(ReadError::Missing),
+            Err(e) => Err(ReadError::Skip(SkipReason::Unreadable(e.kind()))),
+        }
+    }
+
+    pub fn read(&self, rel: &str) -> Result<Vec<u8>, ReadError> {
+        let mut file = self.open_file(rel)?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)
+            .map_err(|e| ReadError::Skip(SkipReason::Unreadable(e.kind())))?;
+        Ok(bytes)
     }
 }
