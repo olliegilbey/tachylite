@@ -2,6 +2,8 @@ use std::fmt;
 use std::io;
 use std::path::PathBuf;
 
+use rustix::io::Errno;
+
 #[derive(Debug)]
 pub enum Error {
     Io { path: PathBuf, source: io::Error },
@@ -43,11 +45,17 @@ impl fmt::Display for Error {
             Error::Bind { port, source } => {
                 write!(f, "cannot serve on 127.0.0.1:{port}: {source}")
             }
-            Error::Watch { path, source } => write!(
-                f,
-                "cannot watch {}: {source} (at the inotify limit, raise fs.inotify.max_user_watches)",
-                path.display()
-            ),
+            Error::Watch { path, source } => {
+                write!(f, "cannot watch {}: {source}", path.display())?;
+                let errno = source.raw_os_error().map(Errno::from_raw_os_error);
+                match errno {
+                    Some(Errno::NOSPC) => f.write_str(" (raise fs.inotify.max_user_watches)"),
+                    Some(Errno::MFILE) => {
+                        f.write_str(" (raise fs.inotify.max_user_instances or ulimit -n)")
+                    }
+                    _ => Ok(()),
+                }
+            }
             Error::VaultGone(path) => {
                 write!(f, "vault {} was moved or deleted; stopping", path.display())
             }
