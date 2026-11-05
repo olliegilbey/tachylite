@@ -410,3 +410,36 @@ fn deleting_the_config_keeps_its_exclusions() {
     barrier.expect("page");
     assert_eq!(server.get("/d/n").status, 404);
 }
+
+#[test]
+fn new_link_pushes_backlink_to_target() {
+    let (d, server) = with_notes(&[("a.md", "# a"), ("b.md", "# b")]);
+    let mut events = server.subscribe("/b", &version(&server, "/b"), None);
+    fs::write(d.vault().join("a.md"), "see [[b]]").unwrap();
+    let event = events.expect("page");
+    assert!(
+        event
+            .data
+            .contains("<h2>Backlinks</h2><ul><li><a href=\"/a\">a</a></li></ul>"),
+        "{}",
+        event.data
+    );
+}
+
+#[test]
+fn renamed_target_pushes_broken_link_to_linker() {
+    let (d, server) = with_notes(&[("a.md", "see [[b]]"), ("b.md", "# b")]);
+    let mut events = server.subscribe("/a", &version(&server, "/a"), None);
+    fs::rename(d.vault().join("b.md"), d.vault().join("c.md")).unwrap();
+    let event = events.expect("page");
+    assert!(
+        event.data.contains("<a class=\"broken-link\">b</a>"),
+        "{}",
+        event.data
+    );
+    assert!(
+        server
+            .wait_line(|l| l == "broken link in a.md: b", Duration::from_secs(10))
+            .is_some()
+    );
+}

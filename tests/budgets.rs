@@ -1,6 +1,11 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use std::cmp::Reverse;
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
+
+use tachylite::links::Index;
+use tachylite::render::render_body;
 
 /// CI runs the timed budgets at `BUDGET_SCALE=3`; the reference host runs them at 1.
 fn scale() -> f64 {
@@ -96,6 +101,66 @@ fn push_latency() {
     let limit = Duration::from_secs_f64(0.010 * scale());
     println!(
         "file event to push, budget vault: median {} µs, max {} µs (limit {} ms)",
+        median.as_micros(),
+        times[times.len() - 1].as_micros(),
+        limit.as_millis()
+    );
+    assert!(median <= limit);
+}
+
+/// The budget vault's note with the most inbound links, by its links as the site resolves them.
+fn most_linked() -> String {
+    let notes = tachylite::budget_vault::generate(1, 2000);
+    let index = Index::new(notes.iter().map(|(p, _)| p.as_str()));
+    let mut inbound: HashMap<String, usize> = HashMap::new();
+    for (path, text) in notes.iter().filter(|(p, _)| p.ends_with(".md")) {
+        for target in render_body(path, text, &index).targets {
+            if *target != **path && target.ends_with(".md") {
+                *inbound.entry(target.to_string()).or_default() += 1;
+            }
+        }
+    }
+    inbound
+        .into_iter()
+        .max_by_key(|(path, n)| (*n, Reverse(path.clone())))
+        .unwrap()
+        .0
+}
+
+#[test]
+#[ignore = "budget: run with make budget or make check"]
+fn dependent_push_latency() {
+    let dir = tempfile::tempdir().unwrap();
+    let (server, _) = budget_server(dir.path());
+    let target = most_linked();
+    let page = url(&target);
+    let mut events = server.subscribe(&page, &version_of(&server.get(&page).text()), None);
+    let linker = dir.path().join("vault/linker.md");
+    let mut created = server.subscribe("/linker", "", None);
+    fs::write(&linker, "no link yet").unwrap();
+    created.expect("page");
+
+    let link = format!("[[{}]]", &target[..target.len() - ".md".len()]);
+    let backlink = "<li><a href=\"/linker\">linker</a></li>";
+    let mut times = Vec::new();
+    for i in 0..20 {
+        let adds = i % 2 == 0;
+        let body = if adds {
+            format!("{link} {i}")
+        } else {
+            format!("no link {i}")
+        };
+        fs::write(&linker, body).unwrap();
+        let start = Instant::now();
+        let event = events.expect("page");
+        times.push(start.elapsed());
+        assert_eq!(event.data.contains(backlink), adds, "round {i}");
+    }
+    times.sort();
+    let median = times[times.len() / 2];
+    let limit = Duration::from_secs_f64(0.250 * scale());
+    println!(
+        "link edit to the target's push, budget vault: median {} µs, max {} µs (limit {} ms)",
         median.as_micros(),
         times[times.len() - 1].as_micros(),
         limit.as_millis()

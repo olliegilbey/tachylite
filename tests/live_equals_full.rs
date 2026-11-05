@@ -21,7 +21,15 @@ const PATHS: [&str; 10] = [
     "d/e/m.md",
     ".h.md",
 ];
-const CONTENTS: [&str; 3] = ["# one", "two *b*", "- [ ] three"];
+const CONTENTS: [&str; 7] = [
+    "# one",
+    "two *b*",
+    "- [ ] three",
+    "[[a]]",
+    "[[d/n]] and [[../x]]",
+    "[[n]]",
+    "[[m]] [[y]] [[p.png]]",
+];
 
 #[derive(Debug, Clone)]
 enum Op {
@@ -33,6 +41,8 @@ enum Op {
     RenameFolder,
     DeleteFolder,
     Burst,
+    /// Writes `tachylite.toml`, excluding `d` or nothing.
+    Config(bool),
 }
 
 fn op() -> impl Strategy<Value = Op> {
@@ -45,6 +55,7 @@ fn op() -> impl Strategy<Value = Op> {
         1 => Just(Op::RenameFolder),
         1 => Just(Op::DeleteFolder),
         1 => Just(Op::Burst),
+        1 => any::<bool>().prop_map(Op::Config),
     ]
 }
 
@@ -88,6 +99,13 @@ fn apply(vault: &Path, op: &Op) {
         }
         Op::DeleteFolder => {
             let _ = fs::remove_dir_all(vault.join("d"));
+        }
+        Op::Config(exclude) => {
+            let list = if *exclude { "[\"d\"]" } else { "[]" };
+            write(
+                vault.join("tachylite.toml"),
+                format!("exclude = {list}\n").as_bytes(),
+            );
         }
         Op::Burst => {
             let _ = fs::create_dir_all(vault.join("burst"));
