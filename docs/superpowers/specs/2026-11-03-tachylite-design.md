@@ -64,14 +64,16 @@ Existing Rust prior art: `Mathijssch/oxidian` renders Obsidian Markdown to HTML.
 One binary, `tachylite`. It runs as a long-lived process:
 
 1. Full build on start.
-2. Watch the vault with inotify (the `notify` crate is acceptable).
-3. On change: debounce, re-render the changed note, update the link index, re-render pages whose backlinks changed, update the manifest.
+2. Watch the vault with inotify, through `rustix`: one watch per published folder. A new folder gets its watches, then a scan.
+3. On change: read every queued event in one go and apply that batch once. No timer: a debounce interval would spend the push budget. A save is `CLOSE_WRITE` or `MOVED_TO`, never `MODIFY`, so an edit is read once, after it is saved. `CREATE`, `DELETE` and `MOVED_FROM` mark a path to re-check. If the re-check finds a new regular file with one link, that file is mid-save: its `CLOSE_WRITE` follows, and the path keeps its published page until then. The check runs on the file it would read, so no page is published from half a note. A symlink, FIFO or hard link gets no `CLOSE_WRITE`, so its `CREATE` is read at once. The batch re-renders the changed notes, updates the link index, re-renders pages whose backlinks changed, and updates the manifest.
 4. Push the new HTML of each changed page to subscribed clients over SSE.
 5. Serve the output directory and the SSE endpoint over HTTP on `127.0.0.1`.
 
 The binary serves the files itself, so it controls compression (precompressed Brotli and gzip), `ETag` and `Cache-Control`. Tailscale proxies one local port.
 
 `tachylite build <vault> <out>` runs a single build and exits, for tests and CI.
+
+**Live protocol.** Each note page carries `<meta name="tachylite-version">`, a hash of the page, and a script that opens `/.tachylite/events?page=<pathname>&v=<version>`. The server sends `event: page` with `id: <version>` and the full new HTML, or `event: gone` when the page is removed. On connect and on every reconnect, the server compares the client's version with the current one and sends the current page if they differ. On a reconnect the browser's `Last-Event-ID` gives the client's version and overrides `v`. So a phone that slept catches up, and the server keeps no history. The client swaps `<main>`, the title and the version. On `gone` it keeps listening, and after a second it shows a notice in `<main>`. Vim and `git checkout` save by removing the note and then writing it again. Their `page` event follows within milliseconds and cancels the notice, so the page neither flashes nor reloads.
 
 ### Rendering
 
@@ -204,6 +206,7 @@ The README documents this setup as the default route. It is an example, not buil
 - `tachylite` runs as a systemd user service and binds `127.0.0.1`.
 - `tailscale serve` proxies it on a tailnet-only HTTPS port. A port that carries a public Funnel route is public for every path on it, so Tachylite gets a port of its own.
 - If the vault syncs to the host from another machine, edits made there add the sync delay before the file event.
+- The host runs Linux 5.6 or later. Tachylite opens vault files with `openat2`, which confines every read to the vault, and exits with an error on an older kernel.
 
 ## Left to the builder
 

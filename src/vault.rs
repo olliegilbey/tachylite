@@ -1,8 +1,12 @@
-use std::collections::HashSet;
-use std::fs;
-use std::io;
+use std::fs::{self, File};
+use std::io::{self, Read};
+use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+
+use rustix::fs::{Mode, OFlags, ResolveFlags, openat2};
+use rustix::io::Errno;
 
 use crate::Error;
 
@@ -41,7 +45,8 @@ pub struct Scan {
     pub skipped: Vec<Skipped>,
 }
 
-fn excluded_segment(segment: &[u8]) -> bool {
+/// A file or folder name the vault never publishes.
+pub fn excluded_segment(segment: &[u8]) -> bool {
     segment.starts_with(b".") || segment == b"target" || segment == b"node_modules"
 }
 
@@ -64,29 +69,21 @@ pub fn classify(path: &str) -> Option<Kind> {
 
 /// Lists what the vault publishes. Reads only; never follows a symlink or enters an excluded folder.
 pub fn scan(vault: &Path) -> Result<Scan, Error> {
+    scan_under(vault, "")
+}
+
+/// Lists what the vault publishes under the folder `under` (`""` is the root). Paths stay
+/// vault-relative. A subfolder that vanished before it was read lists nothing.
+pub fn scan_under(vault: &Path, under: &str) -> Result<Scan, Error> {
     let mut scan = Scan {
         entries: Vec::new(),
         skipped: Vec::new(),
     };
-    walk(vault, Path::new(""), &mut scan)?;
+    walk(vault, Path::new(under), &mut scan)?;
+    scan.skipped.retain(|s| {
+        !(s.path == Path::new(under) && s.reason == SkipReason::Unreadable(io::ErrorKind::NotFound))
+    });
     scan.entries.sort_by(|a, b| a.path.cmp(&b.path));
-
-    let mut seen = HashSet::new();
-    let mut kept = Vec::with_capacity(scan.entries.len());
-    for entry in scan.entries {
-        if entry.kind == Kind::Note {
-            let stem = &entry.path[..entry.path.len() - ".md".len()];
-            if !seen.insert(stem.to_string()) {
-                scan.skipped.push(Skipped {
-                    path: PathBuf::from(&entry.path),
-                    reason: SkipReason::UrlClash,
-                });
-                continue;
-            }
-        }
-        kept.push(entry);
-    }
-    scan.entries = kept;
     scan.skipped.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(scan)
 }
@@ -221,5 +218,90 @@ mod tests {
                 && ["md", "html", "png", "pdf"].contains(&ext.to_lowercase().as_str());
             prop_assert_eq!(classify(&path).is_some(), !excluded && published, "{}", path);
         }
+    }
+}
+
+/// Why a vault file could not be read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadError {
+    /// Gone, or not a regular file. The scan ignores both silently, so reads do too.
+    Missing,
+    Skip(SkipReason),
+    /// A new file that may be half written. Its save is still to come, so the path keeps
+    /// what is published for it.
+    MidSave,
+}
+
+/// An open vault directory. Every read resolves beneath it and never follows a symlink.
+#[derive(Debug)]
+pub struct VaultDir {
+    fd: OwnedFd,
+    root: PathBuf,
+}
+
+const RESOLVE: ResolveFlags = ResolveFlags::BENEATH
+    .union(ResolveFlags::NO_SYMLINKS)
+    .union(ResolveFlags::NO_MAGICLINKS);
+
+impl VaultDir {
+    pub fn open(root: &Path) -> Result<VaultDir, Error> {
+        let io_err = |source: io::Error| Error::Io {
+            path: root.to_path_buf(),
+            source,
+        };
+        let root = root.canonicalize().map_err(io_err)?;
+        let dir_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
+        let fd = rustix::fs::open(&root, dir_flags, Mode::empty()).map_err(|e| io_err(e.into()))?;
+        match openat2(&fd, ".", dir_flags, Mode::empty(), RESOLVE) {
+            Ok(_) => {}
+            Err(Errno::NOSYS) => return Err(Error::NoOpenat2),
+            Err(e) => return Err(io_err(e.into())),
+        }
+        Ok(VaultDir { fd, root })
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Opens a vault-relative path for reading. A FIFO opens without blocking and reads as missing.
+    pub fn open_file(&self, rel: &str) -> Result<File, ReadError> {
+        self.open_after(rel, true)
+    }
+
+    /// Opens like `open_file`. Unless the path's last event was a save, a regular file with
+    /// one link is `MidSave`: it was created after a create, delete or move-away event, and
+    /// its `CLOSE_WRITE` follows. The check uses the open file, so it cannot race the read.
+    pub fn open_after(&self, rel: &str, saved: bool) -> Result<File, ReadError> {
+        let flags = OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC | OFlags::NOCTTY;
+        let file = match openat2(&self.fd, rel, flags, Mode::empty(), RESOLVE) {
+            Ok(fd) => File::from(fd),
+            Err(Errno::NOENT | Errno::NOTDIR) => return Err(ReadError::Missing),
+            Err(Errno::LOOP) => return Err(ReadError::Skip(SkipReason::Symlink)),
+            Err(e) => {
+                return Err(ReadError::Skip(SkipReason::Unreadable(
+                    io::Error::from(e).kind(),
+                )));
+            }
+        };
+        match file.metadata() {
+            Ok(meta) if meta.is_file() && !saved && meta.nlink() == 1 => Err(ReadError::MidSave),
+            Ok(meta) if meta.is_file() => Ok(file),
+            Ok(_) => Err(ReadError::Missing),
+            Err(e) => Err(ReadError::Skip(SkipReason::Unreadable(e.kind()))),
+        }
+    }
+
+    pub fn read(&self, rel: &str) -> Result<Vec<u8>, ReadError> {
+        self.read_after(rel, true)
+    }
+
+    /// Reads like `read`, with `open_after`'s mid-save check.
+    pub fn read_after(&self, rel: &str, saved: bool) -> Result<Vec<u8>, ReadError> {
+        let mut file = self.open_after(rel, saved)?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)
+            .map_err(|e| ReadError::Skip(SkipReason::Unreadable(e.kind())))?;
+        Ok(bytes)
     }
 }

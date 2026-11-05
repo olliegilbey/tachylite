@@ -18,7 +18,20 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-machete,cargo-deny
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: browser/package-lock.json
+      - run: npm ci && npx playwright install --with-deps --only-shell chromium
+        working-directory: browser
       - run: make check
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-test-results
+          path: browser/test-results/
+          if-no-files-found: ignore
 
   musl:
     strategy:

@@ -8,7 +8,9 @@ expression: welcome()
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="tachylite-version" content="4c22be03784f7836">
 <title>welcome</title>
+<script src="/.tachylite/live.js" defer></script>
 </head>
 <body>
 <main>
