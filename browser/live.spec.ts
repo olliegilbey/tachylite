@@ -166,3 +166,31 @@ test("a save that removes the note first never flashes the notice", async ({ pag
   expect(await page.evaluate(() => (window as any).flashed ?? false)).toBe(false);
   expect(errors).toEqual([]);
 });
+
+test("a Mermaid block draws, and only its page loads the script", async ({ page }, info) => {
+  const name = `mermaid-${info.project.name}`;
+  const requested: string[] = [];
+  page.on("request", (r) => {
+    if (r.url().includes("/.tachylite/mermaid.js")) requested.push(r.url());
+  });
+  note(name, "# Plain\n\nno diagram yet\n");
+  await open(page, name, "no diagram yet");
+  expect(requested).toEqual([]);
+  note(name, "# Drawn\n\n```mermaid\ngraph TD\nA-->B\n```\n");
+  await expect(page.locator("main pre.mermaid svg")).toBeVisible();
+  expect(requested.length).toBe(1);
+  // A second push redraws from the source, with the script already loaded.
+  note(name, "# Drawn again\n\n```mermaid\ngraph TD\nC-->D\n```\n");
+  await expect(page.locator("main h1")).toHaveText("Drawn again");
+  await expect(page.locator("main pre.mermaid svg")).toBeVisible();
+  expect(requested.length).toBe(1);
+  expect(errors).toEqual([]);
+});
+
+test("a page with a Mermaid block draws on first load", async ({ page }, info) => {
+  const name = `mermaid-load-${info.project.name}`;
+  note(name, "# Loaded\n\n```mermaid\ngraph LR\nX-->Y\n```\n");
+  await open(page, name, "Loaded");
+  await expect(page.locator("main pre.mermaid svg")).toBeVisible();
+  expect(errors).toEqual([]);
+});

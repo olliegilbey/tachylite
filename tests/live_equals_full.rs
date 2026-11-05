@@ -21,7 +21,7 @@ const PATHS: [&str; 10] = [
     "d/e/m.md",
     ".h.md",
 ];
-const CONTENTS: [&str; 7] = [
+const CONTENTS: [&str; 10] = [
     "# one",
     "two *b*",
     "- [ ] three",
@@ -29,6 +29,9 @@ const CONTENTS: [&str; 7] = [
     "[[d/n]] and [[../x]]",
     "[[n]]",
     "[[m]] [[y]] [[p.png]]",
+    "---\naliases: [n, q]\ntitle: T1\n---\n[[q]]",
+    "---\naliases: m\n---\n[[a]]",
+    "---\ntitle: T2\n---\n[[q]] [[m]]",
 ];
 
 #[derive(Debug, Clone)]

@@ -217,3 +217,70 @@ fn a_link_to_a_folder_is_missing() {
         );
     }
 }
+
+fn with_alias(paths: &[&str], aliases: &[(&str, &[&str])]) -> Index {
+    let mut index = Index::new(paths.iter().copied());
+    for (path, names) in aliases {
+        let names: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+        index.set_aliases(path, &names);
+    }
+    index
+}
+
+#[test]
+fn alias_resolves_bare_name() {
+    let index = with_alias(&["people/Jane Doe.md"], &[("people/Jane Doe.md", &["JD"])]);
+    assert_eq!(resolve(&index, "a.md", "jd"), found("people/Jane Doe.md"));
+    assert_eq!(
+        resolve(&index, "a.md", "JD.md"),
+        found("people/Jane Doe.md")
+    );
+    assert_eq!(index.aliases("people/Jane Doe.md"), ["JD"]);
+}
+
+#[test]
+fn basename_beats_alias() {
+    let index = with_alias(
+        &["people/Jane Doe.md", "jd.md"],
+        &[("people/Jane Doe.md", &["JD"])],
+    );
+    assert_eq!(resolve(&index, "a.md", "JD"), found("jd.md"));
+}
+
+#[test]
+fn alias_needs_bare_name() {
+    let index = with_alias(&["people/Jane Doe.md"], &[("people/Jane Doe.md", &["JD"])]);
+    assert_eq!(resolve(&index, "a.md", "people/JD"), Resolved::Missing);
+    assert_eq!(resolve(&index, "a.md", "./JD"), Resolved::Missing);
+}
+
+#[test]
+fn alias_tie_is_ambiguous() {
+    let index = with_alias(
+        &["x/a.md", "y/b.md"],
+        &[("x/a.md", &["same"]), ("y/b.md", &["Same"])],
+    );
+    assert_eq!(resolve(&index, "c.md", "same"), Resolved::Ambiguous(2));
+}
+
+#[test]
+fn nearest_alias_wins() {
+    let index = with_alias(
+        &["x/a.md", "y/b.md"],
+        &[("x/a.md", &["same"]), ("y/b.md", &["same"])],
+    );
+    assert_eq!(resolve(&index, "y/c.md", "same"), found("y/b.md"));
+}
+
+#[test]
+fn replacing_and_removing_aliases() {
+    let mut index = with_alias(&["a.md"], &[("a.md", &["one"])]);
+    index.set_aliases("a.md", &["two".to_string()]);
+    assert_eq!(resolve(&index, "c.md", "one"), Resolved::Missing);
+    assert_eq!(resolve(&index, "c.md", "two"), found("a.md"));
+    assert_eq!(index.alias_bucket("two").len(), 1);
+    index.remove("a.md");
+    assert_eq!(resolve(&index, "c.md", "two"), Resolved::Missing);
+    assert!(index.alias_bucket("two").is_empty());
+    assert!(index.aliases("a.md").is_empty());
+}

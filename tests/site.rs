@@ -281,6 +281,33 @@ fn link_adds_backlink() {
 }
 
 #[test]
+fn title_names_page_and_backlinks() {
+    let mut mem = Mem::with(&[
+        ("a.md", "---\ntitle: First <A>\n---\n[[b]]"),
+        ("b.md", "# B"),
+    ]);
+    let (_, delta) = synced(&mut mem, Exclude::default());
+    assert!(html(&delta, "a").contains("<title>First &lt;A&gt;</title>"));
+    assert!(html(&delta, "b").contains("<title>b</title>"));
+    assert!(html(&delta, "b").contains("<li><a href=\"/a\">First &lt;A&gt;</a></li>"));
+}
+
+#[test]
+fn retitled_note_updates_backlink_text() {
+    let mut mem = Mem::with(&[("a.md", "---\ntitle: One\n---\n[[b]]"), ("b.md", "# B")]);
+    let (mut site, _) = synced(&mut mem, Exclude::default());
+    mem.0
+        .insert("a.md".into(), b"---\ntitle: Two\n---\n[[b]]".to_vec());
+    let delta = site.apply(vec![touch("a.md")], &mut mem);
+    assert_eq!(pushed(&delta), ["a", "b"]);
+    assert!(html(&delta, "b").contains("<li><a href=\"/a\">Two</a></li>"));
+    // Dropping the title falls back to the file name.
+    mem.0.insert("a.md".into(), b"[[b]]".to_vec());
+    let delta = site.apply(vec![touch("a.md")], &mut mem);
+    assert!(html(&delta, "b").contains("<li><a href=\"/a\">a</a></li>"));
+}
+
+#[test]
 fn deleting_the_linker_removes_the_backlink() {
     let mut mem = Mem::with(&[("a.md", "[[b]]"), ("b.md", "# B")]);
     let (mut site, first) = synced(&mut mem, Exclude::default());
@@ -350,6 +377,64 @@ fn excluded_note_has_no_backlink_and_breaks_links() {
 }
 
 #[test]
+fn adding_alias_fixes_broken_link() {
+    let mut mem = Mem::with(&[("a.md", "[[JD]]"), ("p/jane.md", "# Jane")]);
+    let (mut site, first) = synced(&mut mem, Exclude::default());
+    assert_eq!(first.broken, [broken("a.md", "JD", 0)]);
+    mem.0.insert(
+        "p/jane.md".into(),
+        b"---\naliases: [jd]\n---\n# Jane".to_vec(),
+    );
+    let delta = site.apply(vec![touch("p/jane.md")], &mut mem);
+    assert_eq!(pushed(&delta), ["a", "p/jane"]);
+    assert!(html(&delta, "a").contains("<a href=\"/p/jane\">JD</a>"));
+    assert!(html(&delta, "p/jane").contains("<li><a href=\"/a\">a</a></li>"));
+    assert!(delta.broken.is_empty());
+}
+
+#[test]
+fn removing_alias_breaks_link() {
+    let mut mem = Mem::with(&[("a.md", "[[JD]]"), ("p/jane.md", "---\naliases: JD\n---\n")]);
+    let (mut site, first) = synced(&mut mem, Exclude::default());
+    assert!(html(&first, "a").contains("<a href=\"/p/jane\">JD</a>"));
+    mem.0.insert("p/jane.md".into(), b"# Jane".to_vec());
+    let delta = site.apply(vec![touch("p/jane.md")], &mut mem);
+    assert_eq!(pushed(&delta), ["a", "p/jane"]);
+    assert!(html(&delta, "a").contains("<a class=\"broken-link\">JD</a>"));
+    assert!(!html(&delta, "p/jane").contains("backlinks"));
+}
+
+#[test]
+fn deleting_aliased_note_breaks_link() {
+    let mut mem = Mem::with(&[("a.md", "[[JD]]"), ("p/jane.md", "---\naliases: JD\n---\n")]);
+    let (mut site, _) = synced(&mut mem, Exclude::default());
+    mem.0.remove("p/jane.md");
+    let delta = site.apply(vec![touch("p/jane.md")], &mut mem);
+    assert!(html(&delta, "a").contains("<a class=\"broken-link\">JD</a>"));
+}
+
+#[test]
+fn new_file_named_like_alias_takes_the_link() {
+    let mut mem = Mem::with(&[("a.md", "[[JD]]"), ("p/jane.md", "---\naliases: JD\n---\n")]);
+    let (mut site, _) = synced(&mut mem, Exclude::default());
+    mem.0.insert("q/jd.md".into(), b"# other".to_vec());
+    let delta = site.apply(vec![touch("q/jd.md")], &mut mem);
+    assert_eq!(pushed(&delta), ["a", "p/jane", "q/jd"]);
+    assert!(html(&delta, "a").contains("<a href=\"/q/jd\">JD</a>"));
+    assert!(!html(&delta, "p/jane").contains("backlinks"));
+}
+
+#[test]
+fn excluded_note_alias_does_not_resolve() {
+    let mut mem = Mem::with(&[
+        ("a.md", "[[JD]]"),
+        ("private/jane.md", "---\naliases: JD\n---\n"),
+    ]);
+    let (_, delta) = synced(&mut mem, Exclude::new(&["private".to_string()]).unwrap());
+    assert!(html(&delta, "a").contains("<a class=\"broken-link\">JD</a>"));
+}
+
+#[test]
 fn unchanged_backlinks_render_nothing() {
     let mut mem = Mem::with(&[("a.md", "[[b]] one"), ("b.md", "# B")]);
     let (mut site, _) = synced(&mut mem, Exclude::default());
@@ -370,7 +455,7 @@ const PATHS: [&str; 10] = [
     "d/e/m.md",
     ".h.md",
 ];
-const CONTENTS: [&str; 7] = [
+const CONTENTS: [&str; 10] = [
     "# one",
     "two *b*",
     "- [ ] three",
@@ -378,6 +463,9 @@ const CONTENTS: [&str; 7] = [
     "[[d/n]] and [[../x]]",
     "[[n]]",
     "[[m]] [[y]] [[p.png]]",
+    "---\naliases: [n, q]\ntitle: T1\n---\n[[q]]",
+    "---\naliases: m\n---\n[[a]]",
+    "---\ntitle: T2\n---\n[[q]] [[m]]",
 ];
 
 /// A source where every file is mid-save.

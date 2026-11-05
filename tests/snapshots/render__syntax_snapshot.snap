@@ -1,0 +1,55 @@
+---
+source: tests/render.rs
+expression: "built(\"notes/syntax\")"
+---
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="tachylite-version" content="352a634cc4e23f88">
+<title>Syntax tour</title>
+<script src="/.tachylite/live.js" defer></script>
+</head>
+<body>
+<main>
+<dl class="properties"><dt>title</dt><dd>Syntax tour</dd><dt>aliases</dt><dd>tour</dd><dt>tags</dt><dd><a class="tag" href="/.tachylite/tags/sample">#sample</a></dd></dl>
+<h1 id="syntax-tour-heading">Syntax <a class="tag" href="/.tachylite/tags/tour-heading">#tour-heading</a></h1>
+<div class="callout" data-callout="warning" data-callout-fold="none">
+<div class="callout-title">
+Mind the <em>step</em>
+</div>
+<div class="callout-content">
+<p>A callout with a title.</p>
+</div>
+</div>
+<div class="callout" data-callout="tip" data-callout-fold="collapsed">
+<div class="callout-title">
+Folded
+</div>
+<div class="callout-content">
+<p>Hidden until opened.</p>
+</div>
+</div>
+<div class="callout" data-callout="custom-kind" data-callout-fold="none">
+<div class="callout-title">Custom kind</div>
+<div class="callout-content">
+<p>A custom type.</p>
+</div>
+</div>
+<p>Some <mark>highlighted</mark> text, a  comment, and tags <a class="tag" href="/.tachylite/tags/garden">#garden</a> and <a class="tag" href="/.tachylite/tags/plants/fern">#plants/fern</a>.</p>
+<p>A footnote.<sup class="footnote-ref"><a href="#fn-1" id="fnref-1" data-footnote-ref>1</a></sup></p>
+<pre class="mermaid">graph TD
+%% a Mermaid comment stays
+A--&gt;B
+</pre>
+<section class="footnotes" data-footnotes>
+<ol>
+<li id="fn-1">
+<p>The footnote text. <a href="#fnref-1" class="footnote-backref" data-footnote-backref data-footnote-backref-idx="1" aria-label="Back to reference 1">↩</a></p>
+</li>
+</ol>
+</section>
+</main>
+</body>
+</html>

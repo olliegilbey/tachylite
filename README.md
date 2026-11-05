@@ -21,6 +21,17 @@ Tachylite renders the vault into `<out>`, watches it, and serves the site on `ht
 - It never writes to the vault.
 - It needs Linux 5.6 or later.
 
+## What it renders
+
+Notes render close to Obsidian's reading view:
+
+- CommonMark and GitHub tables, task lists, strikethrough, footnotes and autolinks.
+- Frontmatter as a properties block. `title` names the page, and `aliases` work as link targets.
+- `[[wikilinks]]` and Markdown links to notes, resolved the way Obsidian resolves them. Every note lists its backlinks.
+- Callouts, `==highlight==` and `#tags`.
+- Mermaid diagrams, drawn in the browser. The script loads only on a page that has one.
+- `%%comments%%` are never published. When a comment is left open, Tachylite hides everything after it rather than risk showing it.
+
 ## Keep notes private
 
 Put a `tachylite.toml` in the vault root to keep notes out of the site:

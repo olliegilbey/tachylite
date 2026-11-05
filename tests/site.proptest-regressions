@@ -6,3 +6,4 @@
 # everyone who runs the test benefits from these saved cases.
 cc 19daadd96e2c3d8d295105168ced3577e6409f9b7e810e82e256360b2fb4985a # shrinks to ops = [Write(0, 0), Write(6, 0), Write(0, 0), Delete(6)], batch = 1
 cc d307e8da575d98f1a39ea75c1ff48a7a62b7e0f41e6d73403623a62423c2845f # shrinks to ops = [Write(1, 0), Write(0, 0), Delete(1)], batch = 1
+cc 2432d84a1bb92b59fa05f1026ade524843e042e11fc9b8e9da440afb26f70dac # shrinks to ops = [Write(0, 9), Write(2, 0), Write(4, 7)], batch = 1

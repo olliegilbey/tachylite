@@ -268,3 +268,174 @@ fn page_carries_version_and_live_script() {
             .contains("<script src=\"/.tachylite/live.js\" defer></script>")
     );
 }
+
+#[test]
+fn properties_block_lists_every_key() {
+    let body = render_body("welcome.md", &fixture("welcome.md"), &Index::default());
+    assert!(body.html.starts_with(
+        "<dl class=\"properties\"><dt>title</dt><dd>Welcome</dd><dt>tags</dt><dd>\
+         <a class=\"tag\" href=\"/.tachylite/tags/guide\">#guide</a>, \
+         <a class=\"tag\" href=\"/.tachylite/tags/sample\">#sample</a></dd></dl>\n"
+    ));
+    assert!(!body.html.contains("title: Welcome"));
+}
+
+#[test]
+fn property_values_are_escaped() {
+    let body = render_body(
+        "a.md",
+        "---\n\"<k>\": \"a <b> & c\"\nlist: [x, \"<y>\"]\n---\n",
+        &Index::default(),
+    );
+    assert!(body.html.starts_with(
+        "<dl class=\"properties\"><dt>&lt;k&gt;</dt><dd>a &lt;b&gt; &amp; c</dd>\
+         <dt>list</dt><dd>x, &lt;y&gt;</dd></dl>\n"
+    ));
+}
+
+#[test]
+fn property_wikilink_resolves_and_counts_as_target() {
+    let index = Index::new(["people/Jane Doe.md"]);
+    let body = render_body(
+        "a.md",
+        "---\nauthor: \"[[jane doe|Jane]]\"\nup: [[nobody]]\nnot: \"see [[jane doe]]\"\n---\n",
+        &index,
+    );
+    assert!(
+        body.html
+            .contains("<dt>author</dt><dd><a href=\"/people/Jane%20Doe\">Jane</a></dd>")
+    );
+    assert!(
+        body.html
+            .contains("<dt>up</dt><dd><a class=\"broken-link\">nobody</a></dd>")
+    );
+    assert!(body.html.contains("<dt>not</dt><dd>see [[jane doe]]</dd>"));
+    assert_eq!(
+        body.targets.iter().map(|t| &**t).collect::<Vec<_>>(),
+        ["people/Jane Doe.md"]
+    );
+    assert_eq!(
+        body.broken,
+        [Broken {
+            from: "a.md".into(),
+            target: "nobody".into(),
+            matches: 0
+        }]
+    );
+}
+
+#[test]
+fn syntax_snapshot() {
+    insta::assert_snapshot!(built("notes/syntax"));
+}
+
+fn plain(markdown: &str) -> String {
+    render_body("a.md", markdown, &Index::default()).html
+}
+
+#[test]
+fn tags_render_as_links() {
+    let html = plain("x #a/b-c, and #Über #t/ ok\n\n# Head #h");
+    for want in [
+        "x <a class=\"tag\" href=\"/.tachylite/tags/a/b-c\">#a/b-c</a>, and ",
+        "<a class=\"tag\" href=\"/.tachylite/tags/%C3%BCber\">#Über</a> ",
+        "<a class=\"tag\" href=\"/.tachylite/tags/t\">#t</a>/ ok",
+        "<h1 id=\"head-h\">Head <a class=\"tag\" href=\"/.tachylite/tags/h\">#h</a></h1>",
+    ] {
+        assert!(html.contains(want), "{want} not in {html}");
+    }
+}
+
+#[test]
+fn not_tags() {
+    let html = plain("C#x #123 `#c` [#l](u) https://e.com/#a (#p) #\n\n```\n#f\n```");
+    assert!(!html.contains("class=\"tag\""), "{html}");
+}
+
+#[test]
+fn callouts_and_highlight() {
+    let html = plain("> [!tip]- Folded\n> body\n\n==mark==");
+    assert!(
+        html.contains(
+            "<div class=\"callout\" data-callout=\"tip\" data-callout-fold=\"collapsed\">"
+        )
+    );
+    assert!(html.contains("<mark>mark</mark>"));
+}
+
+#[test]
+fn stray_comment_hides_to_its_pair() {
+    let html = plain("one %%zebra\nyak%% two\n\nthree %%lynx\n\n- moth\n\nnewt%% four\n\nfive");
+    for gone in ["zebra", "yak", "lynx", "moth", "newt"] {
+        assert!(!html.contains(gone), "{gone} in {html}");
+    }
+    for kept in ["one", "two", "three", "four", "five"] {
+        assert!(html.contains(kept), "{kept} not in {html}");
+    }
+}
+
+#[test]
+fn unclosed_stray_comment_hides_to_end() {
+    let index = Index::new(["b.md"]);
+    let body = render_body("a.md", "one %%zebra [[b]]\n\n# yak\n\n- moth", &index);
+    for gone in ["zebra", "yak", "moth", "<h1"] {
+        assert!(!body.html.contains(gone), "{gone} in {}", body.html);
+    }
+    assert!(body.html.contains("one"));
+    assert!(body.targets.is_empty());
+}
+
+#[test]
+fn comments_in_code_stay() {
+    let html = plain("`%%` and\n\n```\n%%\n```\n\nafter");
+    assert_eq!(html.matches("%%").count(), 2, "{html}");
+    assert!(html.contains("after"));
+}
+
+#[test]
+fn mermaid_fence_renders_pre() {
+    assert_eq!(
+        plain("```mermaid\nA-->B & <C>\n```\n\n```rust\nx\n```"),
+        "<pre class=\"mermaid\">A--&gt;B &amp; &lt;C&gt;\n</pre>\n\
+         <pre><code class=\"language-rust\">x\n</code></pre>\n"
+    );
+}
+
+#[test]
+fn escaped_hash_is_not_a_tag() {
+    let html = plain("\\#notatag and \\\\ #real");
+    assert!(!html.contains("tags/notatag"), "{html}");
+    assert!(html.contains("#notatag"), "{html}");
+    assert!(html.contains("tags/real"), "{html}");
+}
+
+#[test]
+fn comment_wins_over_code_it_holds() {
+    let html = plain("%%\n```\nzebra\n```\n%% after");
+    assert!(!html.contains("zebra"), "{html}");
+    assert!(html.contains("after"), "{html}");
+}
+
+#[test]
+fn comments_in_code_spans_and_fences_in_containers_stay() {
+    let html =
+        plain("a `x %% y` b %%zebra%% c\n\n> ```\n> %% kept\n> ```\n\n- ```\n  %% kept too\n  ```");
+    assert!(!html.contains("zebra"), "{html}");
+    assert!(html.contains("x %% y"), "{html}");
+    assert!(html.contains("%% kept\n"), "{html}");
+    assert!(html.contains("%% kept too"), "{html}");
+}
+
+#[test]
+fn disagreement_on_code_withholds_the_text() {
+    // comrak's code span crosses the line break; the stripper reads spans within a line.
+    let index = Index::new(["b.md"]);
+    let body = render_body("a.md", "`a\nb` %% zebra [[b]] `d`\n", &index);
+    assert!(
+        body.html.contains("class=\"comment-error\""),
+        "{}",
+        body.html
+    );
+    assert!(!body.html.contains("zebra"));
+    assert!(body.targets.is_empty());
+}

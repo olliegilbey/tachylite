@@ -124,6 +124,20 @@ fn serves_live_script() {
 }
 
 #[test]
+fn mermaid_js_is_gzipped() {
+    let d = Dirs::fixture();
+    let server = Server::start(&d.vault(), &d.out());
+    let r = server.get("/.tachylite/mermaid.js");
+    assert_eq!(r.status, 200);
+    assert_eq!(r.header("content-type"), Some("text/javascript"));
+    assert_eq!(r.header("content-encoding"), Some("gzip"));
+    assert_eq!(r.header("cache-control"), Some("no-cache"));
+    assert!(r.header("etag").is_some());
+    let vendored = concat!(env!("CARGO_MANIFEST_DIR"), "/src/vendor/mermaid.tiny.js.gz");
+    assert_eq!(r.body, fs::read(vendored).unwrap());
+}
+
+#[test]
 fn binds_loopback() {
     let d = Dirs::fixture();
     let server = Server::start(&d.vault(), &d.out());
