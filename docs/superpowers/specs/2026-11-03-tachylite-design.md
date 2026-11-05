@@ -79,13 +79,14 @@ The binary serves the files itself, so it controls compression (precompressed Br
 
 - CommonMark plus GFM: tables, task lists, strikethrough, footnotes, autolinks.
 - `comrak` is the expected Markdown crate. It has a wikilinks extension.
-- YAML frontmatter shown as a properties block. `title`, `tags` and `aliases` are used for display and lookup.
+- YAML frontmatter shown as a properties block, every key in file order. `title` names the page and its backlink entries. `tags` render as tag links. A value that is exactly one `[[link]]` renders as a link and counts as a backlink, as in Obsidian.
+  Tachylite reads the YAML subset that Obsidian's Properties support: scalars, flow and block lists, and `|` or `>` block scalars. Any other value, such as a nested map, shows as its raw text. A full YAML crate would be the largest dependency in the binary, for values Obsidian itself does not edit. Frontmatter is the block between a first line of `---` and the next line of `---`.
 - Wikilinks: `[[note]]`, `[[note|label]]`, `[[note#heading]]`. Obsidian's "new link format" setting writes three link forms, and a vault often mixes them. All must resolve: relative to the linking note (`[[../people/jane-doe]]`), from the vault root (`[[people/jane-doe]]`), and bare basename (`[[jane-doe]]`). Resolution order:
   1. A path starting `./` or `../` resolves relative to the linking note.
   2. A path with a `/` resolves from the vault root.
   3. A bare name matches by basename. When several files share it (`README` in many folders), the nearest one wins: same folder, then the fewest folder steps away. A tie is a broken link.
-  4. Then aliases.
-  Matching ignores case, and a note's `.md` is optional. Any other file needs its extension: `[[route.html]]`, `[[dot.png]]`. A link whose last segment names a folder (`[[people/..]]`) is missing. Aliases (step 4) need frontmatter, so they resolve from slice 4.
+  4. Then aliases, for a bare name only. The nearest note with the alias wins, and a tie is a broken link.
+  Matching ignores case, and a note's `.md` is optional. Any other file needs its extension: `[[route.html]]`, `[[dot.png]]`. A link whose last segment names a folder (`[[people/..]]`) is missing.
   A Markdown link with no URL scheme, such as `[Jane](people/Jane%20Doe.md)`, is percent-decoded and resolved the same way. A link with a scheme, or one that starts with `/` or `#`, stays as written.
   `[[note#Heading]]` links to the heading's id, a GitHub-style slug. Tachylite writes the ids itself, without comrak's anchor link per heading.
   An unresolved link renders as `<a class="broken-link">label</a>`, with no `href`. The build logs every broken and ambiguous link: `broken link in <note>: <target>`, or `ambiguous link in <note>: <target> matches <n> files`.
@@ -96,11 +97,11 @@ The binary serves the files itself, so it controls compression (precompressed Br
 - Embeds: `![[image.png]]` shows an image. `![[note]]` transcludes a note, depth limited. `![[page.html]]` embeds a sandboxed iframe.
 - Links to HTML: `[[page.html]]` and `[label](page.html)` open the page full screen, scripts running. The page runs exactly as written, with no Tachylite shell around it. The browser's back button returns to the note.
 - Obsidian callouts (`> [!note]`) and `==highlight==`.
-- `%%comments%%` are stripped and never published.
+- `%%comments%%` are stripped and never published. Obsidian does not specify every case, so Tachylite fails closed. A `%%` that does not close on its own line hides everything up to the next unpaired `%%`, or to the end of the note. This covers a comment that wraps a line or a block, and one that never closes. A `%%` inside code stays. A link inside a comment makes no backlink.
 - No math rendering in v1; LaTeX is a later version. `$` is a literal character: notes are full of prices and shell snippets.
 - Dataview, block references and image sizing are out of scope for v1.
-- Tags: `#tag` in the body and frontmatter `tags`. Each tag gets an index page at `/.tachylite/tags/<tag>`.
-- Mermaid blocks render on the client. The Mermaid script loads only on pages that contain a Mermaid block.
+- Tags: `#tag` in the body and frontmatter `tags`. A body tag starts a text run or follows whitespace. It holds letters, digits, `_`, `-` and `/`, with at least one non-digit. Each tag gets an index page at `/.tachylite/tags/<tag>`, keyed by the lowercased tag.
+- Mermaid blocks render on the client. The Mermaid script loads only on pages that contain a Mermaid block. It is Mermaid's official tiny build, embedded gzipped: about 760 KB, against 1.6 MB for the full build. It has every diagram type except mindmap and architecture, and no KaTeX.
 - Backlinks list at the foot of each note, in `<section class="backlinks">`, one entry per linking note, sorted by path. A note's links to itself do not count. When a link changes, the pages that depend on it re-render in the same batch: the linker, the old and new targets, and any note whose link now resolves differently.
 
 ### Rich content and security
