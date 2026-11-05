@@ -1,5 +1,5 @@
-//! Link resolution in the spec's order: relative, from the root, then the nearest bare name.
-//! Matching ignores case, and a note's `.md` is optional.
+//! Link resolution in the spec's order: relative, from the root, the nearest bare name, then
+//! the nearest alias. Matching ignores case, and a note's `.md` is optional.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -10,6 +10,10 @@ use std::sync::Arc;
 pub struct Index {
     by_path: HashMap<String, Vec<Arc<str>>>,
     by_key: HashMap<String, Vec<Arc<str>>>,
+    /// The paths with each alias, by the alias's key.
+    by_alias: HashMap<String, Vec<Arc<str>>>,
+    /// Each path's aliases, as written.
+    aliases: HashMap<Arc<str>, Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +46,7 @@ impl Index {
     }
 
     pub fn remove(&mut self, path: &str) {
+        self.set_aliases(path, &[]);
         drop_from(&mut self.by_path, fold(path), path);
         drop_from(&mut self.by_key, key(path), path);
     }
@@ -53,6 +58,34 @@ impl Index {
             .iter()
             .find(|p| ***p == *path)
             .cloned()
+    }
+
+    /// Replaces a published path's aliases. A path not in the index takes none.
+    pub fn set_aliases(&mut self, path: &str, aliases: &[String]) {
+        let Some(shared) = self.get(path) else {
+            return;
+        };
+        for old in self.aliases.remove(path).unwrap_or_default() {
+            drop_from(&mut self.by_alias, fold(&old), path);
+        }
+        for alias in aliases {
+            let owners = self.by_alias.entry(fold(alias)).or_default();
+            if !owners.iter().any(|p| **p == *path) {
+                owners.push(Arc::clone(&shared));
+            }
+        }
+        if !aliases.is_empty() {
+            self.aliases.insert(shared, aliases.to_vec());
+        }
+    }
+
+    pub fn aliases(&self, path: &str) -> &[String] {
+        self.aliases.get(path).map_or(&[], Vec::as_slice)
+    }
+
+    /// The published paths with an alias whose key is `key`.
+    pub fn alias_bucket(&self, key: &str) -> &[Arc<str>] {
+        self.by_alias.get(key).map_or(&[], Vec::as_slice)
     }
 
     /// The published paths whose key is `key`.
@@ -109,7 +142,10 @@ pub fn resolve(index: &Index, from: &str, target: &str) -> Resolved {
             Some(many) => Resolved::Ambiguous(many.len()),
         };
     }
-    let candidates = index.bucket(&key(target));
+    let mut candidates = index.bucket(&key(target));
+    if candidates.is_empty() {
+        candidates = index.alias_bucket(&key(target));
+    }
     match candidates {
         [] => return Resolved::Missing,
         [one] => return Resolved::Found(Arc::clone(one)),

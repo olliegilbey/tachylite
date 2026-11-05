@@ -364,10 +364,25 @@ impl Site {
         let removed: Vec<String> = self.winners.difference(won).cloned().collect();
         let added: Vec<String> = won.difference(&self.winners).cloned().collect();
 
+        // A link can resolve differently once a path or an alias with its key appears or
+        // vanishes. Its note links to a path in that key's buckets now, or it is unresolved.
+        let mut keys: HashSet<String> = removed.iter().chain(&added).map(|p| key(p)).collect();
+        for path in &removed {
+            keys.extend(self.index.aliases(path).iter().map(|a| key(a)));
+            self.titles.remove(path);
+        }
+
         // A retitled note changes the backlink text on every page it links to.
         let mut changed = BTreeSet::new();
+        let mut aliased = Vec::new();
         for (path, bytes) in fresh.iter().filter(|(p, _)| won.contains(*p)) {
             let meta = front::meta(&String::from_utf8_lossy(bytes));
+            let old: HashSet<String> = self.index.aliases(path).iter().map(|a| key(a)).collect();
+            let new: HashSet<String> = meta.aliases.iter().map(|a| key(a)).collect();
+            keys.extend(old.symmetric_difference(&new).cloned());
+            if self.index.aliases(path) != meta.aliases.as_slice() {
+                aliased.push((path.clone(), meta.aliases));
+            }
             if self.titles.get(path) == meta.title.as_ref() {
                 continue;
             }
@@ -379,17 +394,16 @@ impl Site {
                 changed.extend(links.targets.iter().cloned());
             }
         }
-        for path in &removed {
-            self.titles.remove(path);
-        }
 
-        // A link can resolve differently once a path with its key appears or vanishes. Its
-        // note links to a path in that key's bucket now, or the link is unresolved.
         let mut first: BTreeSet<String> =
             fresh.keys().filter(|p| won.contains(*p)).cloned().collect();
-        let keys: HashSet<String> = removed.iter().chain(&added).map(|p| key(p)).collect();
         for k in &keys {
-            for path in self.index.bucket(k) {
+            let owners = self
+                .index
+                .bucket(k)
+                .iter()
+                .chain(self.index.alias_bucket(k));
+            for path in owners {
                 first.extend(
                     self.inbound
                         .get(path)
@@ -417,6 +431,9 @@ impl Site {
         }
         for path in &added {
             self.index.insert(path);
+        }
+        for (path, aliases) in aliased {
+            self.index.set_aliases(&path, &aliases);
         }
 
         let mut bodies = HashMap::new();
