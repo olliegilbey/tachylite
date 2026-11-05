@@ -4,7 +4,7 @@ mod common;
 
 use std::fs;
 
-use common::{Dirs, Server, get};
+use common::{Dirs, Server, get, version_of};
 
 #[test]
 fn serves_note_at_its_vault_path() {
@@ -92,6 +92,26 @@ fn etag_gives_304() {
     assert!(again.body.is_empty());
     let other = get(server.addr, "/welcome", &[("If-None-Match", "W/\"0-0\"")]);
     assert_eq!(other.status, 200);
+}
+
+#[test]
+fn same_length_edit_in_one_mtime_tick_changes_the_etag() {
+    let d = Dirs::empty();
+    fs::write(d.vault().join("n.md"), "# cat").unwrap();
+    let server = Server::start(&d.vault(), &d.out());
+    let page = d.out().join("pages/n.html");
+    let mtime = fs::metadata(&page).unwrap().modified().unwrap();
+    let before = server.get("/n");
+    let etag = before.header("etag").unwrap().to_string();
+    let mut events = server.subscribe("/n", &version_of(&before.text()), None);
+    fs::write(d.vault().join("n.md"), "# dog").unwrap();
+    events.expect("page");
+    // Same length, and the same mtime: a coarse clock tick that held both saves.
+    let file = fs::File::options().write(true).open(&page).unwrap();
+    file.set_modified(mtime).unwrap();
+    let after = get(server.addr, "/n", &[("If-None-Match", &etag)]);
+    assert_eq!(after.status, 200, "a stale page was revalidated");
+    assert!(after.text().contains("<h1>dog</h1>"));
 }
 
 #[test]

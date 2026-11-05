@@ -207,10 +207,28 @@ fn last_event_id_overrides_v() {
 
 #[test]
 fn reserved_characters_get_their_own_pushes() {
-    let (d, server) = with_notes(&[("C# notes.md", "# c"), ("50% off.md", "# p")]);
-    let mut c = server.subscribe("/C%23%20notes", &version(&server, "/C%23%20notes"), None);
-    fs::write(d.vault().join("C# notes.md"), "# sharp").unwrap();
-    assert!(c.expect("page").data.contains("<h1>sharp</h1>"));
+    // Each name with the pathname a browser shows for it.
+    let names = [
+        ("C# notes", "/C%23%20notes"),
+        ("50% off", "/50%25%20off"),
+        ("a+b", "/a+b"),
+        ("café", "/caf%C3%A9"),
+    ];
+    let notes: Vec<(String, String)> = names
+        .iter()
+        .map(|(name, _)| (format!("{name}.md"), "# before".to_string()))
+        .collect();
+    let notes: Vec<(&str, &str)> = notes
+        .iter()
+        .map(|(p, b)| (p.as_str(), b.as_str()))
+        .collect();
+    let (d, server) = with_notes(&notes);
+    for (i, (name, url)) in names.iter().enumerate() {
+        let mut events = server.subscribe(url, &version(&server, url), None);
+        fs::write(d.vault().join(format!("{name}.md")), format!("# edit {i}")).unwrap();
+        let event = events.expect("page");
+        assert!(event.data.contains(&format!("<h1>edit {i}</h1>")), "{name}");
+    }
 }
 
 #[test]
@@ -293,4 +311,49 @@ fn delete_then_create_saves_never_push_half_a_note() {
             break;
         }
     }
+}
+
+/// Sends a signal to the server's own child, by the PID captured at spawn.
+fn signal(server: &Server, sig: &str) {
+    let pid = server.child.id().to_string();
+    assert!(
+        Command::new("kill")
+            .args([sig, &pid])
+            .status()
+            .unwrap()
+            .success()
+    );
+}
+
+fn state(server: &Server) -> char {
+    let stat = fs::read_to_string(format!("/proc/{}/stat", server.child.id())).unwrap();
+    // The state follows the parenthesised command name.
+    stat.rsplit_once(") ").unwrap().1.chars().next().unwrap()
+}
+
+#[test]
+fn queue_overflow_resyncs_the_vault() {
+    let (d, server) = with_notes(&[("a.md", "# a")]);
+    let mut gone = server.subscribe("/a", &version(&server, "/a"), None);
+    let mut late = server.subscribe("/z", "", None);
+    signal(&server, "-STOP");
+    while state(&server) != 'T' {
+        std::thread::yield_now();
+    }
+    // Each new note queues CREATE and CLOSE_WRITE, so this overflows the queue.
+    let limit: usize = fs::read_to_string("/proc/sys/fs/inotify/max_queued_events")
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    for i in 0..limit / 2 + 100 {
+        fs::write(d.vault().join(format!("n{i}.md")), "# n").unwrap();
+    }
+    // These events come after the overflow, so the kernel drops them.
+    fs::remove_file(d.vault().join("a.md")).unwrap();
+    fs::write(d.vault().join("z.md"), "# late").unwrap();
+    signal(&server, "-CONT");
+    gone.expect("gone");
+    assert!(late.expect("page").data.contains("<h1>late</h1>"));
+    assert_eq!(server.get(&format!("/n{}", limit / 2)).status, 200);
 }

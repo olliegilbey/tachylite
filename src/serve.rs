@@ -4,11 +4,11 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::fs;
 use std::future::IntoFuture;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::pin::pin;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::UNIX_EPOCH;
 
 use axum::Router;
 use axum::body::Body;
@@ -104,9 +104,11 @@ fn status(code: StatusCode) -> Response {
     (code, code.canonical_reason().unwrap_or_default()).into_response()
 }
 
-fn etag(meta: &fs::Metadata) -> Option<String> {
-    let mtime = meta.modified().ok()?.duration_since(UNIX_EPOCH).ok()?;
-    Some(format!("W/\"{:x}-{:x}\"", mtime.as_nanos(), meta.len()))
+/// A hash of the bytes, so two saves within one mtime tick still differ.
+fn etag(bytes: &[u8]) -> String {
+    let mut hasher = DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    format!("W/\"{:x}-{:016x}\"", bytes.len(), hasher.finish())
 }
 
 fn matches(headers: &HeaderMap, tag: &str) -> bool {
@@ -137,13 +139,13 @@ async fn file(
         return status(StatusCode::NOT_FOUND);
     };
     // Small files from the page cache; slice 6 owns streaming, compression and caching.
-    let (meta, bytes) = match fs::metadata(&path).and_then(|m| Ok((m, fs::read(&path)?))) {
-        Ok(found) => found,
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return status(StatusCode::NOT_FOUND),
         Err(_) => return status(StatusCode::INTERNAL_SERVER_ERROR),
     };
-    let tag = etag(&meta).unwrap_or_default();
-    let mut response = if !tag.is_empty() && matches(&headers, &tag) {
+    let tag = etag(&bytes);
+    let mut response = if matches(&headers, &tag) {
         status(StatusCode::NOT_MODIFIED)
     } else {
         let mut r = Response::new(Body::from(bytes));
