@@ -6,6 +6,7 @@ use std::fs;
 use std::mem::MaybeUninit;
 use std::os::fd::OwnedFd;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -176,12 +177,20 @@ impl Watcher {
                         entries: Vec::new(),
                     });
                 }
-            } else {
+            } else if !(event.flags.contains(ReadFlags::CREATE) && self.saves_later(&path)) {
                 touched.insert(path);
             }
         }
         changes.extend(touched.into_iter().map(Change::Touch));
         Ok(changes)
+    }
+
+    /// A new regular file with one link is still being written, and its `CLOSE_WRITE`
+    /// follows. Reading it now would publish half a note. A symlink, FIFO or hard link
+    /// gets no `CLOSE_WRITE`, so its `CREATE` is the only event.
+    fn saves_later(&self, path: &str) -> bool {
+        fs::symlink_metadata(self.vault.root().join(path))
+            .is_ok_and(|m| m.file_type().is_file() && m.nlink() == 1)
     }
 
     fn sync(&self, under: &str) -> Result<Change, Error> {

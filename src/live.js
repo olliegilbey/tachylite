@@ -13,5 +13,11 @@
     document.title = next.title;
     meta.content = e.lastEventId;
   });
-  events.addEventListener("gone", () => location.reload());
+  // Some editors save by removing the note first, so the stream stays open: a later
+  // `page` event brings the note back.
+  events.addEventListener("gone", () => {
+    const notice = document.createElement("p");
+    notice.textContent = "This note was deleted or moved.";
+    document.querySelector("main")?.replaceChildren(notice);
+  });
 })();

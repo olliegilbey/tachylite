@@ -65,7 +65,7 @@ One binary, `tachylite`. It runs as a long-lived process:
 
 1. Full build on start.
 2. Watch the vault with inotify, through `rustix`: one watch per published folder. A new folder gets its watches, then a scan.
-3. On change: read every queued event in one go and apply that batch once. No timer: a debounce interval would spend the push budget. A save is `CLOSE_WRITE` or `MOVED_TO`, never `MODIFY`, so an edit is read once, after it is saved. `DELETE` and `MOVED_FROM` mark a path to re-check. So does `CREATE`, which catches hard links and symlinks; a new file read early is read again at its `CLOSE_WRITE`. The batch re-renders the changed notes, updates the link index, re-renders pages whose backlinks changed, and updates the manifest.
+3. On change: read every queued event in one go and apply that batch once. No timer: a debounce interval would spend the push budget. A save is `CLOSE_WRITE` or `MOVED_TO`, never `MODIFY`, so an edit is read once, after it is saved. `DELETE` and `MOVED_FROM` mark a path to re-check. `CREATE` does too, but only for a file that gets no `CLOSE_WRITE`: a symlink, a FIFO or a hard link. A new regular file waits for its `CLOSE_WRITE`, so no page is published from half a note. The batch re-renders the changed notes, updates the link index, re-renders pages whose backlinks changed, and updates the manifest.
 4. Push the new HTML of each changed page to subscribed clients over SSE.
 5. Serve the output directory and the SSE endpoint over HTTP on `127.0.0.1`.
 
@@ -73,7 +73,7 @@ The binary serves the files itself, so it controls compression (precompressed Br
 
 `tachylite build <vault> <out>` runs a single build and exits, for tests and CI.
 
-**Live protocol.** Each note page carries `<meta name="tachylite-version">`, a hash of the page, and a script that opens `/.tachylite/events?page=<pathname>&v=<version>`. The server sends `event: page` with `id: <version>` and the full new HTML, or `event: gone` when the page is removed. On connect and on every reconnect, the server compares the client's version with the current one and sends the current page if they differ. On a reconnect the browser's `Last-Event-ID` gives the client's version and overrides `v`. So a phone that slept catches up, and the server keeps no history. The client swaps `<main>`, the title and the version. On `gone` it reloads, which shows the 404.
+**Live protocol.** Each note page carries `<meta name="tachylite-version">`, a hash of the page, and a script that opens `/.tachylite/events?page=<pathname>&v=<version>`. The server sends `event: page` with `id: <version>` and the full new HTML, or `event: gone` when the page is removed. On connect and on every reconnect, the server compares the client's version with the current one and sends the current page if they differ. On a reconnect the browser's `Last-Event-ID` gives the client's version and overrides `v`. So a phone that slept catches up, and the server keeps no history. The client swaps `<main>`, the title and the version. On `gone` it shows a notice in `<main>` and keeps listening. Vim and `git checkout` save by removing the note and then writing it again, so the next `page` event restores it with no reload.
 
 ### Rendering
 

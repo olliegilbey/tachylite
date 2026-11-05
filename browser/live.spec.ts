@@ -121,11 +121,16 @@ test("catches up after a lost connection", async ({ page }, info) => {
   expect(errors.filter((e) => !cut.test(e))).toEqual([]);
 });
 
-test("gone reloads to 404", async ({ page }, info) => {
+// Vim and git save by removing the note, then writing it again. The page must survive that.
+test("a deleted note shows a notice and comes back", async ({ page }, info) => {
   const name = `gone-${info.project.name}`;
   note(name, "# Gone\n\nsoon gone\n");
   await open(page, name, "soon gone");
-  const reload = page.waitForEvent("response", (r) => r.url().endsWith(`/${name}`));
+  await page.evaluate(() => ((window as any).stayed = true));
   rmSync(join(vault, `${name}.md`));
-  expect((await reload).status()).toBe(404);
+  await expect(page.locator("main")).toContainText("deleted");
+  note(name, "# Gone\n\nback again\n");
+  await expect(page.locator("main")).toContainText("back again");
+  expect(await page.evaluate(() => (window as any).stayed)).toBe(true);
+  expect(errors).toEqual([]);
 });

@@ -220,3 +220,32 @@ fn vault_root_removed_exits_with_error() {
     let status = server.child.wait().unwrap();
     assert_eq!(status.code(), Some(1));
 }
+
+#[test]
+fn half_written_new_note_is_not_pushed() {
+    use std::io::Write;
+    let (d, server) = with_notes(&[("w.md", "# w"), ("bar.md", "# b0")]);
+    let mut events = server.subscribe("/w", &version(&server, "/w"), None);
+    let mut barrier = server.subscribe("/bar", &version(&server, "/bar"), None);
+    // Vim's default save: rename to a backup, then create, write and close.
+    fs::rename(d.vault().join("w.md"), d.vault().join("w.md~")).unwrap();
+    events.expect("gone");
+    let mut file = fs::File::create(d.vault().join("w.md")).unwrap();
+    file.write_all(b"# half").unwrap();
+    // The barrier's push means the watcher has handled the CREATE before it.
+    fs::write(d.vault().join("bar.md"), "# b1").unwrap();
+    barrier.expect("page");
+    file.write_all(b"\n\nrest of the note").unwrap();
+    drop(file);
+    let event = events.expect("page");
+    assert!(event.data.contains("rest of the note"), "{}", event.data);
+}
+
+#[test]
+fn hard_link_is_published() {
+    let (d, server) = with_notes(&[("a.md", "# linked")]);
+    let mut events = server.subscribe("/b", "", None);
+    fs::hard_link(d.vault().join("a.md"), d.vault().join("b.md")).unwrap();
+    let event = events.expect("page");
+    assert!(event.data.contains("<h1>linked</h1>"));
+}
