@@ -63,9 +63,9 @@ pub fn build(vault: &Path, out: &Path) -> Result<Summary, Error> {
         match entry.kind {
             Kind::Note => match dir.read(&entry.path) {
                 Ok(bytes) => {
-                    let html =
+                    let page =
                         render_note(note_title(&entry.path), &String::from_utf8_lossy(&bytes));
-                    write_file(&page_path(&out, &entry.path), html.as_bytes())?;
+                    write_file(&page_path(&out, &entry.path), page.html.as_bytes())?;
                     summary.notes += 1;
                 }
                 Err(ReadError::Missing) => {}
