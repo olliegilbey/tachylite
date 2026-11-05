@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::os::fd::OwnedFd;
@@ -74,23 +73,6 @@ pub fn scan(vault: &Path) -> Result<Scan, Error> {
     };
     walk(vault, Path::new(""), &mut scan)?;
     scan.entries.sort_by(|a, b| a.path.cmp(&b.path));
-
-    let mut seen = HashSet::new();
-    let mut kept = Vec::with_capacity(scan.entries.len());
-    for entry in scan.entries {
-        if entry.kind == Kind::Note {
-            let stem = &entry.path[..entry.path.len() - ".md".len()];
-            if !seen.insert(stem.to_string()) {
-                scan.skipped.push(Skipped {
-                    path: PathBuf::from(&entry.path),
-                    reason: SkipReason::UrlClash,
-                });
-                continue;
-            }
-        }
-        kept.push(entry);
-    }
-    scan.entries = kept;
     scan.skipped.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(scan)
 }

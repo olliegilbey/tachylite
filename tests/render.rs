@@ -70,8 +70,14 @@ fn note_title_is_file_stem() {
 
 #[test]
 fn version_changes_with_content() {
-    assert_ne!(render_note("a", "one").version, render_note("a", "two").version);
-    assert_ne!(render_note("a", "one").version, render_note("b", "one").version);
+    assert_ne!(
+        render_note("a", "one").version,
+        render_note("a", "two").version
+    );
+    assert_ne!(
+        render_note("a", "one").version,
+        render_note("b", "one").version
+    );
 }
 
 #[test]
@@ -79,13 +85,23 @@ fn version_is_stable() {
     let version = render_note("a", "one").version;
     assert_eq!(version, render_note("a", "one").version);
     assert_eq!(version.len(), 16);
-    assert!(version.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
+    assert!(
+        version
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    );
 }
 
 #[test]
 fn page_carries_version_and_live_script() {
     let page = render_note("a", "one");
-    let meta = format!("<meta name=\"tachylite-version\" content=\"{}\">", page.version);
+    let meta = format!(
+        "<meta name=\"tachylite-version\" content=\"{}\">",
+        page.version
+    );
     assert!(page.html.contains(&meta), "{}", page.html);
-    assert!(page.html.contains("<script src=\"/.tachylite/live.js\" defer></script>"));
+    assert!(
+        page.html
+            .contains("<script src=\"/.tachylite/live.js\" defer></script>")
+    );
 }

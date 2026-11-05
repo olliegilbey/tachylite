@@ -284,3 +284,71 @@ fn upper_case_asset_extension_is_published() {
     assert_eq!(summary.files, 4);
     assert!(s.out().join("files/img/photo.PNG").is_file());
 }
+
+fn clashes(summary: &Summary) -> Vec<&Path> {
+    summary
+        .skipped
+        .iter()
+        .filter(|k| k.reason == tachylite::vault::SkipReason::UrlClash)
+        .map(|k| k.path.as_path())
+        .collect()
+}
+
+#[test]
+fn case_clash_keeps_first() {
+    let s = Setup::new();
+    fs::write(s.vault().join("a.MD"), "upper").unwrap();
+    fs::write(s.vault().join("a.md"), "lower").unwrap();
+    let summary = build(&s.vault(), &s.out()).unwrap();
+    assert_eq!(clashes(&summary), [Path::new("a.md")]);
+    assert!(
+        fs::read_to_string(s.out().join("pages/a.html"))
+            .unwrap()
+            .contains("upper")
+    );
+}
+
+#[test]
+fn note_shadowing_html_page_is_a_clash() {
+    let s = Setup::new();
+    fs::write(s.vault().join("maps/route.html.md"), "# shadow").unwrap();
+    let summary = build(&s.vault(), &s.out()).unwrap();
+    assert_eq!(clashes(&summary), [Path::new("maps/route.html.md")]);
+    assert_eq!(
+        fs::read(s.out().join("files/maps/route.html")).unwrap(),
+        fs::read(s.vault().join("maps/route.html")).unwrap()
+    );
+    assert!(!s.out().join("pages/maps/route.html.html").exists());
+}
+
+#[test]
+fn note_and_folder_page_clash_is_skipped() {
+    let s = Setup::new();
+    fs::write(s.vault().join("x.md"), "# x").unwrap();
+    fs::create_dir(s.vault().join("x.html")).unwrap();
+    fs::write(s.vault().join("x.html/y.md"), "# y").unwrap();
+    let summary = build(&s.vault(), &s.out()).unwrap();
+    assert_eq!(clashes(&summary), [Path::new("x.md")]);
+    assert!(s.out().join("pages/x.html/y.html").is_file());
+}
+
+#[test]
+fn no_temp_files_remain() {
+    let s = Setup::new();
+    build(&s.vault(), &s.out()).unwrap();
+    build(&s.vault(), &s.out()).unwrap();
+    let hidden: Vec<_> = files_under(&s.out())
+        .into_iter()
+        .filter(|p| {
+            p.components()
+                .any(|c| c.as_os_str().to_string_lossy().starts_with('.'))
+                && p != Path::new(".tachylite-output")
+        })
+        .collect();
+    assert!(hidden.is_empty(), "{hidden:?}");
+    assert!(
+        !files_under(&s.out())
+            .iter()
+            .any(|p| p.to_string_lossy().ends_with(".tmp"))
+    );
+}

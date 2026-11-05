@@ -82,20 +82,17 @@ fn symlinks_are_skipped_not_followed() {
 }
 
 #[test]
-fn case_clash_keeps_first() {
+fn case_variants_are_both_listed() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join("a.MD"), "upper").unwrap();
     fs::write(dir.path().join("a.md"), "lower").unwrap();
 
     let scan = scan(dir.path()).unwrap();
-    assert_eq!(scan.entries, vec![entry("a.MD", Kind::Note)]);
     assert_eq!(
-        scan.skipped,
-        vec![Skipped {
-            path: PathBuf::from("a.md"),
-            reason: SkipReason::UrlClash
-        }]
+        scan.entries,
+        vec![entry("a.MD", Kind::Note), entry("a.md", Kind::Note)]
     );
+    assert!(scan.skipped.is_empty());
 }
 
 #[test]
