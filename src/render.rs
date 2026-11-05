@@ -5,6 +5,7 @@ use std::sync::Arc;
 use comrak::nodes::{AstNode, NodeValue};
 use comrak::{Anchorizer, Arena, Options, format_html, parse_document};
 
+use crate::front::{self, Value};
 use crate::links::{Index, Resolved, resolve, split};
 
 /// The file stem of the last path segment: `people/Jane Doe.md` gives `Jane Doe`.
@@ -20,7 +21,6 @@ fn options() -> Options<'static> {
     options.extension.autolink = true;
     options.extension.tasklist = true;
     options.extension.footnotes = true;
-    options.extension.front_matter_delimiter = Some("---".into());
     options.extension.wikilinks_title_after_pipe = true;
     options
 }
@@ -108,12 +108,94 @@ fn anchor(heading: Option<&str>) -> String {
     }
 }
 
+/// The opening `<a>` of a link to `path#heading` from `from`. Records its target, or logs it
+/// as broken.
+fn open(body: &mut Body, from: &str, index: &Index, path: &str, heading: Option<&str>) -> String {
+    let fragment = anchor(heading);
+    if path.is_empty() {
+        return format!("<a href=\"{fragment}\">");
+    }
+    match resolve(index, from, path) {
+        Resolved::Found(target) => {
+            let tag = format!("<a href=\"{}{fragment}\">", url(&target));
+            body.targets.insert(target);
+            tag
+        }
+        unresolved => {
+            let matches = match unresolved {
+                Resolved::Ambiguous(n) => n,
+                _ => 0,
+            };
+            body.broken.push(Broken {
+                from: from.to_string(),
+                target: path.to_string(),
+                matches,
+            });
+            "<a class=\"broken-link\">".to_string()
+        }
+    }
+}
+
+/// A tag link. Tag pages are keyed by the lowercased tag.
+fn tag_link(tag: &str) -> String {
+    format!(
+        "<a class=\"tag\" href=\"/.tachylite/tags/{}\">#{}</a>",
+        encode(&tag.to_lowercase()),
+        escape(tag)
+    )
+}
+
+/// One property value: a tag, a lone `[[link]]`, or text.
+fn property(body: &mut Body, from: &str, index: &Index, key: &str, value: &str) -> String {
+    if key == "tags" {
+        let tag = value.trim().trim_start_matches('#');
+        if !tag.is_empty() {
+            return tag_link(tag);
+        }
+    }
+    if front::one_link(value) {
+        let inner = &value[2..value.len() - 2];
+        let (target, label) = inner.split_once('|').unwrap_or((inner, inner));
+        let (path, heading) = split(target);
+        let open = open(body, from, index, path.trim(), heading);
+        return format!("{open}{}</a>", escape(label));
+    }
+    escape(value)
+}
+
+/// The frontmatter as a `<dl>`, every key in file order.
+fn properties(body: &mut Body, from: &str, yaml: &str, index: &Index) -> String {
+    let pairs = front::parse(yaml);
+    if pairs.is_empty() {
+        return String::new();
+    }
+    let mut html = String::from("<dl class=\"properties\">");
+    for (key, value) in pairs {
+        html.push_str(&format!("<dt>{}</dt><dd>", escape(&key)));
+        match value {
+            Value::Text(text) => html.push_str(&property(body, from, index, &key, &text)),
+            Value::List(items) => {
+                let items: Vec<String> = items
+                    .iter()
+                    .map(|item| property(body, from, index, &key, item))
+                    .collect();
+                html.push_str(&items.join(", "));
+            }
+        }
+        html.push_str("</dd>");
+    }
+    html.push_str("</dl>\n");
+    html
+}
+
 /// Renders a note's Markdown and resolves its links against the published paths.
 pub fn render_body(from: &str, markdown: &str, index: &Index) -> Body {
+    let (yaml, markdown) = front::split(markdown);
+    let mut body = Body::default();
+    let props = yaml.map_or_else(String::new, |y| properties(&mut body, from, y, index));
     let arena = Arena::new();
     let options = options();
     let root = parse_document(&arena, markdown, &options);
-    let mut body = Body::default();
     let mut rewrites = Vec::new();
     let mut anchorizer = Anchorizer::new();
     let mut ids = Vec::new();
@@ -136,36 +218,13 @@ pub fn render_body(from: &str, markdown: &str, index: &Index) -> Body {
         let Some((path, heading)) = raw else {
             continue;
         };
-        let fragment = anchor(heading.as_deref());
-        if path.is_empty() {
-            rewrites.push((node, format!("<a href=\"{fragment}\">")));
-            continue;
-        }
-        let tag = match resolve(index, from, &path) {
-            Resolved::Found(target) => {
-                let tag = format!("<a href=\"{}{fragment}\">", url(&target));
-                body.targets.insert(target);
-                tag
-            }
-            unresolved => {
-                let matches = match unresolved {
-                    Resolved::Ambiguous(n) => n,
-                    _ => 0,
-                };
-                body.broken.push(Broken {
-                    from: from.to_string(),
-                    target: path.clone(),
-                    matches,
-                });
-                "<a class=\"broken-link\">".to_string()
-            }
-        };
+        let tag = open(&mut body, from, index, &path, heading.as_deref());
         rewrites.push((node, tag));
     }
     for (node, open) in rewrites {
         wrap(&arena, node, open);
     }
-    let mut html = String::new();
+    let mut html = props;
     // Writing into a String cannot fail.
     let _ = format_html(root, &options, &mut html);
     body.html = add_ids(&html, &ids);

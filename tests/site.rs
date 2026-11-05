@@ -281,6 +281,33 @@ fn link_adds_backlink() {
 }
 
 #[test]
+fn title_names_page_and_backlinks() {
+    let mut mem = Mem::with(&[
+        ("a.md", "---\ntitle: First <A>\n---\n[[b]]"),
+        ("b.md", "# B"),
+    ]);
+    let (_, delta) = synced(&mut mem, Exclude::default());
+    assert!(html(&delta, "a").contains("<title>First &lt;A&gt;</title>"));
+    assert!(html(&delta, "b").contains("<title>b</title>"));
+    assert!(html(&delta, "b").contains("<li><a href=\"/a\">First &lt;A&gt;</a></li>"));
+}
+
+#[test]
+fn retitled_note_updates_backlink_text() {
+    let mut mem = Mem::with(&[("a.md", "---\ntitle: One\n---\n[[b]]"), ("b.md", "# B")]);
+    let (mut site, _) = synced(&mut mem, Exclude::default());
+    mem.0
+        .insert("a.md".into(), b"---\ntitle: Two\n---\n[[b]]".to_vec());
+    let delta = site.apply(vec![touch("a.md")], &mut mem);
+    assert_eq!(pushed(&delta), ["a", "b"]);
+    assert!(html(&delta, "b").contains("<li><a href=\"/a\">Two</a></li>"));
+    // Dropping the title falls back to the file name.
+    mem.0.insert("a.md".into(), b"[[b]]".to_vec());
+    let delta = site.apply(vec![touch("a.md")], &mut mem);
+    assert!(html(&delta, "b").contains("<li><a href=\"/a\">a</a></li>"));
+}
+
+#[test]
 fn deleting_the_linker_removes_the_backlink() {
     let mut mem = Mem::with(&[("a.md", "[[b]]"), ("b.md", "# B")]);
     let (mut site, first) = synced(&mut mem, Exclude::default());

@@ -4,6 +4,7 @@ pub use error::Error;
 pub mod budget_vault;
 pub mod build;
 pub mod config;
+pub mod front;
 pub mod links;
 pub mod output;
 pub mod render;

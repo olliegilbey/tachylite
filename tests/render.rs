@@ -268,3 +268,58 @@ fn page_carries_version_and_live_script() {
             .contains("<script src=\"/.tachylite/live.js\" defer></script>")
     );
 }
+
+#[test]
+fn properties_block_lists_every_key() {
+    let body = render_body("welcome.md", &fixture("welcome.md"), &Index::default());
+    assert!(body.html.starts_with(
+        "<dl class=\"properties\"><dt>title</dt><dd>Welcome</dd><dt>tags</dt><dd>\
+         <a class=\"tag\" href=\"/.tachylite/tags/guide\">#guide</a>, \
+         <a class=\"tag\" href=\"/.tachylite/tags/sample\">#sample</a></dd></dl>\n"
+    ));
+    assert!(!body.html.contains("title: Welcome"));
+}
+
+#[test]
+fn property_values_are_escaped() {
+    let body = render_body(
+        "a.md",
+        "---\n\"<k>\": \"a <b> & c\"\nlist: [x, \"<y>\"]\n---\n",
+        &Index::default(),
+    );
+    assert!(body.html.starts_with(
+        "<dl class=\"properties\"><dt>&lt;k&gt;</dt><dd>a &lt;b&gt; &amp; c</dd>\
+         <dt>list</dt><dd>x, &lt;y&gt;</dd></dl>\n"
+    ));
+}
+
+#[test]
+fn property_wikilink_resolves_and_counts_as_target() {
+    let index = Index::new(["people/Jane Doe.md"]);
+    let body = render_body(
+        "a.md",
+        "---\nauthor: \"[[jane doe|Jane]]\"\nup: [[nobody]]\nnot: \"see [[jane doe]]\"\n---\n",
+        &index,
+    );
+    assert!(
+        body.html
+            .contains("<dt>author</dt><dd><a href=\"/people/Jane%20Doe\">Jane</a></dd>")
+    );
+    assert!(
+        body.html
+            .contains("<dt>up</dt><dd><a class=\"broken-link\">nobody</a></dd>")
+    );
+    assert!(body.html.contains("<dt>not</dt><dd>see [[jane doe]]</dd>"));
+    assert_eq!(
+        body.targets.iter().map(|t| &**t).collect::<Vec<_>>(),
+        ["people/Jane Doe.md"]
+    );
+    assert_eq!(
+        body.broken,
+        [Broken {
+            from: "a.md".into(),
+            target: "nobody".into(),
+            matches: 0
+        }]
+    );
+}

@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::config::Exclude;
+use crate::front;
 use crate::links::{Index, key};
 use crate::render::{Broken, note_title, render_body, render_page, url};
 use crate::vault::{Entry, Kind, ReadError, SkipReason, Skipped, VaultDir, classify};
@@ -109,6 +110,8 @@ pub struct Site {
     inbound: HashMap<Arc<str>, BTreeSet<Arc<str>>>,
     /// The notes with an unresolved link, by the link's key.
     unresolved: HashMap<String, BTreeSet<Arc<str>>>,
+    /// Frontmatter titles, for the notes that set one.
+    titles: HashMap<String, String>,
 }
 
 /// One note's outgoing links.
@@ -313,9 +316,9 @@ impl Site {
                         .into_iter()
                         .flatten()
                         .filter(|from| ***from != **path)
-                        .map(|from| (note_title(from).to_string(), url(from)))
+                        .map(|from| (self.title(from).to_string(), url(from)))
                         .collect();
-                    let page = render_page(note_title(path), &body, &backlinks);
+                    let page = render_page(self.title(path), &body, &backlinks);
                     drop(body);
                     if !new && self.versions.get(path) == Some(&page.version) {
                         continue;
@@ -361,6 +364,25 @@ impl Site {
         let removed: Vec<String> = self.winners.difference(won).cloned().collect();
         let added: Vec<String> = won.difference(&self.winners).cloned().collect();
 
+        // A retitled note changes the backlink text on every page it links to.
+        let mut changed = BTreeSet::new();
+        for (path, bytes) in fresh.iter().filter(|(p, _)| won.contains(*p)) {
+            let meta = front::meta(&String::from_utf8_lossy(bytes));
+            if self.titles.get(path) == meta.title.as_ref() {
+                continue;
+            }
+            match meta.title {
+                Some(title) => self.titles.insert(path.clone(), title),
+                None => self.titles.remove(path),
+            };
+            if let Some(links) = self.links.get(path.as_str()) {
+                changed.extend(links.targets.iter().cloned());
+            }
+        }
+        for path in &removed {
+            self.titles.remove(path);
+        }
+
         // A link can resolve differently once a path with its key appears or vanishes. Its
         // note links to a path in that key's bucket now, or the link is unresolved.
         let mut first: BTreeSet<String> =
@@ -386,7 +408,6 @@ impl Site {
         }
         first.retain(|p| won.contains(p));
 
-        let mut changed = BTreeSet::new();
         for path in &removed {
             if let Some(note) = self.index.get(path) {
                 self.relink(&note, Links::default(), &mut changed);
@@ -431,6 +452,13 @@ impl Site {
             }
         }
         bodies
+    }
+
+    /// A note's frontmatter title, else its file stem.
+    fn title<'a>(&'a self, path: &'a str) -> &'a str {
+        self.titles
+            .get(path)
+            .map_or_else(|| note_title(path), String::as_str)
     }
 
     /// Replaces a note's links, and adds each path whose linkers changed to `changed`.
