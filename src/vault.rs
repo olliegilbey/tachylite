@@ -9,6 +9,7 @@ use rustix::fs::{Mode, OFlags, ResolveFlags, openat2};
 use rustix::io::Errno;
 
 use crate::Error;
+use crate::config::Exclude;
 
 const IMAGE_EXTENSIONS: [&str; 7] = ["png", "jpg", "jpeg", "gif", "svg", "webp", "avif"];
 
@@ -45,14 +46,9 @@ pub struct Scan {
     pub skipped: Vec<Skipped>,
 }
 
-/// A file or folder name the vault never publishes.
-pub fn excluded_segment(segment: &[u8]) -> bool {
-    segment.starts_with(b".") || segment == b"target" || segment == b"node_modules"
-}
-
-/// The publish list and the default exclusions, applied to a vault-relative path.
-pub fn classify(path: &str) -> Option<Kind> {
-    if path.split('/').any(|s| excluded_segment(s.as_bytes())) {
+/// The publish list and the exclusions, applied to a vault-relative path.
+pub fn classify(path: &str, exclude: &Exclude) -> Option<Kind> {
+    if exclude.path(path) {
         return None;
     }
     let name = path.rsplit('/').next()?;
@@ -68,18 +64,18 @@ pub fn classify(path: &str) -> Option<Kind> {
 }
 
 /// Lists what the vault publishes. Reads only; never follows a symlink or enters an excluded folder.
-pub fn scan(vault: &Path) -> Result<Scan, Error> {
-    scan_under(vault, "")
+pub fn scan(vault: &Path, exclude: &Exclude) -> Result<Scan, Error> {
+    scan_under(vault, "", exclude)
 }
 
 /// Lists what the vault publishes under the folder `under` (`""` is the root). Paths stay
 /// vault-relative. A subfolder that vanished before it was read lists nothing.
-pub fn scan_under(vault: &Path, under: &str) -> Result<Scan, Error> {
+pub fn scan_under(vault: &Path, under: &str, exclude: &Exclude) -> Result<Scan, Error> {
     let mut scan = Scan {
         entries: Vec::new(),
         skipped: Vec::new(),
     };
-    walk(vault, Path::new(under), &mut scan)?;
+    walk(vault, Path::new(under), exclude, &mut scan)?;
     scan.skipped.retain(|s| {
         !(s.path == Path::new(under) && s.reason == SkipReason::Unreadable(io::ErrorKind::NotFound))
     });
@@ -88,7 +84,7 @@ pub fn scan_under(vault: &Path, under: &str) -> Result<Scan, Error> {
     Ok(scan)
 }
 
-fn walk(vault: &Path, rel: &Path, scan: &mut Scan) -> Result<(), Error> {
+fn walk(vault: &Path, rel: &Path, exclude: &Exclude, scan: &mut Scan) -> Result<(), Error> {
     let dir = vault.join(rel);
     let io = |source| Error::Io {
         path: dir.clone(),
@@ -108,7 +104,7 @@ fn walk(vault: &Path, rel: &Path, scan: &mut Scan) -> Result<(), Error> {
     for item in items {
         let item = item.map_err(io)?;
         let name = item.file_name();
-        if excluded_segment(name.as_bytes()) {
+        if Exclude::segment(name.as_bytes()) {
             continue;
         }
         let rel_path = rel.join(&name);
@@ -119,6 +115,9 @@ fn walk(vault: &Path, rel: &Path, scan: &mut Scan) -> Result<(), Error> {
             });
             continue;
         };
+        if exclude.path(rel_str) {
+            continue;
+        }
         let file_type = item.file_type().map_err(io)?;
         if file_type.is_symlink() {
             scan.skipped.push(Skipped {
@@ -126,10 +125,10 @@ fn walk(vault: &Path, rel: &Path, scan: &mut Scan) -> Result<(), Error> {
                 reason: SkipReason::Symlink,
             });
         } else if file_type.is_dir() {
-            walk(vault, &rel_path, scan)?;
+            walk(vault, &rel_path, exclude, scan)?;
         } else if !file_type.is_file() {
             continue;
-        } else if let Some(kind) = classify(rel_str) {
+        } else if let Some(kind) = classify(rel_str, exclude) {
             scan.entries.push(Entry {
                 path: rel_str.to_string(),
                 kind,
@@ -166,17 +165,17 @@ mod tests {
             (".md", None),
         ];
         for (path, want) in cases {
-            assert_eq!(classify(path), *want, "{path}");
+            assert_eq!(classify(path, &Exclude::default()), *want, "{path}");
         }
         for ext in ["png", "jpg", "jpeg", "gif", "svg", "webp", "avif"] {
             assert_eq!(
-                classify(&format!("img/x.{ext}")),
+                classify(&format!("img/x.{ext}"), &Exclude::default()),
                 Some(Kind::Asset),
                 "{ext}"
             );
             let upper = ext.to_uppercase();
             assert_eq!(
-                classify(&format!("img/x.{upper}")),
+                classify(&format!("img/x.{upper}"), &Exclude::default()),
                 Some(Kind::Asset),
                 "{upper}"
             );
@@ -216,7 +215,7 @@ mod tests {
                 .any(|s| s.starts_with('.') || s == "target" || s == "node_modules");
             let published = !ext.is_empty()
                 && ["md", "html", "png", "pdf"].contains(&ext.to_lowercase().as_str());
-            prop_assert_eq!(classify(&path).is_some(), !excluded && published, "{}", path);
+            prop_assert_eq!(classify(&path, &Exclude::default()).is_some(), !excluded && published, "{}", path);
         }
     }
 }

@@ -33,7 +33,7 @@ fn edit_pushes_new_html() {
     let mut events = server.subscribe("/a", &version(&server, "/a"), None);
     fs::write(d.vault().join("a.md"), "# second").unwrap();
     let event = events.expect("page");
-    assert!(event.data.contains("<h1>second</h1>"), "{}", event.data);
+    assert!(event.data.contains("\">second</h1>"), "{}", event.data);
     assert_eq!(event.id.as_deref(), Some(version_of(&event.data).as_str()));
     assert_eq!(server.get("/a").text(), event.data);
 }
@@ -45,7 +45,7 @@ fn atomic_rename_save_pushes_final_content() {
     fs::write(d.vault().join(".n.md.tmp"), "# final").unwrap();
     fs::rename(d.vault().join(".n.md.tmp"), d.vault().join("n.md")).unwrap();
     let event = events.expect("page");
-    assert!(event.data.contains("<h1>final</h1>"));
+    assert!(event.data.contains("\">final</h1>"));
 }
 
 #[test]
@@ -54,7 +54,7 @@ fn create_pushes_to_a_waiting_subscriber() {
     let mut events = server.subscribe("/new", "", None);
     fs::write(d.vault().join("new.md"), "# fresh").unwrap();
     let event = events.expect("page");
-    assert!(event.data.contains("<h1>fresh</h1>"));
+    assert!(event.data.contains("\">fresh</h1>"));
 }
 
 #[test]
@@ -88,9 +88,9 @@ fn new_folder_with_notes_is_published() {
     fs::create_dir_all(d.vault().join("d/e")).unwrap();
     fs::write(d.vault().join("d/e/n.md"), "# deep").unwrap();
     let event = events.expect("page");
-    assert!(event.data.contains("<h1>deep</h1>"));
+    assert!(event.data.contains("\">deep</h1>"));
     fs::write(d.vault().join("d/e/n.md"), "# deeper").unwrap();
-    assert!(events.expect("page").data.contains("<h1>deeper</h1>"));
+    assert!(events.expect("page").data.contains("\">deeper</h1>"));
 }
 
 #[test]
@@ -101,7 +101,7 @@ fn folder_moved_in_from_outside_is_published() {
     fs::write(outside.join("sub/m.md"), "# moved").unwrap();
     let mut events = server.subscribe("/m/sub/m", "", None);
     fs::rename(&outside, d.vault().join("m")).unwrap();
-    assert!(events.expect("page").data.contains("<h1>moved</h1>"));
+    assert!(events.expect("page").data.contains("\">moved</h1>"));
 }
 
 #[test]
@@ -116,7 +116,7 @@ fn rename_folder_moves_its_pages() {
     assert_eq!(server.get("/d/n").status, 404);
     // The moved folder is still watched under its new name.
     fs::write(d.vault().join("f/e/m.md"), "# after").unwrap();
-    assert!(new.expect("page").data.contains("<h1>after</h1>"));
+    assert!(new.expect("page").data.contains("\">after</h1>"));
 }
 
 #[test]
@@ -130,7 +130,7 @@ fn unchanged_save_pushes_nothing() {
     barrier.expect("page");
     fs::write(d.vault().join("a.md"), "# changed").unwrap();
     // Events on one stream arrive in order, so the first is the real change.
-    assert!(events.expect("page").data.contains("<h1>changed</h1>"));
+    assert!(events.expect("page").data.contains("\">changed</h1>"));
 }
 
 #[test]
@@ -203,7 +203,7 @@ fn last_event_id_overrides_v() {
     let current = version(&server, "/a");
     let mut events = server.subscribe("/a", "0000000000000000", Some(&current));
     fs::write(d.vault().join("a.md"), "# next").unwrap();
-    assert!(events.expect("page").data.contains("<h1>next</h1>"));
+    assert!(events.expect("page").data.contains("\">next</h1>"));
 }
 
 #[test]
@@ -228,7 +228,7 @@ fn reserved_characters_get_their_own_pushes() {
         let mut events = server.subscribe(url, &version(&server, url), None);
         fs::write(d.vault().join(format!("{name}.md")), format!("# edit {i}")).unwrap();
         let event = events.expect("page");
-        assert!(event.data.contains(&format!("<h1>edit {i}</h1>")), "{name}");
+        assert!(event.data.contains(&format!("\">edit {i}</h1>")), "{name}");
     }
 }
 
@@ -270,7 +270,7 @@ fn hard_link_is_published() {
     let mut events = server.subscribe("/b", "", None);
     fs::hard_link(d.vault().join("a.md"), d.vault().join("b.md")).unwrap();
     let event = events.expect("page");
-    assert!(event.data.contains("<h1>linked</h1>"));
+    assert!(event.data.contains("\">linked</h1>"));
 }
 
 #[test]
@@ -319,11 +319,9 @@ fn pid(server: &Server) -> Pid {
     Pid::from_raw(i32::try_from(server.child.id()).unwrap()).unwrap()
 }
 
-#[test]
-fn queue_overflow_resyncs_the_vault() {
-    let (d, server) = with_notes(&[("a.md", "# a")]);
-    let mut gone = server.subscribe("/a", &version(&server, "/a"), None);
-    let mut late = server.subscribe("/z", "", None);
+/// Stops the server and writes enough new notes to overflow its inotify queue. Returns the
+/// queue limit, or `None` when the host's limit is too large to fill.
+fn overflow(d: &Dirs, server: &Server) -> Option<usize> {
     let limit: usize = fs::read_to_string("/proc/sys/fs/inotify/max_queued_events")
         .unwrap()
         .trim()
@@ -331,12 +329,12 @@ fn queue_overflow_resyncs_the_vault() {
         .unwrap();
     if limit > 65_536 {
         eprintln!("skipped: max_queued_events is {limit}, too many files to write");
-        return;
+        return None;
     }
-    kill_process(pid(&server), Signal::STOP).unwrap();
+    kill_process(pid(server), Signal::STOP).unwrap();
     // Returns once every thread has stopped, or if the child exits. NOWAIT reaps nothing.
     let status = waitid(
-        WaitId::Pid(pid(&server)),
+        WaitId::Pid(pid(server)),
         WaitIdOptions::STOPPED | WaitIdOptions::EXITED | WaitIdOptions::NOWAIT,
     )
     .unwrap()
@@ -346,6 +344,31 @@ fn queue_overflow_resyncs_the_vault() {
     for i in 0..limit / 2 + 2_000 {
         fs::write(d.vault().join(format!("n{i}.md")), "# n").unwrap();
     }
+    Some(limit)
+}
+
+#[test]
+fn queue_overflow_reloads_the_config() {
+    let (d, server) = with_notes(&[("a.md", "# a"), ("p/x.md", "# x")]);
+    let mut hidden = server.subscribe("/p/x", &version(&server, "/p/x"), None);
+    if overflow(&d, &server).is_none() {
+        return;
+    }
+    // The kernel drops this save's events: the queue is already full.
+    fs::write(d.vault().join("tachylite.toml"), "exclude = [\"p\"]\n").unwrap();
+    kill_process(pid(&server), Signal::CONT).unwrap();
+    hidden.expect("gone");
+    assert_eq!(server.get("/p/x").status, 404);
+}
+
+#[test]
+fn queue_overflow_resyncs_the_vault() {
+    let (d, server) = with_notes(&[("a.md", "# a")]);
+    let mut gone = server.subscribe("/a", &version(&server, "/a"), None);
+    let mut late = server.subscribe("/z", "", None);
+    let Some(limit) = overflow(&d, &server) else {
+        return;
+    };
     // These events come after the overflow, so the kernel drops them.
     fs::remove_file(d.vault().join("a.md")).unwrap();
     fs::write(d.vault().join("z.md"), "# late").unwrap();
@@ -357,6 +380,89 @@ fn queue_overflow_resyncs_the_vault() {
         "the queue did not overflow"
     );
     gone.expect("gone");
-    assert!(late.expect("page").data.contains("<h1>late</h1>"));
+    assert!(late.expect("page").data.contains("\">late</h1>"));
     assert_eq!(server.get(&format!("/n{}", limit / 2)).status, 200);
+}
+
+#[test]
+fn excluding_a_folder_unpublishes_it() {
+    let (d, server) = with_notes(&[("a.md", "# a"), ("d/n.md", "# n")]);
+    let mut events = server.subscribe("/d/n", &version(&server, "/d/n"), None);
+    fs::write(d.vault().join("tachylite.toml"), "exclude = [\"d\"]\n").unwrap();
+    events.expect("gone");
+    assert_eq!(server.get("/d/n").status, 404);
+}
+
+#[test]
+fn unexcluding_republishes() {
+    let (d, server) = with_notes(&[("tachylite.toml", "exclude = [\"d\"]\n"), ("d/n.md", "# n")]);
+    assert_eq!(server.get("/d/n").status, 404);
+    let mut events = server.subscribe("/d/n", "", None);
+    fs::write(d.vault().join("tachylite.toml"), "exclude = []\n").unwrap();
+    assert!(events.expect("page").data.contains("\">n</h1>"));
+}
+
+#[test]
+fn bad_config_edit_keeps_serving() {
+    let (d, server) = with_notes(&[("tachylite.toml", "exclude = [\"d\"]\n"), ("a.md", "# a")]);
+    let mut events = server.subscribe("/a", &version(&server, "/a"), None);
+    fs::write(d.vault().join("tachylite.toml"), "exclude = [\n").unwrap();
+    assert!(
+        server
+            .wait_line(
+                |l| l.contains("keeping the previous config"),
+                Duration::from_secs(10)
+            )
+            .is_some()
+    );
+    fs::write(d.vault().join("a.md"), "# edited").unwrap();
+    assert!(events.expect("page").data.contains("\">edited</h1>"));
+}
+
+#[test]
+fn deleting_the_config_keeps_its_exclusions() {
+    let (d, server) = with_notes(&[
+        ("tachylite.toml", "exclude = [\"d\"]\n"),
+        ("d/n.md", "# n"),
+        ("bar.md", "# b0"),
+    ]);
+    let mut barrier = server.subscribe("/bar", &version(&server, "/bar"), None);
+    fs::remove_file(d.vault().join("tachylite.toml")).unwrap();
+    fs::write(d.vault().join("d/n.md"), "# still hidden").unwrap();
+    fs::write(d.vault().join("bar.md"), "# b1").unwrap();
+    barrier.expect("page");
+    assert_eq!(server.get("/d/n").status, 404);
+}
+
+#[test]
+fn new_link_pushes_backlink_to_target() {
+    let (d, server) = with_notes(&[("a.md", "# a"), ("b.md", "# b")]);
+    let mut events = server.subscribe("/b", &version(&server, "/b"), None);
+    fs::write(d.vault().join("a.md"), "see [[b]]").unwrap();
+    let event = events.expect("page");
+    assert!(
+        event
+            .data
+            .contains("<h2>Backlinks</h2><ul><li><a href=\"/a\">a</a></li></ul>"),
+        "{}",
+        event.data
+    );
+}
+
+#[test]
+fn renamed_target_pushes_broken_link_to_linker() {
+    let (d, server) = with_notes(&[("a.md", "see [[b]]"), ("b.md", "# b")]);
+    let mut events = server.subscribe("/a", &version(&server, "/a"), None);
+    fs::rename(d.vault().join("b.md"), d.vault().join("c.md")).unwrap();
+    let event = events.expect("page");
+    assert!(
+        event.data.contains("<a class=\"broken-link\">b</a>"),
+        "{}",
+        event.data
+    );
+    assert!(
+        server
+            .wait_line(|l| l == "broken link in a.md: b", Duration::from_secs(10))
+            .is_some()
+    );
 }

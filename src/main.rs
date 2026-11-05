@@ -44,6 +44,7 @@ fn run_build(vault: &Path, out: &Path) -> ExitCode {
     match build(vault, out) {
         Ok(summary) => {
             tachylite::report::skipped(&summary.skipped);
+            tachylite::report::broken(&summary.broken);
             eprintln!(
                 "built {} notes, {} files, {} skipped",
                 summary.notes,

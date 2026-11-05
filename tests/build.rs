@@ -7,6 +7,7 @@ use std::time::SystemTime;
 
 use tachylite::Error;
 use tachylite::build::{Summary, build};
+use tachylite::config::Exclude;
 use tachylite::vault::{Kind, classify};
 
 fn fixture() -> PathBuf {
@@ -66,11 +67,12 @@ fn files_under(root: &Path) -> Vec<PathBuf> {
 fn builds_fixture() {
     let s = Setup::new();
     let summary: Summary = build(&s.vault(), &s.out()).unwrap();
-    assert_eq!((summary.notes, summary.files), (3, 3));
+    assert_eq!((summary.notes, summary.files), (4, 3));
     for path in [
         "pages/welcome.html",
         "pages/people/Jane Doe.html",
         "pages/Upper.html",
+        "pages/notes/links.html",
         "files/maps/route.html",
         "files/img/dot.png",
         "files/docs/guide.pdf",
@@ -88,9 +90,12 @@ fn output_holds_only_published_files() {
         let rel_str = rel.to_str().unwrap();
         let ok = rel_str == ".tachylite-output"
             || (rel_str.starts_with("pages/") && rel_str.ends_with(".html"))
-            || rel_str
-                .strip_prefix("files/")
-                .is_some_and(|p| matches!(classify(p), Some(Kind::Html) | Some(Kind::Asset)));
+            || rel_str.strip_prefix("files/").is_some_and(|p| {
+                matches!(
+                    classify(p, &Exclude::default()),
+                    Some(Kind::Html) | Some(Kind::Asset)
+                )
+            });
         assert!(ok, "unexpected output file {rel_str}");
     }
 }
@@ -242,7 +247,7 @@ fn unreadable_note_is_skipped_not_fatal() {
     let result = build(&s.vault(), &s.out());
     fs::set_permissions(&note, fs::Permissions::from_mode(0o644)).unwrap();
     let summary = result.unwrap();
-    assert_eq!(summary.notes, 2);
+    assert_eq!(summary.notes, 3);
     assert!(
         summary
             .skipped
@@ -351,4 +356,60 @@ fn no_temp_files_remain() {
             .iter()
             .any(|p| p.to_string_lossy().ends_with(".tmp"))
     );
+}
+
+/// A temp vault holding only `files`, and an output path beside it.
+fn bare(files: &[(&str, &str)]) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    for (path, body) in files {
+        let path = dir.path().join("vault").join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, body).unwrap();
+    }
+    dir
+}
+
+fn all_output_text(out: &Path) -> String {
+    files_under(out)
+        .iter()
+        .map(|p| String::from_utf8_lossy(&fs::read(out.join(p)).unwrap()).into_owned())
+        .collect()
+}
+
+#[test]
+fn config_excludes_globs() {
+    let dir = bare(&[
+        (
+            "tachylite.toml",
+            "exclude = [\"private\", \"**/*.secret.md\"]\n",
+        ),
+        ("private/a.md", "# hidden-one"),
+        ("notes/x.secret.md", "# hidden-two"),
+        ("notes/y.md", "# shown"),
+    ]);
+    let (vault, out) = (dir.path().join("vault"), dir.path().join("out"));
+    build(&vault, &out).unwrap();
+    let pages: Vec<PathBuf> = files_under(&out.join("pages"));
+    assert_eq!(pages, [PathBuf::from("notes/y.html")]);
+    let text = all_output_text(&out);
+    assert!(
+        !text.contains("hidden-"),
+        "an excluded note reached the output"
+    );
+}
+
+#[test]
+fn bad_config_stops_the_build() {
+    let dir = bare(&[("tachylite.toml", "exclude = [\n"), ("a.md", "# a")]);
+    let err = build(&dir.path().join("vault"), &dir.path().join("out")).unwrap_err();
+    assert!(matches!(err, Error::Config { .. }), "{err}");
+    assert!(err.to_string().starts_with("tachylite.toml: "), "{err}");
+}
+
+#[test]
+fn config_is_not_published() {
+    let dir = bare(&[("tachylite.toml", "exclude = []\n"), ("a.md", "# a")]);
+    let out = dir.path().join("out");
+    build(&dir.path().join("vault"), &out).unwrap();
+    assert!(!all_output_text(&out).contains("exclude"));
 }

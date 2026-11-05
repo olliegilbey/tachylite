@@ -15,6 +15,7 @@ pub enum Error {
     Bind { port: u16, source: io::Error },
     Watch { path: PathBuf, source: io::Error },
     VaultGone(PathBuf),
+    Config { message: String },
 }
 
 impl fmt::Display for Error {
@@ -56,6 +57,7 @@ impl fmt::Display for Error {
                     _ => Ok(()),
                 }
             }
+            Error::Config { message } => write!(f, "{}: {message}", crate::config::FILE),
             Error::VaultGone(path) => {
                 write!(f, "vault {} was moved or deleted; stopping", path.display())
             }

@@ -71,6 +71,18 @@ test("push swaps main", async ({ page }, info) => {
   expect(errors).toEqual([]);
 });
 
+test("a backlink appears on an open page", async ({ page }, info) => {
+  const target = `target-${info.project.name}`;
+  const linker = `linker-${info.project.name}`;
+  note(target, "# Target\n\ntarget text\n");
+  await open(page, target, "target text");
+  note(linker, `# Linker\n\nsee [[${target}]]\n`);
+  await expect(page.locator("main .backlinks")).toContainText(linker);
+  await page.locator("main .backlinks a").click();
+  await expect(page.locator("main")).toContainText(`see ${target}`);
+  expect(errors).toEqual([]);
+});
+
 test("save to screen within budget", async ({ page }, info) => {
   const name = `budget-${info.project.name}`;
   const cdp = await page.context().newCDPSession(page);

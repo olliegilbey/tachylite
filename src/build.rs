@@ -4,8 +4,8 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
 use crate::Error;
-use crate::output;
-use crate::site::{Change, Site, Write};
+use crate::output::{self, Writer};
+use crate::site::{Change, Site};
 use crate::vault::{VaultDir, scan};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,6 +13,7 @@ pub struct Summary {
     pub notes: usize,
     pub files: usize,
     pub skipped: Vec<crate::vault::Skipped>,
+    pub broken: Vec<crate::render::Broken>,
 }
 
 fn io_err(path: &Path) -> impl FnOnce(io::Error) -> Error + '_ {
@@ -42,31 +43,31 @@ pub fn open(vault: &Path, out: &Path) -> Result<(VaultDir, PathBuf), Error> {
 /// Renders every note and copies every html page and asset into `out`: the site applied to
 /// every file. Never writes inside the vault.
 pub fn build(vault: &Path, out: &Path) -> Result<Summary, Error> {
-    let (mut dir, out) = open(vault, out)?;
-    let scan = scan(dir.root())?;
+    let (dir, out) = open(vault, out)?;
+    let config = crate::config::load(&dir)?;
+    let scan = scan(dir.root(), &config.exclude)?;
     output::prepare(&out)?;
 
-    let delta = Site::new().apply(
+    let mut writer = Writer::new(&out, &dir, |_| {});
+    let report = Site::new(config.exclude).apply_to(
         vec![Change::Sync {
             under: String::new(),
             entries: scan.entries,
         }],
-        &mut dir,
+        &mut &dir,
+        &mut writer,
     );
-    let failed = output::apply(&out, &delta, &dir)?;
-    let copies = delta
-        .writes
-        .iter()
-        .filter(|w| matches!(w, Write::Copy { .. }))
-        .count();
+    let (notes, copies) = (writer.pages, writer.copies);
+    let failed = writer.finish()?;
     let mut skipped = scan.skipped;
-    skipped.extend(delta.skipped);
+    skipped.extend(report.skipped);
     skipped.extend_from_slice(&failed);
     skipped.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(Summary {
-        notes: delta.writes.len() - copies,
+        notes,
         files: copies - failed.len(),
         skipped,
+        broken: report.broken,
     })
 }
 

@@ -4,6 +4,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use proptest::prelude::*;
+use tachylite::config::Exclude;
+use tachylite::render::Broken;
 use tachylite::site::{Change, Delta, Push, Site, Source, Write};
 use tachylite::vault::{Entry, ReadError, SkipReason, Skipped, classify};
 
@@ -33,7 +35,7 @@ impl Mem {
             .keys()
             .filter(|p| under.is_empty() || p.starts_with(&format!("{under}/")))
             .filter_map(|p| {
-                classify(p).map(|kind| Entry {
+                classify(p, &Exclude::default()).map(|kind| Entry {
                     path: p.clone(),
                     kind,
                 })
@@ -69,7 +71,7 @@ fn sync_all(mem: &Mem) -> Change {
 
 fn full(mem: &Mem) -> (Out, Delta) {
     let mut source = mem.clone();
-    let delta = Site::new().apply(vec![sync_all(mem)], &mut source);
+    let delta = Site::new(Exclude::default()).apply(vec![sync_all(mem)], &mut source);
     let mut out = Out::new();
     fold(&mut out, &delta, mem);
     (out, delta)
@@ -121,7 +123,7 @@ fn full_sync_writes_every_page() {
 #[test]
 fn unchanged_touch_writes_and_pushes_nothing() {
     let mut mem = Mem::with(&[("a.md", "# A")]);
-    let mut site = Site::new();
+    let mut site = Site::new(Exclude::default());
     site.apply(vec![sync_all(&mem)], &mut mem);
     let delta = site.apply(vec![touch("a.md")], &mut mem);
     assert!(delta.writes.is_empty() && delta.pushes.is_empty() && delta.deletes.is_empty());
@@ -130,7 +132,7 @@ fn unchanged_touch_writes_and_pushes_nothing() {
 #[test]
 fn edited_note_is_written_and_pushed() {
     let mut mem = Mem::with(&[("a.md", "# A")]);
-    let mut site = Site::new();
+    let mut site = Site::new(Exclude::default());
     site.apply(vec![sync_all(&mem)], &mut mem);
     mem.0.insert("a.md".into(), b"# Edited".to_vec());
     let delta = site.apply(vec![touch("a.md")], &mut mem);
@@ -148,7 +150,7 @@ fn edited_note_is_written_and_pushed() {
 #[test]
 fn deleted_note_is_deleted_and_gone() {
     let mut mem = Mem::with(&[("a.md", "# A")]);
-    let mut site = Site::new();
+    let mut site = Site::new(Exclude::default());
     site.apply(vec![sync_all(&mem)], &mut mem);
     mem.0.remove("a.md");
     let delta = site.apply(vec![touch("a.md")], &mut mem);
@@ -175,7 +177,7 @@ fn folder_page_clash() {
 #[test]
 fn deleting_the_winner_promotes_the_loser() {
     let mut mem = Mem::with(&[("a.MD", "# upper"), ("a.md", "# lower")]);
-    let mut site = Site::new();
+    let mut site = Site::new(Exclude::default());
     let first = site.apply(vec![sync_all(&mem)], &mut mem);
     assert_eq!(first.skipped, [clash("a.md")]);
     mem.0.remove("a.MD");
@@ -194,7 +196,7 @@ fn deleting_the_winner_promotes_the_loser() {
 #[test]
 fn excluded_touch_is_ignored() {
     let mut mem = Mem::with(&[(".obsidian/x.md", "# hidden")]);
-    let mut site = Site::new();
+    let mut site = Site::new(Exclude::default());
     let delta = site.apply(vec![touch(".obsidian/x.md")], &mut mem);
     assert!(delta.writes.is_empty() && delta.pushes.is_empty() && delta.deletes.is_empty());
 }
@@ -211,7 +213,7 @@ fn unreadable_note_is_skipped_and_unpublished() {
         }
     }
     let mut mem = Mem::with(&[("a.md", "# A")]);
-    let mut site = Site::new();
+    let mut site = Site::new(Exclude::default());
     site.apply(vec![sync_all(&mem)], &mut mem);
     let delta = site.apply(vec![touch("a.md")], &mut Denied);
     assert_eq!(delta.deletes, ["pages/a.html"]);
@@ -222,6 +224,138 @@ fn unreadable_note_is_skipped_and_unpublished() {
             reason: SkipReason::Symlink
         }]
     );
+}
+
+/// The keys of the pages a delta pushes, in order.
+fn pushed(delta: &Delta) -> Vec<&str> {
+    delta
+        .pushes
+        .iter()
+        .filter_map(|p| match p {
+            Push::Page { key, .. } => Some(key.as_str()),
+            Push::Gone { .. } => None,
+        })
+        .collect()
+}
+
+fn html<'a>(delta: &'a Delta, key: &str) -> &'a str {
+    delta
+        .pushes
+        .iter()
+        .find_map(|p| match p {
+            Push::Page { key: k, html, .. } if k == key => Some(&**html),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no page pushed for {key}"))
+}
+
+fn broken(from: &str, target: &str, matches: usize) -> Broken {
+    Broken {
+        from: from.into(),
+        target: target.into(),
+        matches,
+    }
+}
+
+fn synced(mem: &mut Mem, exclude: Exclude) -> (Site, Delta) {
+    let mut site = Site::new(exclude);
+    let delta = site.apply(vec![sync_all(mem)], mem);
+    (site, delta)
+}
+
+#[test]
+fn link_adds_backlink() {
+    let mut mem = Mem::with(&[("a.md", "# A"), ("b.md", "# B")]);
+    let (mut site, first) = synced(&mut mem, Exclude::default());
+    assert!(!html(&first, "b").contains("backlinks"));
+    mem.0.insert("a.md".into(), b"[[b]]".to_vec());
+    let delta = site.apply(vec![touch("a.md")], &mut mem);
+    assert_eq!(pushed(&delta), ["a", "b"]);
+    assert_eq!(delta.writes.len(), 2);
+    assert!(html(&delta, "a").contains("<a href=\"/b\">b</a>"));
+    assert!(
+        html(&delta, "b").contains("<h2>Backlinks</h2><ul><li><a href=\"/a\">a</a></li></ul>"),
+        "{}",
+        html(&delta, "b")
+    );
+}
+
+#[test]
+fn deleting_the_linker_removes_the_backlink() {
+    let mut mem = Mem::with(&[("a.md", "[[b]]"), ("b.md", "# B")]);
+    let (mut site, first) = synced(&mut mem, Exclude::default());
+    assert!(html(&first, "b").contains("backlinks"));
+    mem.0.remove("a.md");
+    let delta = site.apply(vec![touch("a.md")], &mut mem);
+    assert_eq!(pushed(&delta), ["b"]);
+    assert!(!html(&delta, "b").contains("backlinks"));
+}
+
+#[test]
+fn rename_target_breaks_links() {
+    let mut mem = Mem::with(&[("a.md", "[[b]]"), ("b.md", "# B")]);
+    let (mut site, first) = synced(&mut mem, Exclude::default());
+    assert!(first.broken.is_empty());
+    let bytes = mem.0.remove("b.md").unwrap();
+    mem.0.insert("c.md".into(), bytes);
+    let delta = site.apply(vec![touch("b.md"), touch("c.md")], &mut mem);
+    assert_eq!(pushed(&delta), ["a", "c"]);
+    assert!(html(&delta, "a").contains("<a class=\"broken-link\">b</a>"));
+    assert_eq!(delta.broken, [broken("a.md", "b", 0)]);
+}
+
+#[test]
+fn create_fixes_broken_link() {
+    let mut mem = Mem::with(&[("a.md", "[[b]]")]);
+    let (mut site, first) = synced(&mut mem, Exclude::default());
+    assert_eq!(first.broken, [broken("a.md", "b", 0)]);
+    mem.0.insert("b.md".into(), b"# B".to_vec());
+    let delta = site.apply(vec![touch("b.md")], &mut mem);
+    assert_eq!(pushed(&delta), ["a", "b"]);
+    assert!(html(&delta, "a").contains("<a href=\"/b\">b</a>"));
+    assert!(html(&delta, "b").contains("<li><a href=\"/a\">a</a></li>"));
+    assert!(delta.broken.is_empty());
+}
+
+#[test]
+fn create_makes_link_ambiguous() {
+    let mut mem = Mem::with(&[("x/r.md", "# r"), ("y/a.md", "[[r]]")]);
+    let (mut site, first) = synced(&mut mem, Exclude::default());
+    assert!(html(&first, "y/a").contains("<a href=\"/x/r\">r</a>"));
+    mem.0.insert("z/r.md".into(), b"# r".to_vec());
+    let delta = site.apply(vec![touch("z/r.md")], &mut mem);
+    assert_eq!(pushed(&delta), ["x/r", "y/a", "z/r"]);
+    assert!(html(&delta, "y/a").contains("<a class=\"broken-link\">r</a>"));
+    assert!(!html(&delta, "x/r").contains("backlinks"));
+    assert_eq!(delta.broken, [broken("y/a.md", "r", 2)]);
+}
+
+#[test]
+fn excluded_note_has_no_backlink_and_breaks_links() {
+    let mut mem = Mem::with(&[
+        ("a.md", "[[s]] and [[b]]"),
+        ("b.md", "# B"),
+        ("private/s.md", "[[b]]"),
+    ]);
+    let (_, delta) = synced(&mut mem, Exclude::new(&["private".to_string()]).unwrap());
+    assert_eq!(pushed(&delta), ["a", "b"]);
+    assert!(html(&delta, "a").contains("<a class=\"broken-link\">s</a>"));
+    assert!(html(&delta, "b").contains("<ul><li><a href=\"/a\">a</a></li></ul>"));
+    assert_eq!(delta.broken, [broken("a.md", "s", 0)]);
+    for push in &delta.pushes {
+        if let Push::Page { html, .. } = push {
+            assert!(!html.contains("private"), "{html}");
+        }
+    }
+}
+
+#[test]
+fn unchanged_backlinks_render_nothing() {
+    let mut mem = Mem::with(&[("a.md", "[[b]] one"), ("b.md", "# B")]);
+    let (mut site, _) = synced(&mut mem, Exclude::default());
+    mem.0.insert("a.md".into(), b"[[b]] two".to_vec());
+    let delta = site.apply(vec![touch("a.md")], &mut mem);
+    assert_eq!(pushed(&delta), ["a"]);
 }
 
 const PATHS: [&str; 10] = [
@@ -236,7 +370,15 @@ const PATHS: [&str; 10] = [
     "d/e/m.md",
     ".h.md",
 ];
-const CONTENTS: [&str; 3] = ["# one", "two *b*", "- [ ] three"];
+const CONTENTS: [&str; 7] = [
+    "# one",
+    "two *b*",
+    "- [ ] three",
+    "[[a]]",
+    "[[d/n]] and [[../x]]",
+    "[[n]]",
+    "[[m]] [[y]] [[p.png]]",
+];
 
 /// A source where every file is mid-save.
 struct MidSave;
@@ -253,7 +395,7 @@ impl Source for MidSave {
 #[test]
 fn mid_save_keeps_published_pages() {
     let mut mem = Mem::with(&[("a.md", "# A"), ("i.png", "png")]);
-    let mut site = Site::new();
+    let mut site = Site::new(Exclude::default());
     site.apply(vec![sync_all(&mem)], &mut mem);
     let delta = site.apply(vec![touch("a.md"), touch("i.png")], &mut MidSave);
     assert_eq!(delta, Delta::default());
@@ -269,7 +411,7 @@ fn mid_save_keeps_published_pages() {
 #[test]
 fn mid_save_new_file_waits_for_its_save() {
     let mut mem = Mem::with(&[("a.md", "# A")]);
-    let mut site = Site::new();
+    let mut site = Site::new(Exclude::default());
     site.apply(vec![sync_all(&mem)], &mut mem);
     let delta = site.apply(vec![touch("b.md"), touch("j.png")], &mut MidSave);
     assert_eq!(delta, Delta::default());
@@ -281,7 +423,7 @@ fn mid_save_new_file_waits_for_its_save() {
 #[test]
 fn mid_save_loser_does_not_block_promotion() {
     let mut mem = Mem::with(&[("a.MD", "# upper"), ("a.md", "# lower")]);
-    let mut site = Site::new();
+    let mut site = Site::new(Exclude::default());
     site.apply(vec![sync_all(&mem)], &mut mem);
     // a.MD wins; deleting it promotes a.md, which is mid-save.
     struct Mixed;
@@ -369,7 +511,7 @@ proptest! {
     #[test]
     fn incremental_equals_full(ops in prop::collection::vec(op(), 1..30), batch in 1usize..4) {
         let mut mem = Mem::default();
-        let mut site = Site::new();
+        let mut site = Site::new(Exclude::default());
         let mut out = Out::new();
         let mut last_push: BTreeMap<String, Push> = BTreeMap::new();
 

@@ -1,0 +1,33 @@
+---
+source: tests/render.rs
+expression: "built(\"notes/links\")"
+---
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="tachylite-version" content="bfb0cecd618550bc">
+<title>links</title>
+<script src="/.tachylite/live.js" defer></script>
+</head>
+<body>
+<main>
+<h1 id="links">Links</h1>
+<p>Every link form in one note.</p>
+<ul>
+<li>Label: <a href="/people/Jane%20Doe">Jane</a></li>
+<li>Heading: <a href="/welcome#a-table">welcome#A table</a></li>
+<li>Relative: <a href="/people/Jane%20Doe">../people/Jane Doe</a></li>
+<li>Root: <a href="/people/Jane%20Doe">People/jane doe</a></li>
+<li>Bare name: <a href="/people/Jane%20Doe">jane doe</a></li>
+<li>Within the page: <a href="#links">#Links</a></li>
+<li>Html page: <a href="/maps/route.html">route.html</a></li>
+<li>Image: <a href="/img/dot.png">dot.png</a></li>
+<li>Markdown: <a href="/people/Jane%20Doe">Jane</a>, <a href="/welcome#a-table">table</a> and <a href="https://example.com">example</a></li>
+<li>Broken: <a class="broken-link">nobody</a> and <a class="broken-link">gone</a></li>
+<li>Embed: <a href="/welcome">welcome</a></li>
+</ul>
+</main>
+</body>
+</html>

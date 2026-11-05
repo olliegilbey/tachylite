@@ -6,6 +6,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
+use tachylite::config::Exclude;
 use tachylite::vault::{Entry, Kind, SkipReason, Skipped, scan};
 
 fn fixture() -> PathBuf {
@@ -37,7 +38,7 @@ fn fixture_vault_has_exclusion_cases() {
 
 #[test]
 fn fixture_vault_entries() {
-    let scan = scan(&fixture()).unwrap();
+    let scan = scan(&fixture(), &Exclude::default()).unwrap();
     assert_eq!(
         scan.entries,
         vec![
@@ -45,6 +46,7 @@ fn fixture_vault_entries() {
             entry("docs/guide.pdf", Kind::Asset),
             entry("img/dot.png", Kind::Asset),
             entry("maps/route.html", Kind::Html),
+            entry("notes/links.md", Kind::Note),
             entry("people/Jane Doe.md", Kind::Note),
             entry("welcome.md", Kind::Note),
         ]
@@ -64,7 +66,7 @@ fn symlinks_are_skipped_not_followed() {
     symlink(outside.join("x.md"), vault.join("link.md")).unwrap();
     symlink(&outside, vault.join("out")).unwrap();
 
-    let scan = scan(&vault).unwrap();
+    let scan = scan(&vault, &Exclude::default()).unwrap();
     assert_eq!(scan.entries, vec![entry("real.md", Kind::Note)]);
     assert_eq!(
         scan.skipped,
@@ -87,7 +89,7 @@ fn case_variants_are_both_listed() {
     fs::write(dir.path().join("a.MD"), "upper").unwrap();
     fs::write(dir.path().join("a.md"), "lower").unwrap();
 
-    let scan = scan(dir.path()).unwrap();
+    let scan = scan(dir.path(), &Exclude::default()).unwrap();
     assert_eq!(
         scan.entries,
         vec![entry("a.MD", Kind::Note), entry("a.md", Kind::Note)]
@@ -101,7 +103,7 @@ fn non_utf8_names_are_skipped() {
     let name = OsStr::from_bytes(b"bad\xff.md");
     fs::write(dir.path().join(name), "x").unwrap();
 
-    let scan = scan(dir.path()).unwrap();
+    let scan = scan(dir.path(), &Exclude::default()).unwrap();
     assert_eq!(scan.entries, vec![]);
     assert_eq!(
         scan.skipped,
@@ -126,7 +128,7 @@ fn unreadable_folder_is_skipped_not_fatal() {
         return; // Running as root: permissions cannot make a folder unreadable.
     }
 
-    let result = scan(dir.path());
+    let result = scan(dir.path(), &Exclude::default());
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
     let scan = result.unwrap();
     assert_eq!(scan.entries, vec![entry("ok.md", Kind::Note)]);
@@ -148,6 +150,6 @@ fn fifo_named_like_a_note_is_not_published() {
         .status()
         .unwrap();
     assert!(status.success());
-    let scan = scan(dir.path()).unwrap();
+    let scan = scan(dir.path(), &Exclude::default()).unwrap();
     assert_eq!(scan.entries, vec![]);
 }

@@ -11,8 +11,10 @@ repository = "https://github.com/olliegilbey/tachylite"
 axum = { version = "0.8.9", default-features = false, features = ["tokio", "http1"] }
 comrak = { version = "0.59.0", default-features = false }
 futures-util = { version = "0.3.34", default-features = false }
+glob = "0.3.4"
 rustix = { version = "1.1.6", features = ["fs"] }
 tokio = { version = "1.54.1", features = ["rt", "net", "sync"] }
+toml = { version = "1.2.0", default-features = false, features = ["std", "parse"] }
 
 [profile.release]
 lto = true

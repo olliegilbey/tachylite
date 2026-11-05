@@ -12,9 +12,11 @@ use std::sync::{Arc, Mutex, PoisonError};
 use rustix::fs::inotify::{self, CreateFlags, ReadFlags, WatchFlags};
 use tokio::sync::broadcast;
 
+use crate::config::{self, Config, Exclude};
+use crate::output::Writer;
 use crate::site::{Change, Push, Site, Source};
-use crate::vault::{ReadError, VaultDir, excluded_segment, scan_under};
-use crate::{Error, output, report};
+use crate::vault::{ReadError, VaultDir, scan_under};
+use crate::{Error, report};
 
 /// What the watch thread shares with the HTTP thread.
 #[derive(Clone)]
@@ -86,7 +88,12 @@ fn within(path: &str, folder: &str) -> bool {
 impl Watcher {
     /// Watches every published folder, then applies a full sync. Watching first means no
     /// change is lost between the scan and the first event.
-    pub fn start(vault: VaultDir, out: PathBuf, live: Live) -> Result<Watcher, Error> {
+    pub fn start(
+        vault: VaultDir,
+        out: PathBuf,
+        live: Live,
+        config: Config,
+    ) -> Result<Watcher, Error> {
         let inotify = inotify::init(CreateFlags::CLOEXEC).map_err(|e| Error::Watch {
             path: vault.root().to_path_buf(),
             source: e.into(),
@@ -96,7 +103,7 @@ impl Watcher {
             dirs: HashMap::new(),
             vault,
             out,
-            site: Site::new(),
+            site: Site::new(config.exclude),
             live,
         };
         watcher.watch_tree("")?;
@@ -151,11 +158,13 @@ impl Watcher {
         let mut changes = Vec::new();
         // Path to whether any of its events was a save.
         let mut touched: BTreeMap<String, bool> = BTreeMap::new();
+        let mut reload = false;
         for event in events {
             if event.flags.contains(ReadFlags::QUEUE_OVERFLOW) {
                 eprintln!("inotify queue overflowed; rescanning the vault");
-                self.watch_tree("")?;
-                return Ok((vec![self.sync("")?], HashSet::new()));
+                // The lost events may include a save of the config.
+                self.reload_config();
+                return self.resync();
             }
             if event.flags.contains(ReadFlags::IGNORED) {
                 self.dirs.remove(&event.wd);
@@ -174,11 +183,22 @@ impl Watcher {
                 continue;
             }
             let Some(name) = event.name else { continue };
-            if excluded_segment(name.as_bytes()) {
+            if Exclude::segment(name.as_bytes()) {
                 continue;
             }
             let Some(name) = name.to_str() else { continue };
             let path = join(&dir, name);
+            if path == config::FILE {
+                // Only a save reloads: mid-save, the file can be missing, and a missing
+                // config would publish what it excludes.
+                reload |= event
+                    .flags
+                    .intersects(ReadFlags::CLOSE_WRITE | ReadFlags::MOVED_TO);
+                continue;
+            }
+            if self.site.exclude().path(&path) {
+                continue;
+            }
             if event.flags.contains(ReadFlags::ISDIR) {
                 if event
                     .flags
@@ -203,6 +223,9 @@ impl Watcher {
                 *touched.entry(path).or_default() |= save;
             }
         }
+        if reload && self.reload_config() {
+            return self.resync();
+        }
         let unsaved = touched
             .iter()
             .filter(|(_, saved)| !**saved)
@@ -212,8 +235,33 @@ impl Watcher {
         Ok((changes, unsaved))
     }
 
+    /// Rereads `tachylite.toml`. Returns true when a config was read and is now in force. A
+    /// missing, mid-save or broken file keeps the previous config.
+    fn reload_config(&mut self) -> bool {
+        match config::reload(&self.vault) {
+            Ok(Some(config)) => {
+                self.site.set_exclude(config.exclude);
+                true
+            }
+            Ok(None) => false,
+            Err(e) => {
+                eprintln!("{e}; keeping the previous config");
+                false
+            }
+        }
+    }
+
+    /// Rewatches the tree under the current exclusions and resyncs the root.
+    fn resync(&mut self) -> Result<(Vec<Change>, HashSet<String>), Error> {
+        for wd in self.dirs.drain().map(|(wd, _)| wd).collect::<Vec<_>>() {
+            let _ = inotify::remove_watch(&self.inotify, wd);
+        }
+        self.watch_tree("")?;
+        Ok((vec![self.sync("")?], HashSet::new()))
+    }
+
     fn sync(&self, under: &str) -> Result<Change, Error> {
-        let scan = scan_under(self.vault.root(), under)?;
+        let scan = scan_under(self.vault.root(), under, self.site.exclude())?;
         report::skipped(&scan.skipped);
         Ok(Change::Sync {
             under: under.to_string(),
@@ -243,11 +291,10 @@ impl Watcher {
         for item in items.flatten() {
             let name = item.file_name();
             let is_dir = item.file_type().is_ok_and(|t| t.is_dir());
-            if !is_dir || excluded_segment(name.as_bytes()) {
-                continue;
-            }
-            if let Some(name) = name.to_str() {
-                self.watch_tree(&join(rel, name))?;
+            let Some(name) = name.to_str() else { continue };
+            let child = join(rel, name);
+            if is_dir && !self.site.exclude().path(&child) {
+                self.watch_tree(&child)?;
             }
         }
         Ok(())
@@ -275,18 +322,11 @@ impl Watcher {
             vault: &self.vault,
             unsaved: &unsaved,
         };
-        let delta = self.site.apply(changes, &mut batch);
-        let failed = output::apply(&self.out, &delta, &self.vault)?;
-        report::skipped(&delta.skipped);
-        report::skipped(&failed);
-        {
-            let mut versions = self
-                .live
-                .versions
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            for push in &delta.pushes {
-                match push {
+        let live = &self.live;
+        let mut writer = Writer::new(&self.out, &self.vault, |push: Push| {
+            {
+                let mut versions = live.versions.lock().unwrap_or_else(PoisonError::into_inner);
+                match &push {
                     Push::Page { key, version, .. } => {
                         versions.insert(key.clone(), version.clone());
                     }
@@ -295,11 +335,14 @@ impl Watcher {
                     }
                 }
             }
-        }
-        for push in delta.pushes {
             // An error only means no client is listening.
-            let _ = self.live.pushes.send(Arc::new(push));
-        }
+            let _ = live.pushes.send(Arc::new(push));
+        });
+        let report = self.site.apply_to(changes, &mut batch, &mut writer);
+        let failed = writer.finish()?;
+        report::skipped(&report.skipped);
+        report::skipped(&failed);
+        report::broken(&report.broken);
         Ok(())
     }
 }
