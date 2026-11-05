@@ -7,7 +7,7 @@ expression: "built(\"notes/syntax\")"
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="tachylite-version" content="316dd31ead0b5a00">
+<meta name="tachylite-version" content="352a634cc4e23f88">
 <title>Syntax tour</title>
 <script src="/.tachylite/live.js" defer></script>
 </head>
@@ -39,10 +39,10 @@ Folded
 </div>
 <p>Some <mark>highlighted</mark> text, a  comment, and tags <a class="tag" href="/.tachylite/tags/garden">#garden</a> and <a class="tag" href="/.tachylite/tags/plants/fern">#plants/fern</a>.</p>
 <p>A footnote.<sup class="footnote-ref"><a href="#fn-1" id="fnref-1" data-footnote-ref>1</a></sup></p>
-<pre><code class="language-mermaid">graph TD
+<pre class="mermaid">graph TD
 %% a Mermaid comment stays
 A--&gt;B
-</code></pre>
+</pre>
 <section class="footnotes" data-footnotes>
 <ol>
 <li id="fn-1">

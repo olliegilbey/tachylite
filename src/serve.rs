@@ -28,6 +28,9 @@ use crate::{Error, output};
 
 pub const DEFAULT_PORT: u16 = 7420;
 const LIVE_JS: &str = include_str!("live.js");
+/// `@mermaid-js/tiny`, gzipped by `make mermaid`. Every browser accepts gzip, so it is served
+/// as stored.
+const MERMAID_JS_GZ: &[u8] = include_bytes!("vendor/mermaid.tiny.js.gz");
 
 /// Percent-decodes a URL path into a vault-style path, or `None` for a path no page can have:
 /// invalid escapes or UTF-8, NUL, empty, `.` or `..` segments, a trailing `/`, or a segment
@@ -177,6 +180,29 @@ async fn live_js() -> Response {
     r
 }
 
+async fn mermaid_js(headers: HeaderMap) -> Response {
+    static TAG: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| etag(MERMAID_JS_GZ));
+    let mut r = if matches(&headers, &TAG) {
+        status(StatusCode::NOT_MODIFIED)
+    } else {
+        Response::new(Body::from(MERMAID_JS_GZ))
+    };
+    if r.status() == StatusCode::NOT_MODIFIED {
+        *r.body_mut() = Body::empty();
+    }
+    let h = r.headers_mut();
+    h.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/javascript"),
+    );
+    h.insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    if let Ok(value) = HeaderValue::from_str(&TAG) {
+        h.insert(header::ETAG, value);
+    }
+    r
+}
+
 /// The query parameter `name`, percent-decoded.
 fn query(uri: &Uri, name: &str) -> Option<String> {
     uri.query()?
@@ -292,6 +318,7 @@ async fn events(State(app): State<Arc<App>>, uri: Uri, headers: HeaderMap) -> Re
 pub fn router(app: App) -> Router {
     Router::new()
         .route("/.tachylite/live.js", get(live_js))
+        .route("/.tachylite/mermaid.js", get(mermaid_js))
         .route("/.tachylite/events", get(events))
         .fallback(file)
         .with_state(Arc::new(app))

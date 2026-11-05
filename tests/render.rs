@@ -391,3 +391,12 @@ fn comments_in_code_stay() {
     assert_eq!(html.matches("%%").count(), 2, "{html}");
     assert!(html.contains("after"));
 }
+
+#[test]
+fn mermaid_fence_renders_pre() {
+    assert_eq!(
+        plain("```mermaid\nA-->B & <C>\n```\n\n```rust\nx\n```"),
+        "<pre class=\"mermaid\">A--&gt;B &amp; &lt;C&gt;\n</pre>\n\
+         <pre><code class=\"language-rust\">x\n</code></pre>\n"
+    );
+}

@@ -3,8 +3,11 @@ use std::collections::{BTreeSet, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
+use comrak::adapters::CodefenceRendererAdapter;
+use comrak::nodes::Sourcepos;
 use comrak::nodes::{AstNode, NodeValue};
-use comrak::{Anchorizer, Arena, Options, format_html, parse_document};
+use comrak::options::Plugins;
+use comrak::{Anchorizer, Arena, Options, format_html_with_plugins, parse_document};
 
 use crate::front::{self, Value};
 use crate::links::{Index, Resolved, resolve, split};
@@ -251,8 +254,13 @@ pub fn render_body(from: &str, markdown: &str, index: &Index) -> Body {
         link_tags(&arena, node);
     }
     let mut html = props;
+    let mut plugins = Plugins::default();
+    plugins
+        .render
+        .codefence_renderers
+        .insert("mermaid".to_string(), &Mermaid);
     // Writing into a String cannot fail.
-    let _ = format_html(root, &options, &mut html);
+    let _ = format_html_with_plugins(root, &options, &mut html, &plugins);
     body.html = add_ids(&html, &ids);
     body
 }
@@ -358,6 +366,22 @@ fn hide_stray_comments<'a>(root: &'a AstNode<'a>) {
 fn edit(node: &AstNode<'_>, change: impl FnOnce(&mut String)) {
     if let NodeValue::Text(text) = &mut node.data_mut().value {
         change(text.to_mut());
+    }
+}
+
+/// A Mermaid fence becomes `<pre class="mermaid">`, which the client draws.
+struct Mermaid;
+
+impl CodefenceRendererAdapter for Mermaid {
+    fn write(
+        &self,
+        output: &mut dyn std::fmt::Write,
+        _lang: &str,
+        _meta: &str,
+        code: &str,
+        _sourcepos: Option<Sourcepos>,
+    ) -> std::fmt::Result {
+        writeln!(output, "<pre class=\"mermaid\">{}</pre>", escape(code))
     }
 }
 

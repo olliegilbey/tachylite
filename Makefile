@@ -2,7 +2,7 @@ BUDGET_SCALE ?= 3
 TARGET ?= x86_64-unknown-linux-musl
 SIZE_LIMIT := 10000000
 
-.PHONY: check browser budget size upgrade
+.PHONY: check browser budget size upgrade mermaid
 
 # The gate CI runs.
 check:
@@ -34,3 +34,18 @@ upgrade:
 	rustup update stable
 	cargo upgrade --incompatible
 	cargo update
+
+# The vendored Mermaid script. To upgrade, change both lines to the npm registry's
+# version and `dist.integrity`, then run `make mermaid`.
+MERMAID_VERSION := 12.3.0
+MERMAID_SHA512 := 90BO2kQvmQWj9YjBX2IsLHCw61rN69dPTn5wFfDu+b9aT7qtzfzTA3wpKWeaRAKK85refSo9How5EOeY39DWfA==
+
+mermaid:
+	tmp=$$(mktemp -d) && \
+	curl -fsS -o $$tmp/m.tgz https://registry.npmjs.org/@mermaid-js/tiny/-/tiny-$(MERMAID_VERSION).tgz && \
+	test "$$(openssl dgst -sha512 -binary $$tmp/m.tgz | base64 -w0)" = "$(MERMAID_SHA512)" && \
+	tar xzf $$tmp/m.tgz -C $$tmp package/dist/mermaid.tiny.js package/LICENSE && \
+	mkdir -p src/vendor && \
+	gzip -9nc $$tmp/package/dist/mermaid.tiny.js > src/vendor/mermaid.tiny.js.gz && \
+	cp $$tmp/package/LICENSE src/vendor/MERMAID-LICENSE && \
+	rm -rf $$tmp
