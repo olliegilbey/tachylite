@@ -360,3 +360,53 @@ fn queue_overflow_resyncs_the_vault() {
     assert!(late.expect("page").data.contains("<h1>late</h1>"));
     assert_eq!(server.get(&format!("/n{}", limit / 2)).status, 200);
 }
+
+#[test]
+fn excluding_a_folder_unpublishes_it() {
+    let (d, server) = with_notes(&[("a.md", "# a"), ("d/n.md", "# n")]);
+    let mut events = server.subscribe("/d/n", &version(&server, "/d/n"), None);
+    fs::write(d.vault().join("tachylite.toml"), "exclude = [\"d\"]\n").unwrap();
+    events.expect("gone");
+    assert_eq!(server.get("/d/n").status, 404);
+}
+
+#[test]
+fn unexcluding_republishes() {
+    let (d, server) = with_notes(&[("tachylite.toml", "exclude = [\"d\"]\n"), ("d/n.md", "# n")]);
+    assert_eq!(server.get("/d/n").status, 404);
+    let mut events = server.subscribe("/d/n", "", None);
+    fs::write(d.vault().join("tachylite.toml"), "exclude = []\n").unwrap();
+    assert!(events.expect("page").data.contains("<h1>n</h1>"));
+}
+
+#[test]
+fn bad_config_edit_keeps_serving() {
+    let (d, server) = with_notes(&[("tachylite.toml", "exclude = [\"d\"]\n"), ("a.md", "# a")]);
+    let mut events = server.subscribe("/a", &version(&server, "/a"), None);
+    fs::write(d.vault().join("tachylite.toml"), "exclude = [\n").unwrap();
+    assert!(
+        server
+            .wait_line(
+                |l| l.contains("keeping the previous config"),
+                Duration::from_secs(10)
+            )
+            .is_some()
+    );
+    fs::write(d.vault().join("a.md"), "# edited").unwrap();
+    assert!(events.expect("page").data.contains("<h1>edited</h1>"));
+}
+
+#[test]
+fn deleting_the_config_keeps_its_exclusions() {
+    let (d, server) = with_notes(&[
+        ("tachylite.toml", "exclude = [\"d\"]\n"),
+        ("d/n.md", "# n"),
+        ("bar.md", "# b0"),
+    ]);
+    let mut barrier = server.subscribe("/bar", &version(&server, "/bar"), None);
+    fs::remove_file(d.vault().join("tachylite.toml")).unwrap();
+    fs::write(d.vault().join("d/n.md"), "# still hidden").unwrap();
+    fs::write(d.vault().join("bar.md"), "# b1").unwrap();
+    barrier.expect("page");
+    assert_eq!(server.get("/d/n").status, 404);
+}

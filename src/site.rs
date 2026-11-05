@@ -130,6 +130,11 @@ impl Site {
         }
     }
 
+    /// Takes effect at the next `Sync` of the root, which re-lists every file.
+    pub fn set_exclude(&mut self, exclude: Exclude) {
+        self.exclude = exclude;
+    }
+
     pub fn exclude(&self) -> &Exclude {
         &self.exclude
     }
@@ -204,7 +209,8 @@ impl Site {
 
         let mut gone_keys = Vec::new();
         for path in self.winners.difference(&won) {
-            let kind = classify(path, &self.exclude).unwrap_or(Kind::Asset);
+            // Its kind by extension: the path may be excluded now.
+            let kind = classify(path, &Exclude::default()).unwrap_or(Kind::Asset);
             let (_, out) = claim(path, kind);
             delta.deletes.push(out);
             if kind == Kind::Note {
@@ -278,6 +284,8 @@ impl Site {
         skipped: &mut Vec<Skipped>,
     ) -> bool {
         let Some(kind) = classify(path, &self.exclude) else {
+            // Excluded since it was listed, or never publishable.
+            self.entries.remove(path);
             return false;
         };
         let result = match kind {

@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use rustix::fs::inotify::{self, CreateFlags, ReadFlags, WatchFlags};
 use tokio::sync::broadcast;
 
-use crate::config::{Config, Exclude};
+use crate::config::{self, Config, Exclude};
 use crate::site::{Change, Push, Site, Source};
 use crate::vault::{ReadError, VaultDir, scan_under};
 use crate::{Error, output, report};
@@ -157,6 +157,7 @@ impl Watcher {
         let mut changes = Vec::new();
         // Path to whether any of its events was a save.
         let mut touched: BTreeMap<String, bool> = BTreeMap::new();
+        let mut reload = false;
         for event in events {
             if event.flags.contains(ReadFlags::QUEUE_OVERFLOW) {
                 eprintln!("inotify queue overflowed; rescanning the vault");
@@ -185,6 +186,14 @@ impl Watcher {
             }
             let Some(name) = name.to_str() else { continue };
             let path = join(&dir, name);
+            if path == config::FILE {
+                // Only a save reloads: mid-save, the file can be missing, and a missing
+                // config would publish what it excludes.
+                reload |= event
+                    .flags
+                    .intersects(ReadFlags::CLOSE_WRITE | ReadFlags::MOVED_TO);
+                continue;
+            }
             if self.site.exclude().path(&path) {
                 continue;
             }
@@ -210,6 +219,19 @@ impl Watcher {
                     .flags
                     .intersects(ReadFlags::CLOSE_WRITE | ReadFlags::MOVED_TO);
                 *touched.entry(path).or_default() |= save;
+            }
+        }
+        if reload {
+            match config::load(&self.vault) {
+                Ok(config) => {
+                    self.site.set_exclude(config.exclude);
+                    for wd in self.dirs.drain().map(|(wd, _)| wd).collect::<Vec<_>>() {
+                        let _ = inotify::remove_watch(&self.inotify, wd);
+                    }
+                    self.watch_tree("")?;
+                    return Ok((vec![self.sync("")?], HashSet::new()));
+                }
+                Err(e) => eprintln!("{e}; keeping the previous config"),
             }
         }
         let unsaved = touched
