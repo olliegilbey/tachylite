@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::BTreeSet;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
@@ -27,7 +27,7 @@ fn options() -> Options<'static> {
     options.extension.footnotes = true;
     options.extension.wikilinks_title_after_pipe = true;
     options.extension.ofm_callouts = true;
-    options.extension.ofm_comments = true;
+    options.parse.escaped_char_spans = true;
     options.extension.highlight = true;
     options
 }
@@ -198,13 +198,21 @@ fn properties(body: &mut Body, from: &str, yaml: &str, index: &Index) -> String 
 /// Renders a note's Markdown and resolves its links against the published paths.
 pub fn render_body(from: &str, markdown: &str, index: &Index) -> Body {
     let (yaml, markdown) = front::split(markdown);
+    let markdown = strip_comments(markdown);
     let mut body = Body::default();
     let props = yaml.map_or_else(String::new, |y| properties(&mut body, from, y, index));
     let arena = Arena::new();
     let options = options();
-    let root = parse_document(&arena, markdown, &options);
-    if markdown.contains("%%") {
-        hide_stray_comments(root);
+    let root = parse_document(&arena, &markdown, &options);
+    // The stripper and the parser disagree on what is code. Withhold the text rather than
+    // risk a comment.
+    if markdown.contains("%%") && unstripped(root) {
+        body.html = "<p class=\"comment-error\">This note has a comment Tachylite could not \
+                     place, so its text is withheld.</p>\n"
+            .to_string();
+        body.targets.clear();
+        body.broken.clear();
+        return body;
     }
     let mut rewrites = Vec::new();
     let mut texts = Vec::new();
@@ -222,7 +230,10 @@ pub fn render_body(from: &str, markdown: &str, index: &Index) -> Body {
             let linked = node.ancestors().any(|a| {
                 matches!(
                     a.data().value,
-                    NodeValue::Link(_) | NodeValue::WikiLink(_) | NodeValue::Image(_)
+                    NodeValue::Link(_)
+                        | NodeValue::WikiLink(_)
+                        | NodeValue::Image(_)
+                        | NodeValue::Escaped
                 )
             });
             if !linked {
@@ -318,55 +329,123 @@ fn link_tags<'a>(arena: &'a Arena<'a>, node: &'a AstNode<'a>) {
     node.detach();
 }
 
-/// Hides the comments comrak leaves open. A `%%` it did not pair, because the comment wraps
-/// a line or a block or is never closed, hides everything to the next such `%%`, or to the
-/// end of the note. Hiding is the safe side: a comment is never published.
-fn hide_stray_comments<'a>(root: &'a AstNode<'a>) {
-    let nodes: Vec<&'a AstNode<'a>> = root.descendants().collect();
-    let mut marks = Vec::new();
-    for (i, node) in nodes.iter().enumerate() {
-        if let NodeValue::Text(text) = &node.data().value {
-            marks.extend(text.match_indices("%%").map(|(at, _)| (i, at)));
-        }
+/// True when parsed text outside code still holds `%%`.
+fn unstripped<'a>(root: &'a AstNode<'a>) -> bool {
+    root.descendants()
+        .any(|n| matches!(&n.data().value, NodeValue::Text(t) if t.contains("%%")))
+}
+
+/// The fence a line opens, after container markers: its character and length.
+fn fence_open(line: &str) -> Option<(u8, usize)> {
+    let rest = strip_containers(line);
+    let c = *rest.as_bytes().first()?;
+    if c != b'`' && c != b'~' {
+        return None;
     }
-    if marks.is_empty() {
-        return;
-    }
-    // Last first, so an earlier pair's offsets stay valid.
-    for pair in marks.chunks(2).rev() {
-        let ((s, s_at), end) = (pair[0], pair.get(1).copied());
-        let stop = end.map_or(nodes.len(), |(e, _)| e);
-        if let Some((e, e_at)) = end {
-            if e == s {
-                edit(nodes[s], |t| t.replace_range(s_at..e_at + 2, ""));
-                continue;
-            }
-            edit(nodes[e], |t| t.replace_range(..e_at + 2, ""));
-        }
-        edit(nodes[s], |t| t.truncate(s_at));
-        let keep: HashSet<*const AstNode<'a>> = end
-            .map(|(e, _)| nodes[e].ancestors().map(|a| a as *const _).collect())
-            .unwrap_or_default();
-        let hidden: HashSet<*const AstNode<'a>> = nodes[s + 1..stop]
-            .iter()
-            .map(|n| *n as *const _)
-            .filter(|n| !keep.contains(n))
-            .collect();
-        for node in &nodes[s + 1..stop] {
-            let top = node
-                .parent()
-                .is_none_or(|p| !hidden.contains(&(p as *const _)));
-            if hidden.contains(&(*node as *const _)) && top {
-                node.detach();
-            }
+    let n = rest.bytes().take_while(|&b| b == c).count();
+    let info = &rest[n..];
+    (n >= 3 && !(c == b'`' && info.contains('`'))).then_some((c, n))
+}
+
+fn fence_close(line: &str, (c, n): (u8, usize)) -> bool {
+    let rest = strip_containers(line);
+    let run = rest.bytes().take_while(|&b| b == c).count();
+    run >= n && rest[run..].trim().is_empty()
+}
+
+/// A line without its leading whitespace, quote markers and list markers.
+fn strip_containers(mut line: &str) -> &str {
+    loop {
+        let trimmed = line.trim_start();
+        let marker = trimmed.strip_prefix('>').or_else(|| {
+            let digits = trimmed.bytes().take_while(u8::is_ascii_digit).count();
+            let rest = &trimmed[digits..];
+            let bullet = if digits > 0 {
+                rest.strip_prefix(['.', ')'])
+            } else {
+                rest.strip_prefix(['-', '*', '+'])
+            };
+            bullet.filter(|r| r.starts_with([' ', '\t']))
+        });
+        match marker {
+            Some(rest) => line = rest,
+            None => return trimmed,
         }
     }
 }
 
-fn edit(node: &AstNode<'_>, change: impl FnOnce(&mut String)) {
-    if let NodeValue::Text(text) = &mut node.data_mut().value {
-        change(text.to_mut());
+/// Removes `%%comments%%` from a note's Markdown, in note order, before it is parsed. A
+/// comment runs to the next `%%`, or to the end of the note. Fenced code and code spans keep
+/// their `%%`, unless a comment holds them. Newlines in a comment stay, so lines keep their
+/// places.
+pub fn strip_comments(md: &str) -> Cow<'_, str> {
+    if !md.contains("%%") {
+        return Cow::Borrowed(md);
     }
+    let mut out = String::with_capacity(md.len());
+    let mut comment = false;
+    let mut fence = None;
+    for line in md.split_inclusive('\n') {
+        if !comment && let Some(open) = fence {
+            if fence_close(line, open) {
+                fence = None;
+            }
+            out.push_str(line);
+            continue;
+        }
+        if !comment && let Some(open) = fence_open(line) {
+            fence = Some(open);
+            out.push_str(line);
+            continue;
+        }
+        let bytes = line.as_bytes();
+        let mut i = 0;
+        let mut kept = 0;
+        while i < bytes.len() {
+            if comment {
+                match line[i..].find("%%") {
+                    Some(at) => {
+                        comment = false;
+                        i += at + 2;
+                        kept = i;
+                    }
+                    None => {
+                        i = bytes.len();
+                        kept = i;
+                        if line.ends_with('\n') {
+                            out.push('\n');
+                        }
+                    }
+                }
+                continue;
+            }
+            match bytes[i] {
+                b'\\' => i += 2,
+                b'`' => {
+                    let n = bytes[i..].iter().take_while(|&&b| b == b'`').count();
+                    let close = "`".repeat(n);
+                    let after = i + n;
+                    // A span closes at the next run of exactly `n` backticks.
+                    let end = line[after..].match_indices(&close).find(|(at, _)| {
+                        let at = after + at;
+                        bytes.get(at + n) != Some(&b'`') && bytes[at - 1] != b'`'
+                    });
+                    i = end.map_or(after, |(at, _)| after + at + n);
+                }
+                b'%' if bytes.get(i + 1) == Some(&b'%') => {
+                    out.push_str(&line[kept..i]);
+                    comment = true;
+                    i += 2;
+                    kept = i;
+                }
+                _ => i += 1,
+            }
+        }
+        if !comment {
+            out.push_str(&line[kept.min(line.len())..]);
+        }
+    }
+    Cow::Owned(out)
 }
 
 /// A Mermaid fence becomes `<pre class="mermaid">`, which the client draws.

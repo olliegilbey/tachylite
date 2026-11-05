@@ -400,3 +400,42 @@ fn mermaid_fence_renders_pre() {
          <pre><code class=\"language-rust\">x\n</code></pre>\n"
     );
 }
+
+#[test]
+fn escaped_hash_is_not_a_tag() {
+    let html = plain("\\#notatag and \\\\ #real");
+    assert!(!html.contains("tags/notatag"), "{html}");
+    assert!(html.contains("#notatag"), "{html}");
+    assert!(html.contains("tags/real"), "{html}");
+}
+
+#[test]
+fn comment_wins_over_code_it_holds() {
+    let html = plain("%%\n```\nzebra\n```\n%% after");
+    assert!(!html.contains("zebra"), "{html}");
+    assert!(html.contains("after"), "{html}");
+}
+
+#[test]
+fn comments_in_code_spans_and_fences_in_containers_stay() {
+    let html =
+        plain("a `x %% y` b %%zebra%% c\n\n> ```\n> %% kept\n> ```\n\n- ```\n  %% kept too\n  ```");
+    assert!(!html.contains("zebra"), "{html}");
+    assert!(html.contains("x %% y"), "{html}");
+    assert!(html.contains("%% kept\n"), "{html}");
+    assert!(html.contains("%% kept too"), "{html}");
+}
+
+#[test]
+fn disagreement_on_code_withholds_the_text() {
+    // comrak's code span crosses the line break; the stripper reads spans within a line.
+    let index = Index::new(["b.md"]);
+    let body = render_body("a.md", "`a\nb` %% zebra [[b]] `d`\n", &index);
+    assert!(
+        body.html.contains("class=\"comment-error\""),
+        "{}",
+        body.html
+    );
+    assert!(!body.html.contains("zebra"));
+    assert!(body.targets.is_empty());
+}

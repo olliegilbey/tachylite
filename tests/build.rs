@@ -425,6 +425,33 @@ fn comments_reach_no_output() {
              wrap %%zebra\n[[target]]%% two\n\nacross %%zebra\n\n[[target]] zebra%% three\n\n\
              > [!note] %%zebra%%\n> four\n\nlast %%zebra [[target]]",
         ),
+        // Footnote definitions move to the end of comrak's tree, so pairing must follow
+        // the note's order.
+        (
+            "f1.md",
+            "Text[^1]\n\n[^1]: note %% start\n\nzebra paragraph\n",
+        ),
+        (
+            "f2.md",
+            "Para[^1] one %% zebra\n\n[^1]: note %% shown\n\nPara two %% zebra two\n\n\
+             zebra three %% shown three\n",
+        ),
+        // A block comment opened inside a container closes with the container in comrak.
+        ("l1.md", "- %%\n  zebra one\nzebra two %%\n\nafter\n"),
+        (
+            "l2.md",
+            "> %% zebra\nzebra lazy\n\nzebra para\n%%\n\nafter\n",
+        ),
+        // A comment that starts inside link text hides the link.
+        (
+            "k1.md",
+            "[[target|visible %% zebra]]\nmore zebra %% after\n",
+        ),
+        (
+            "k2.md",
+            "[visible %% zebra](https://zebra.example/x) zebra %% after\n",
+        ),
+        ("k3.md", "![alt %% zebra](zebra.png) %% after\n"),
     ]);
     let out = vault.path().join("out");
     build(&vault.path().join("vault"), &out).unwrap();
