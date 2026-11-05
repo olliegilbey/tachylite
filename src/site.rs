@@ -42,7 +42,7 @@ pub struct Delta {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Write {
-    Page { out: String, html: String },
+    Page { out: String, html: Arc<str> },
     Copy { out: String, from: String },
 }
 
@@ -204,23 +204,23 @@ impl Site {
             let new = !self.winners.contains(path);
             match kind {
                 Kind::Note => {
-                    let Some(bytes) = fresh.get(path) else {
+                    // Each source is dropped once rendered, so a full sync never holds both.
+                    let Some(bytes) = fresh.remove(path) else {
                         continue;
                     };
-                    let page = render_note(note_title(path), &String::from_utf8_lossy(bytes));
+                    let page = render_note(note_title(path), &String::from_utf8_lossy(&bytes));
+                    drop(bytes);
                     if !new && self.versions.get(path) == Some(&page.version) {
                         continue;
                     }
                     self.versions.insert(path.clone(), page.version.clone());
+                    let html: Arc<str> = Arc::from(page.html);
                     delta.pushes.push(Push::Page {
                         key: note_key(path).to_string(),
                         version: page.version,
-                        html: Arc::from(page.html.as_str()),
+                        html: Arc::clone(&html),
                     });
-                    delta.writes.push(Write::Page {
-                        out,
-                        html: page.html,
-                    });
+                    delta.writes.push(Write::Page { out, html });
                 }
                 Kind::Html | Kind::Asset => {
                     if new || touched.contains(path) {

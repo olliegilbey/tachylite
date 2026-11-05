@@ -46,7 +46,7 @@ pub fn apply(out: &Path, delta: &Delta, vault: &VaultDir) -> Result<Vec<Skipped>
     for write in &delta.writes {
         match write {
             Write::Page { out: rel, html } => {
-                write_via_tmp(&out.join(rel), |tmp| fs::write(tmp, html))?;
+                write_via_tmp(&out.join(rel), |tmp| fs::write(tmp, html.as_bytes()))?;
             }
             Write::Copy { out: rel, from } => match vault.open_file(from) {
                 Ok(mut file) => write_via_tmp(&out.join(rel), |tmp| {
