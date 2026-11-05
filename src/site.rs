@@ -153,8 +153,14 @@ impl Site {
         }
 
         let mut fresh: HashMap<String, Vec<u8>> = HashMap::new();
+        let mut mid_save = Vec::new();
         for path in &touched {
-            self.probe(path, source, &mut fresh, &mut delta.skipped);
+            if self.probe(path, source, &mut fresh, &mut delta.skipped) {
+                mid_save.push(path.clone());
+            }
+        }
+        for path in &mid_save {
+            touched.remove(path);
         }
 
         // A loser promoted by this change was not read yet. Read it; if that fails, it
@@ -254,15 +260,16 @@ impl Site {
     }
 
     /// Reads a path's current state into `entries`, and a note's bytes into `fresh`.
+    /// Returns true for a published path that is mid-save, which keeps its page as it is.
     fn probe(
         &mut self,
         path: &str,
         source: &mut impl Source,
         fresh: &mut HashMap<String, Vec<u8>>,
         skipped: &mut Vec<Skipped>,
-    ) {
+    ) -> bool {
         let Some(kind) = classify(path) else {
-            return;
+            return false;
         };
         let result = match kind {
             Kind::Note => source.note(path).map(|bytes| {
@@ -274,7 +281,9 @@ impl Site {
             Ok(()) => {
                 self.entries.insert(path.to_string(), kind);
             }
-            Err(ReadError::Missing) => {
+            // An unpublished path has nothing to keep; its save adds it.
+            Err(ReadError::MidSave) if self.winners.contains(path) => return true,
+            Err(ReadError::Missing | ReadError::MidSave) => {
                 self.entries.remove(path);
             }
             Err(ReadError::Skip(reason)) => {
@@ -285,5 +294,6 @@ impl Site {
                 });
             }
         }
+        false
     }
 }

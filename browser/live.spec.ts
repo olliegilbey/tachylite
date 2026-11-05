@@ -134,3 +134,23 @@ test("a deleted note shows a notice and comes back", async ({ page }, info) => {
   expect(await page.evaluate(() => (window as any).stayed)).toBe(true);
   expect(errors).toEqual([]);
 });
+
+test("a save that removes the note first never flashes the notice", async ({ page }, info) => {
+  const name = `resave-${info.project.name}`;
+  note(name, "# Resave\n\nround start\n");
+  await open(page, name, "round start");
+  await page.evaluate(() => {
+    new MutationObserver(() => {
+      if (document.querySelector("main")?.textContent?.includes("deleted")) {
+        (window as any).flashed = true;
+      }
+    }).observe(document.body, { childList: true, subtree: true, characterData: true });
+  });
+  for (let round = 0; round < 10; round++) {
+    rmSync(join(vault, `${name}.md`));
+    note(name, `# Resave\n\nround ${round}\n`);
+    await expect(page.locator("main")).toContainText(`round ${round}`);
+  }
+  expect(await page.evaluate(() => (window as any).flashed ?? false)).toBe(false);
+  expect(errors).toEqual([]);
+});

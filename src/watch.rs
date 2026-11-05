@@ -1,20 +1,19 @@
 //! The watch edge: inotify events in, site changes applied, output written, pushes sent.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsString;
 use std::fs;
 use std::mem::MaybeUninit;
 use std::os::fd::OwnedFd;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
-use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use rustix::fs::inotify::{self, CreateFlags, ReadFlags, WatchFlags};
 use tokio::sync::broadcast;
 
-use crate::site::{Change, Push, Site};
-use crate::vault::{VaultDir, excluded_segment, scan_under};
+use crate::site::{Change, Push, Site, Source};
+use crate::vault::{ReadError, VaultDir, excluded_segment, scan_under};
 use crate::{Error, output, report};
 
 /// What the watch thread shares with the HTTP thread.
@@ -60,6 +59,23 @@ fn join(dir: &str, name: &str) -> String {
     }
 }
 
+/// The vault, as one batch reads it. A path whose events held no save may be mid-save.
+struct Batch<'a> {
+    vault: &'a VaultDir,
+    unsaved: &'a HashSet<String>,
+}
+
+impl Source for Batch<'_> {
+    fn note(&mut self, path: &str) -> Result<Vec<u8>, ReadError> {
+        self.vault.read_after(path, !self.unsaved.contains(path))
+    }
+    fn file(&mut self, path: &str) -> Result<(), ReadError> {
+        self.vault
+            .open_after(path, !self.unsaved.contains(path))
+            .map(|_| ())
+    }
+}
+
 fn within(path: &str, folder: &str) -> bool {
     path == folder
         || path
@@ -85,7 +101,7 @@ impl Watcher {
         };
         watcher.watch_tree("")?;
         let sync = watcher.sync("")?;
-        watcher.apply(vec![sync])?;
+        watcher.apply(vec![sync], HashSet::new())?;
         Ok(watcher)
     }
 
@@ -96,7 +112,7 @@ impl Watcher {
             let result = self
                 .read_batch(&mut buf)
                 .and_then(|events| self.changes(events))
-                .and_then(|changes| self.apply(changes));
+                .and_then(|(changes, unsaved)| self.apply(changes, unsaved));
             if let Err(e) = result {
                 return e;
             }
@@ -130,13 +146,15 @@ impl Watcher {
         }
     }
 
-    fn changes(&mut self, events: Vec<Event>) -> Result<Vec<Change>, Error> {
+    /// The batch's changes, and the touched paths none of whose events was a save.
+    fn changes(&mut self, events: Vec<Event>) -> Result<(Vec<Change>, HashSet<String>), Error> {
         let mut changes = Vec::new();
-        let mut touched = BTreeSet::new();
+        // Path to whether any of its events was a save.
+        let mut touched: BTreeMap<String, bool> = BTreeMap::new();
         for event in events {
             if event.flags.contains(ReadFlags::QUEUE_OVERFLOW) {
                 self.watch_tree("")?;
-                return Ok(vec![self.sync("")?]);
+                return Ok((vec![self.sync("")?], HashSet::new()));
             }
             if event.flags.contains(ReadFlags::IGNORED) {
                 self.dirs.remove(&event.wd);
@@ -177,20 +195,20 @@ impl Watcher {
                         entries: Vec::new(),
                     });
                 }
-            } else if !(event.flags.contains(ReadFlags::CREATE) && self.saves_later(&path)) {
-                touched.insert(path);
+            } else {
+                let save = event
+                    .flags
+                    .intersects(ReadFlags::CLOSE_WRITE | ReadFlags::MOVED_TO);
+                *touched.entry(path).or_default() |= save;
             }
         }
-        changes.extend(touched.into_iter().map(Change::Touch));
-        Ok(changes)
-    }
-
-    /// A new regular file with one link is still being written, and its `CLOSE_WRITE`
-    /// follows. Reading it now would publish half a note. A symlink, FIFO or hard link
-    /// gets no `CLOSE_WRITE`, so its `CREATE` is the only event.
-    fn saves_later(&self, path: &str) -> bool {
-        fs::symlink_metadata(self.vault.root().join(path))
-            .is_ok_and(|m| m.file_type().is_file() && m.nlink() == 1)
+        let unsaved = touched
+            .iter()
+            .filter(|(_, saved)| !**saved)
+            .map(|(path, _)| path.clone())
+            .collect();
+        changes.extend(touched.into_keys().map(Change::Touch));
+        Ok((changes, unsaved))
     }
 
     fn sync(&self, under: &str) -> Result<Change, Error> {
@@ -248,11 +266,15 @@ impl Watcher {
         }
     }
 
-    fn apply(&mut self, changes: Vec<Change>) -> Result<(), Error> {
+    fn apply(&mut self, changes: Vec<Change>, unsaved: HashSet<String>) -> Result<(), Error> {
         if changes.is_empty() {
             return Ok(());
         }
-        let delta = self.site.apply(changes, &mut self.vault);
+        let mut batch = Batch {
+            vault: &self.vault,
+            unsaved: &unsaved,
+        };
+        let delta = self.site.apply(changes, &mut batch);
         let failed = output::apply(&self.out, &delta, &self.vault)?;
         report::skipped(&delta.skipped);
         report::skipped(&failed);

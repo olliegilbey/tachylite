@@ -238,6 +238,71 @@ const PATHS: [&str; 10] = [
 ];
 const CONTENTS: [&str; 3] = ["# one", "two *b*", "- [ ] three"];
 
+/// A source where every file is mid-save.
+struct MidSave;
+
+impl Source for MidSave {
+    fn note(&mut self, _: &str) -> Result<Vec<u8>, ReadError> {
+        Err(ReadError::MidSave)
+    }
+    fn file(&mut self, _: &str) -> Result<(), ReadError> {
+        Err(ReadError::MidSave)
+    }
+}
+
+#[test]
+fn mid_save_keeps_published_pages() {
+    let mut mem = Mem::with(&[("a.md", "# A"), ("i.png", "png")]);
+    let mut site = Site::new();
+    site.apply(vec![sync_all(&mem)], &mut mem);
+    let delta = site.apply(vec![touch("a.md"), touch("i.png")], &mut MidSave);
+    assert_eq!(delta, Delta::default());
+    mem.0.insert("a.md".into(), b"# B".to_vec());
+    let delta = site.apply(vec![touch("a.md")], &mut mem);
+    assert_eq!(
+        delta.writes.len(),
+        1,
+        "the save after a mid-save is published"
+    );
+}
+
+#[test]
+fn mid_save_new_file_waits_for_its_save() {
+    let mut mem = Mem::with(&[("a.md", "# A")]);
+    let mut site = Site::new();
+    site.apply(vec![sync_all(&mem)], &mut mem);
+    let delta = site.apply(vec![touch("b.md"), touch("j.png")], &mut MidSave);
+    assert_eq!(delta, Delta::default());
+    mem.0.insert("b.md".into(), b"# B".to_vec());
+    let delta = site.apply(vec![touch("b.md")], &mut mem);
+    assert_eq!(delta.writes.len(), 1);
+}
+
+#[test]
+fn mid_save_loser_does_not_block_promotion() {
+    let mut mem = Mem::with(&[("a.MD", "# upper"), ("a.md", "# lower")]);
+    let mut site = Site::new();
+    site.apply(vec![sync_all(&mem)], &mut mem);
+    // a.MD wins; deleting it promotes a.md, which is mid-save.
+    struct Mixed;
+    impl Source for Mixed {
+        fn note(&mut self, path: &str) -> Result<Vec<u8>, ReadError> {
+            match path {
+                "a.md" => Err(ReadError::MidSave),
+                _ => Err(ReadError::Missing),
+            }
+        }
+        fn file(&mut self, _: &str) -> Result<(), ReadError> {
+            Err(ReadError::Missing)
+        }
+    }
+    let delta = site.apply(vec![touch("a.MD")], &mut Mixed);
+    assert_eq!(delta.deletes, ["pages/a.html"]);
+    assert!(delta.writes.is_empty());
+    let delta = site.apply(vec![touch("a.md")], &mut mem);
+    assert_eq!(delta.writes.len(), 1, "its save publishes it");
+}
+
 #[derive(Debug, Clone)]
 enum Op {
     Write(usize, usize),

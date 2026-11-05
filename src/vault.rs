@@ -2,6 +2,7 @@ use std::fs::{self, File};
 use std::io::{self, Read};
 use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use rustix::fs::{Mode, OFlags, ResolveFlags, openat2};
@@ -226,6 +227,9 @@ pub enum ReadError {
     /// Gone, or not a regular file. The scan ignores both silently, so reads do too.
     Missing,
     Skip(SkipReason),
+    /// A new file that may be half written. Its save is still to come, so the path keeps
+    /// what is published for it.
+    MidSave,
 }
 
 /// An open vault directory. Every read resolves beneath it and never follows a symlink.
@@ -262,6 +266,13 @@ impl VaultDir {
 
     /// Opens a vault-relative path for reading. A FIFO opens without blocking and reads as missing.
     pub fn open_file(&self, rel: &str) -> Result<File, ReadError> {
+        self.open_after(rel, true)
+    }
+
+    /// Opens like `open_file`. Unless the path's last event was a save, a regular file with
+    /// one link is `MidSave`: it was created after a create, delete or move-away event, and
+    /// its `CLOSE_WRITE` follows. The check uses the open file, so it cannot race the read.
+    pub fn open_after(&self, rel: &str, saved: bool) -> Result<File, ReadError> {
         let flags = OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC | OFlags::NOCTTY;
         let file = match openat2(&self.fd, rel, flags, Mode::empty(), RESOLVE) {
             Ok(fd) => File::from(fd),
@@ -274,6 +285,7 @@ impl VaultDir {
             }
         };
         match file.metadata() {
+            Ok(meta) if meta.is_file() && !saved && meta.nlink() == 1 => Err(ReadError::MidSave),
             Ok(meta) if meta.is_file() => Ok(file),
             Ok(_) => Err(ReadError::Missing),
             Err(e) => Err(ReadError::Skip(SkipReason::Unreadable(e.kind()))),
@@ -281,7 +293,12 @@ impl VaultDir {
     }
 
     pub fn read(&self, rel: &str) -> Result<Vec<u8>, ReadError> {
-        let mut file = self.open_file(rel)?;
+        self.read_after(rel, true)
+    }
+
+    /// Reads like `read`, with `open_after`'s mid-save check.
+    pub fn read_after(&self, rel: &str, saved: bool) -> Result<Vec<u8>, ReadError> {
+        let mut file = self.open_after(rel, saved)?;
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)
             .map_err(|e| ReadError::Skip(SkipReason::Unreadable(e.kind())))?;

@@ -53,7 +53,7 @@ pub fn apply(out: &Path, delta: &Delta, vault: &VaultDir) -> Result<Vec<Skipped>
                     let mut to = fs::File::create(tmp)?;
                     io::copy(&mut file, &mut to).map(|_| ())
                 })?,
-                Err(ReadError::Missing) => {}
+                Err(ReadError::Missing | ReadError::MidSave) => {}
                 Err(ReadError::Skip(reason)) => skipped.push(Skipped {
                     path: PathBuf::from(from),
                     reason,

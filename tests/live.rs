@@ -249,3 +249,44 @@ fn hard_link_is_published() {
     let event = events.expect("page");
     assert!(event.data.contains("<h1>linked</h1>"));
 }
+
+#[test]
+fn delete_then_create_saves_never_push_half_a_note() {
+    use std::io::Write;
+    let (d, server) = with_notes(&[("w.md", "# w"), ("bar.md", "# b")]);
+    let mut events = server.subscribe("/w", &version(&server, "/w"), None);
+    let mut barrier = server.subscribe("/bar", &version(&server, "/bar"), None);
+    // Each round is one save in the style of vim (rename) or git (unlink). Without a pause,
+    // the removal and the half-written file often share a watcher batch.
+    for round in 0..20 {
+        let note = d.vault().join("w.md");
+        if round % 2 == 0 {
+            fs::rename(&note, d.vault().join("w.md~")).unwrap();
+        } else {
+            fs::remove_file(&note).unwrap();
+        }
+        let mut file = fs::File::create(&note).unwrap();
+        file.write_all(format!("# round {round}\n\nhalf").as_bytes())
+            .unwrap();
+        fs::write(d.vault().join("bar.md"), format!("# b{round}")).unwrap();
+        barrier.expect("page");
+        file.write_all(b" and the rest").unwrap();
+        drop(file);
+        loop {
+            let event = events
+                .next(Duration::from_secs(10))
+                .unwrap_or_else(|| panic!("no page in round {round}"));
+            if event.name == "gone" {
+                continue;
+            }
+            assert!(
+                event
+                    .data
+                    .contains(&format!("round {round}</h1>\n<p>half and the rest")),
+                "round {round}: {}",
+                event.data
+            );
+            break;
+        }
+    }
+}
