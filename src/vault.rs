@@ -44,7 +44,8 @@ pub struct Scan {
     pub skipped: Vec<Skipped>,
 }
 
-fn excluded_segment(segment: &[u8]) -> bool {
+/// A file or folder name the vault never publishes.
+pub fn excluded_segment(segment: &[u8]) -> bool {
     segment.starts_with(b".") || segment == b"target" || segment == b"node_modules"
 }
 
@@ -67,11 +68,20 @@ pub fn classify(path: &str) -> Option<Kind> {
 
 /// Lists what the vault publishes. Reads only; never follows a symlink or enters an excluded folder.
 pub fn scan(vault: &Path) -> Result<Scan, Error> {
+    scan_under(vault, "")
+}
+
+/// Lists what the vault publishes under the folder `under` (`""` is the root). Paths stay
+/// vault-relative. A subfolder that vanished before it was read lists nothing.
+pub fn scan_under(vault: &Path, under: &str) -> Result<Scan, Error> {
     let mut scan = Scan {
         entries: Vec::new(),
         skipped: Vec::new(),
     };
-    walk(vault, Path::new(""), &mut scan)?;
+    walk(vault, Path::new(under), &mut scan)?;
+    scan.skipped.retain(|s| {
+        !(s.path == Path::new(under) && s.reason == SkipReason::Unreadable(io::ErrorKind::NotFound))
+    });
     scan.entries.sort_by(|a, b| a.path.cmp(&b.path));
     scan.skipped.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(scan)

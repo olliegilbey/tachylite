@@ -173,3 +173,154 @@ pub fn get(addr: SocketAddr, path: &str, headers: &[(&str, &str)]) -> Response {
         body: raw[split + 4..].to_vec(),
     }
 }
+
+/// Percent-encodes everything but unreserved characters, as `encodeURIComponent` does.
+pub fn encode(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+/// The `tachylite-version` meta of a page.
+pub fn version_of(html: &str) -> String {
+    let marker = "<meta name=\"tachylite-version\" content=\"";
+    let start = html.find(marker).expect("no version meta") + marker.len();
+    html[start..start + 16].to_string()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SseEvent {
+    pub name: String,
+    pub id: Option<String>,
+    pub data: String,
+}
+
+/// One open SSE stream, read with deadlines.
+pub struct Events {
+    stream: TcpStream,
+    raw: Vec<u8>,
+    body: Vec<u8>,
+}
+
+impl Server {
+    /// Subscribes as a page at `pathname` showing `version` would.
+    pub fn subscribe(&self, pathname: &str, version: &str, last_event_id: Option<&str>) -> Events {
+        let mut stream = TcpStream::connect(self.addr).unwrap();
+        let mut request = format!(
+            "GET /.tachylite/events?page={}&v={version} HTTP/1.1\r\nHost: test\r\nAccept: text/event-stream\r\n",
+            encode(pathname)
+        );
+        if let Some(id) = last_event_id {
+            request.push_str(&format!("Last-Event-ID: {id}\r\n"));
+        }
+        request.push_str("\r\n");
+        stream.write_all(request.as_bytes()).unwrap();
+        let mut events = Events {
+            stream,
+            raw: Vec::new(),
+            body: Vec::new(),
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let split = loop {
+            if let Some(i) = events.raw.windows(4).position(|w| w == b"\r\n\r\n") {
+                break i;
+            }
+            assert!(events.fill(deadline), "no SSE response headers");
+        };
+        let head = String::from_utf8_lossy(&events.raw[..split]).into_owned();
+        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+        assert!(
+            head.to_ascii_lowercase().contains("text/event-stream"),
+            "{head}"
+        );
+        events.raw.drain(..split + 4);
+        events
+    }
+}
+
+impl Events {
+    /// Reads more bytes from the socket before `deadline`. False on timeout or close.
+    fn fill(&mut self, deadline: Instant) -> bool {
+        let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+            return false;
+        };
+        self.stream
+            .set_read_timeout(Some(left.max(Duration::from_millis(1))))
+            .unwrap();
+        let mut buf = [0u8; 65536];
+        match self.stream.read(&mut buf) {
+            Ok(0) | Err(_) => false,
+            Ok(n) => {
+                self.raw.extend_from_slice(&buf[..n]);
+                true
+            }
+        }
+    }
+
+    /// Moves complete chunks of the chunked body from `raw` to `body`.
+    fn dechunk(&mut self) {
+        loop {
+            let Some(eol) = self.raw.windows(2).position(|w| w == b"\r\n") else {
+                return;
+            };
+            let size_text = String::from_utf8_lossy(&self.raw[..eol]).into_owned();
+            let size = usize::from_str_radix(size_text.trim(), 16).expect("chunk size");
+            if self.raw.len() < eol + 2 + size + 2 {
+                return;
+            }
+            self.body
+                .extend_from_slice(&self.raw[eol + 2..eol + 2 + size]);
+            self.raw.drain(..eol + 2 + size + 2);
+        }
+    }
+
+    /// The next named event before the deadline, skipping keep-alive comments.
+    pub fn next(&mut self, within: Duration) -> Option<SseEvent> {
+        let deadline = Instant::now() + within;
+        loop {
+            self.dechunk();
+            while let Some(end) = self.body.windows(2).position(|w| w == b"\n\n") {
+                let block = String::from_utf8_lossy(&self.body[..end]).into_owned();
+                self.body.drain(..end + 2);
+                let mut event = SseEvent {
+                    name: "message".into(),
+                    id: None,
+                    data: String::new(),
+                };
+                let mut data = Vec::new();
+                let mut any = false;
+                for line in block.lines() {
+                    if let Some(v) = line.strip_prefix("event:") {
+                        event.name = v.trim_start().to_string();
+                        any = true;
+                    } else if let Some(v) = line.strip_prefix("id:") {
+                        event.id = Some(v.trim_start().to_string());
+                    } else if let Some(v) = line.strip_prefix("data:") {
+                        data.push(v.strip_prefix(' ').unwrap_or(v).to_string());
+                        any = true;
+                    }
+                }
+                if any {
+                    event.data = data.join("\n");
+                    return Some(event);
+                }
+            }
+            if !self.fill(deadline) {
+                return None;
+            }
+        }
+    }
+
+    pub fn expect(&mut self, name: &str) -> SseEvent {
+        let event = self
+            .next(Duration::from_secs(10))
+            .unwrap_or_else(|| panic!("no {name} event"));
+        assert_eq!(event.name, name, "{event:?}");
+        event
+    }
+}

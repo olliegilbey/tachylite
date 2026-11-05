@@ -11,6 +11,8 @@ pub enum Error {
     OutNotClean(PathBuf),
     NoOpenat2,
     Bind { port: u16, source: io::Error },
+    Watch { path: PathBuf, source: io::Error },
+    VaultGone(PathBuf),
 }
 
 impl fmt::Display for Error {
@@ -41,6 +43,14 @@ impl fmt::Display for Error {
             Error::Bind { port, source } => {
                 write!(f, "cannot serve on 127.0.0.1:{port}: {source}")
             }
+            Error::Watch { path, source } => write!(
+                f,
+                "cannot watch {}: {source} (at the inotify limit, raise fs.inotify.max_user_watches)",
+                path.display()
+            ),
+            Error::VaultGone(path) => {
+                write!(f, "vault {} was moved or deleted; stopping", path.display())
+            }
         }
     }
 }
@@ -48,7 +58,9 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Error::Io { source, .. } | Error::Bind { source, .. } => Some(source),
+            Error::Io { source, .. } | Error::Bind { source, .. } | Error::Watch { source, .. } => {
+                Some(source)
+            }
             _ => None,
         }
     }

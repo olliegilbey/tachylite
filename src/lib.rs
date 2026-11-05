@@ -9,3 +9,4 @@ pub mod report;
 pub mod serve;
 pub mod site;
 pub mod vault;
+pub mod watch;
