@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Arc, LazyLock};
 
@@ -9,8 +9,10 @@ use comrak::nodes::{AstNode, NodeValue};
 use comrak::options::Plugins;
 use comrak::{Anchorizer, Arena, Options, format_html_with_plugins, parse_document};
 
+use crate::config::Exclude;
 use crate::front::{self, Value};
 use crate::links::{Index, Resolved, resolve, split};
+use crate::vault::{Kind, classify, is_image};
 
 /// The file stem of the last path segment: `people/Jane Doe.md` gives `Jane Doe`.
 pub fn note_title(path: &str) -> &str {
@@ -57,7 +59,15 @@ pub struct Body {
     /// The published paths its links resolve to.
     pub targets: BTreeSet<Arc<str>>,
     pub broken: Vec<Broken>,
+    /// Every note its embeds read, at any depth.
+    pub embeds: BTreeSet<Arc<str>>,
 }
+
+/// The notes an embed may read, by path.
+pub type Sources = HashMap<String, Vec<u8>>;
+
+/// How many levels of notes one page embeds.
+pub const EMBED_DEPTH: usize = 3;
 
 /// Percent-encodes all but unreserved characters and `/`.
 pub fn encode(path: &str) -> String {
@@ -131,18 +141,120 @@ fn open(body: &mut Body, from: &str, index: &Index, path: &str, heading: Option<
             tag
         }
         unresolved => {
-            let matches = match unresolved {
-                Resolved::Ambiguous(n) => n,
-                _ => 0,
-            };
-            body.broken.push(Broken {
-                from: from.to_string(),
-                target: path.to_string(),
-                matches,
-            });
+            body.broken.push(broken(from, path, &unresolved));
             "<a class=\"broken-link\">".to_string()
         }
     }
+}
+
+fn broken(from: &str, target: &str, resolved: &Resolved) -> Broken {
+    Broken {
+        from: from.to_string(),
+        target: target.to_string(),
+        matches: match resolved {
+            Resolved::Ambiguous(n) => *n,
+            _ => 0,
+        },
+    }
+}
+
+enum Embed {
+    /// Stays in its paragraph.
+    Inline(String),
+    /// Takes its paragraph's place when it is the paragraph's only content.
+    Block(String),
+    /// A plain link: this opening tag around the label.
+    Link(String),
+}
+
+/// `![[raw]]` from `from`, with `label` as its text. `chain` holds the notes being
+/// embedded, outermost first.
+fn embed(
+    body: &mut Body,
+    (from, index, sources): (&str, &Index, &Sources),
+    chain: &mut Vec<String>,
+    raw: &str,
+    label: &str,
+) -> Embed {
+    let (path, heading) = split(raw);
+    let path = path.trim();
+    let link = |body: &mut Body| Embed::Link(open(body, from, index, path, heading));
+    let Resolved::Found(target) = resolve(index, from, path) else {
+        return link(body);
+    };
+    if heading.is_some() {
+        return link(body);
+    }
+    let src = url(&target);
+    let kind = classify(&target, &Exclude::default());
+    let html = match kind {
+        Some(Kind::Asset) if is_image(&target) => {
+            let sized = label
+                .split('x')
+                .all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+            let alt = if sized {
+                path.rsplit('/').next().unwrap_or(path)
+            } else {
+                label
+            };
+            Embed::Inline(format!(
+                "<img src=\"{src}\" alt=\"{}\" loading=\"lazy\">",
+                escape(alt)
+            ))
+        }
+        Some(Kind::Html) => Embed::Block(format!(
+            "<iframe class=\"embed-html\" sandbox=\"allow-scripts\" src=\"{src}\" \
+             loading=\"lazy\"></iframe>\n"
+        )),
+        Some(Kind::Note) if chain.len() <= EMBED_DEPTH && !chain.iter().any(|c| **c == *target) => {
+            let Some(bytes) = sources.get(&*target) else {
+                return link(body);
+            };
+            let markdown = String::from_utf8_lossy(bytes);
+            chain.push(target.to_string());
+            let inner = render(&target, &markdown, index, sources, chain);
+            chain.pop();
+            let title = front::meta(&markdown)
+                .title
+                .unwrap_or_else(|| note_title(&target).to_string());
+            body.embeds.insert(Arc::clone(&target));
+            body.embeds.extend(inner.embeds);
+            Embed::Block(format!(
+                "<div class=\"embed\"><a class=\"embed-link\" href=\"{src}\">{}</a>\n{}</div>\n",
+                escape(&title),
+                inner.html
+            ))
+        }
+        _ => return link(body),
+    };
+    body.targets.insert(target);
+    html
+}
+
+/// The notes `markdown`'s embeds may read, without parsing it. It over-matches, in code
+/// and comments, so it loads a superset of what the render reads.
+pub fn embed_targets(from: &str, markdown: &str, index: &Index) -> Vec<Arc<str>> {
+    let mut targets: Vec<Arc<str>> = Vec::new();
+    let mut rest = markdown;
+    while let Some(i) = rest.find("![[") {
+        rest = &rest[i + 3..];
+        let Some(end) = rest.find("]]") else {
+            break;
+        };
+        let inner = &rest[..end];
+        rest = &rest[end + 2..];
+        let path = inner.split('|').next().unwrap_or(inner);
+        if path.contains('#') {
+            continue;
+        }
+        if let Resolved::Found(target) = resolve(index, from, path.trim())
+            && classify(&target, &Exclude::default()) == Some(Kind::Note)
+            && !targets.contains(&target)
+        {
+            targets.push(target);
+        }
+    }
+    targets
 }
 
 /// A tag link. Tag pages are keyed by the lowercased tag.
@@ -198,11 +310,27 @@ fn properties(body: &mut Body, from: &str, yaml: &str, index: &Index) -> String 
 }
 
 /// Renders a note's Markdown and resolves its links against the published paths.
-pub fn render_body(from: &str, markdown: &str, index: &Index) -> Body {
+/// Renders a note's body. `sources` holds the notes its embeds may read; an embed of a note
+/// missing from it renders as a link.
+pub fn render_body(from: &str, markdown: &str, index: &Index, sources: &Sources) -> Body {
+    render(from, markdown, index, sources, &mut vec![from.to_string()])
+}
+
+fn render(
+    from: &str,
+    markdown: &str,
+    index: &Index,
+    sources: &Sources,
+    chain: &mut Vec<String>,
+) -> Body {
     let (yaml, markdown) = front::split(markdown);
     let markdown = strip_comments(markdown);
     let mut body = Body::default();
-    let props = yaml.map_or_else(String::new, |y| properties(&mut body, from, y, index));
+    // An embedded note shows its body only.
+    let props = match yaml {
+        Some(yaml) if chain.len() == 1 => properties(&mut body, from, yaml, index),
+        _ => String::new(),
+    };
     let arena = Arena::new();
     let options = options();
     let root = parse_document(&arena, &markdown, &options);
@@ -220,6 +348,8 @@ pub fn render_body(from: &str, markdown: &str, index: &Index) -> Body {
     let mut texts = Vec::new();
     let mut anchorizer = Anchorizer::new();
     let mut headings = Vec::new();
+    let mut embeds = Vec::new();
+    let mut images = Vec::new();
     let mut raw = false;
     for node in root.descendants() {
         match &node.data().value {
@@ -230,6 +360,14 @@ pub fn render_body(from: &str, markdown: &str, index: &Index) -> Body {
             }
             NodeValue::HtmlInline(_) | NodeValue::HtmlBlock(_) => {
                 raw = true;
+                continue;
+            }
+            NodeValue::WikiLink(link) if link.embed => {
+                embeds.push((node, link.url.clone()));
+                continue;
+            }
+            NodeValue::Image(link) if local(&link.url) => {
+                images.push((node, link.url.clone()));
                 continue;
             }
             _ => {}
@@ -252,7 +390,7 @@ pub fn render_body(from: &str, markdown: &str, index: &Index) -> Body {
             }
             continue;
         }
-        let raw = match &node.data().value {
+        let link = match &node.data().value {
             NodeValue::WikiLink(link) => {
                 let (path, heading) = split(&link.url);
                 Some((path.trim().to_string(), heading.map(str::to_string)))
@@ -263,7 +401,7 @@ pub fn render_body(from: &str, markdown: &str, index: &Index) -> Body {
             }
             _ => None,
         };
-        let Some((path, heading)) = raw else {
+        let Some((path, heading)) = link else {
             continue;
         };
         let tag = open(&mut body, from, index, &path, heading.as_deref());
@@ -271,6 +409,35 @@ pub fn render_body(from: &str, markdown: &str, index: &Index) -> Body {
     }
     for (node, open) in rewrites {
         wrap(&arena, node, open, "</a>".to_string());
+    }
+    for (node, src) in images {
+        let Some(path) = decode(split(&src).0) else {
+            continue;
+        };
+        match resolve(index, from, &path) {
+            Resolved::Found(target) => {
+                if let NodeValue::Image(link) = &mut node.data_mut().value {
+                    link.url = url(&target);
+                }
+                body.targets.insert(target);
+            }
+            unresolved => body.broken.push(broken(from, &path, &unresolved)),
+        }
+    }
+    for (node, raw) in embeds {
+        let label = node.collect_text();
+        match embed(&mut body, (from, index, sources), chain, &raw, &label) {
+            Embed::Inline(html) => replace(&arena, node, html),
+            Embed::Block(html) => {
+                let parent = node.parent().filter(|p| {
+                    matches!(p.data().value, NodeValue::Paragraph)
+                        && p.first_child().is_some_and(|c| c.same_node(node))
+                        && p.last_child().is_some_and(|c| c.same_node(node))
+                });
+                replace(&arena, parent.unwrap_or(node), html);
+            }
+            Embed::Link(open) => wrap(&arena, node, open, "</a>".to_string()),
+        }
     }
     for (node, level, id) in headings {
         wrap(
@@ -492,6 +659,11 @@ fn wrap<'a>(arena: &'a Arena<'a>, node: &'a AstNode<'a>, open: String, close: St
         node.insert_before(child);
     }
     node.insert_before(raw(close));
+    node.detach();
+}
+
+fn replace<'a>(arena: &'a Arena<'a>, node: &'a AstNode<'a>, html: String) {
+    node.insert_before(arena.alloc(AstNode::from(NodeValue::Raw(html))));
     node.detach();
 }
 

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use tachylite::links::Index;
-use tachylite::render::render_body;
+use tachylite::render::{Sources, render_body};
 
 /// CI runs the timed budgets at `BUDGET_SCALE=3`; the reference host runs them at 1.
 fn scale() -> f64 {
@@ -114,7 +114,7 @@ fn most_linked() -> String {
     let index = Index::new(notes.iter().map(|(p, _)| p.as_str()));
     let mut inbound: HashMap<String, usize> = HashMap::new();
     for (path, text) in notes.iter().filter(|(p, _)| p.ends_with(".md")) {
-        for target in render_body(path, text, &index).targets {
+        for target in render_body(path, text, &index, &Sources::new()).targets {
             if *target != **path && target.ends_with(".md") {
                 *inbound.entry(target.to_string()).or_default() += 1;
             }

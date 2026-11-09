@@ -7,7 +7,7 @@ use std::sync::Arc;
 use crate::config::Exclude;
 use crate::front;
 use crate::links::{Index, key};
-use crate::render::{Body, Broken, note_title, render_body, render_page, url};
+use crate::render::{Body, Broken, Sources, note_title, render_body, render_page, url};
 use crate::vault::{Entry, Kind, ReadError, SkipReason, Skipped, VaultDir, classify};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -183,7 +183,12 @@ fn render_all<'p>(notes: &[(&'p str, Vec<u8>)], index: &Index) -> Vec<(&'p str, 
             .map(|(path, bytes)| {
                 (
                     *path,
-                    render_body(path, &String::from_utf8_lossy(bytes), index),
+                    render_body(
+                        path,
+                        &String::from_utf8_lossy(bytes),
+                        index,
+                        &Sources::new(),
+                    ),
                 )
             })
             .collect()
@@ -513,7 +518,12 @@ impl Site {
                 continue;
             }
             if let Ok(bytes) = source.note(&path) {
-                let body = render_body(&path, &String::from_utf8_lossy(&bytes), &self.index);
+                let body = render_body(
+                    &path,
+                    &String::from_utf8_lossy(&bytes),
+                    &self.index,
+                    &Sources::new(),
+                );
                 bodies.insert(path, body.html);
             }
         }
