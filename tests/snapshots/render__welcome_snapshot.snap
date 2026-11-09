@@ -7,7 +7,7 @@ expression: welcome()
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="tachylite-version" content="dbc966db2d5a4838">
+<meta name="tachylite-version" content="bd0c5c0af25ada8a">
 <title>welcome</title>
 <script src="/.tachylite/live.js" defer></script>
 </head>
@@ -37,22 +37,22 @@ expression: welcome()
 </table>
 <h2 id="tasks">Tasks</h2>
 <ul>
-<li><input type="checkbox" disabled="" /> Water the fern</li>
-<li><input type="checkbox" checked="" disabled="" /> Sweep the porch</li>
+<li><input type="checkbox" disabled=""> Water the fern</li>
+<li><input type="checkbox" checked="" disabled=""> Sweep the porch</li>
 </ul>
 <h2 id="notes">Notes</h2>
-<p>A coffee here costs $5 or $10, depending on the cup.<sup class="footnote-ref"><a href="#fn-cup" id="fnref-cup" data-footnote-ref>1</a></sup></p>
+<p>A coffee here costs $5 or $10, depending on the cup.<sup class="footnote-ref"><a href="#fn-cup" id="fnref-cup" data-footnote-ref="">1</a></sup></p>
 <p><del>This line is struck out.</del></p>
 <p>Read more at <a href="https://example.com/guide">https://example.com/guide</a> today.</p>
 <pre><code class="language-rust">fn main() {
-    println!(&quot;hello&quot;);
+    println!("hello");
 }
 </code></pre>
-<!-- raw HTML omitted -->
-<section class="footnotes" data-footnotes>
+
+<section class="footnotes" data-footnotes="">
 <ol>
 <li id="fn-cup">
-<p>Large cups cost more. <a href="#fnref-cup" class="footnote-backref" data-footnote-backref data-footnote-backref-idx="1" aria-label="Back to reference 1">↩</a></p>
+<p>Large cups cost more. <a href="#fnref-cup" class="footnote-backref" data-footnote-backref="" data-footnote-backref-idx="1" aria-label="Back to reference 1">↩</a></p>
 </li>
 </ol>
 </section>

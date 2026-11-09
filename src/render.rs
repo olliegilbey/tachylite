@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use comrak::adapters::CodefenceRendererAdapter;
 use comrak::nodes::Sourcepos;
@@ -29,6 +29,8 @@ fn options() -> Options<'static> {
     options.extension.ofm_callouts = true;
     options.parse.escaped_char_spans = true;
     options.extension.highlight = true;
+    // Raw HTML reaches the page only through `sanitize`.
+    options.render.r#unsafe = true;
     options
 }
 
@@ -217,11 +219,20 @@ pub fn render_body(from: &str, markdown: &str, index: &Index) -> Body {
     let mut rewrites = Vec::new();
     let mut texts = Vec::new();
     let mut anchorizer = Anchorizer::new();
-    let mut ids = Vec::new();
+    let mut headings = Vec::new();
+    let mut raw = false;
     for node in root.descendants() {
-        if let NodeValue::Heading(_) = node.data().value {
-            ids.push(anchorizer.anchorize(&node.collect_text()));
-            continue;
+        match &node.data().value {
+            NodeValue::Heading(heading) => {
+                let id = escape(&anchorizer.anchorize(&node.collect_text()));
+                headings.push((node, heading.level, id));
+                continue;
+            }
+            NodeValue::HtmlInline(_) | NodeValue::HtmlBlock(_) => {
+                raw = true;
+                continue;
+            }
+            _ => {}
         }
         if let NodeValue::Text(text) = &node.data().value {
             if !text.contains('#') {
@@ -259,7 +270,15 @@ pub fn render_body(from: &str, markdown: &str, index: &Index) -> Body {
         rewrites.push((node, tag));
     }
     for (node, open) in rewrites {
-        wrap(&arena, node, open);
+        wrap(&arena, node, open, "</a>".to_string());
+    }
+    for (node, level, id) in headings {
+        wrap(
+            &arena,
+            node,
+            format!("<h{level} id=\"{id}\">"),
+            format!("</h{level}>\n"),
+        );
     }
     for node in texts {
         link_tags(&arena, node);
@@ -272,7 +291,7 @@ pub fn render_body(from: &str, markdown: &str, index: &Index) -> Body {
         .insert("mermaid".to_string(), &Mermaid);
     // Writing into a String cannot fail.
     let _ = format_html_with_plugins(root, &options, &mut html, &plugins);
-    body.html = add_ids(&html, &ids);
+    body.html = if raw { sanitize(&html) } else { html };
     body
 }
 
@@ -464,41 +483,35 @@ impl CodefenceRendererAdapter for Mermaid {
     }
 }
 
-/// Replaces a link node with raw tags around its children. comrak's own link markup would
-/// leave `#` and `?` in a file name unescaped.
-fn wrap<'a>(arena: &'a Arena<'a>, node: &'a AstNode<'a>, open: String) {
+/// Replaces a node with raw tags around its children. comrak's own link markup would
+/// leave `#` and `?` in a file name unescaped, and its heading ids add an anchor link.
+fn wrap<'a>(arena: &'a Arena<'a>, node: &'a AstNode<'a>, open: String, close: String) {
     let raw = |html: String| arena.alloc(AstNode::from(NodeValue::Raw(html)));
     node.insert_before(raw(open));
     while let Some(child) = node.first_child() {
         node.insert_before(child);
     }
-    node.insert_before(raw("</a>".to_string()));
+    node.insert_before(raw(close));
     node.detach();
 }
 
-/// Gives each `<hN>` tag the next id, in document order. With raw HTML off, only a heading
-/// writes `<hN>`. comrak's own heading ids would add an anchor link to every heading.
-fn add_ids(html: &str, ids: &[String]) -> String {
-    let mut out =
-        String::with_capacity(html.len() + ids.iter().map(|id| id.len() + 6).sum::<usize>());
-    let mut ids = ids.iter();
-    let mut rest = html;
-    while let Some(i) = rest.find("<h") {
-        let heading = matches!(rest.as_bytes().get(i + 2..i + 4), Some([b'1'..=b'6', b'>']));
-        match if heading { ids.next() } else { None } {
-            Some(id) => {
-                out.push_str(&rest[..i + 3]);
-                out.push_str(&format!(" id=\"{}\">", escape(id)));
-                rest = &rest[i + 4..];
-            }
-            None => {
-                out.push_str(&rest[..i + 2]);
-                rest = &rest[i + 2..];
-            }
-        }
-    }
-    out.push_str(rest);
-    out
+/// The allowlist for a body with raw HTML: ammonia's formatting tags, and what Tachylite
+/// itself writes. Every iframe is sandboxed without `allow-same-origin`.
+static SANITIZER: LazyLock<ammonia::Builder<'static>> = LazyLock::new(|| {
+    let mut b = ammonia::Builder::default();
+    b.add_tags(["section", "input", "iframe"])
+        .add_generic_attributes(["class", "id"])
+        .generic_attribute_prefixes(["data-", "aria-"].into())
+        .add_tag_attributes("input", ["type", "checked", "disabled"])
+        .add_tag_attributes("img", ["loading"])
+        .add_tag_attributes("iframe", ["src", "loading"])
+        .set_tag_attribute_value("iframe", "sandbox", "allow-scripts")
+        .link_rel(None);
+    b
+});
+
+fn sanitize(html: &str) -> String {
+    SANITIZER.clean(html).to_string()
 }
 
 fn escape(text: &str) -> String {

@@ -439,3 +439,75 @@ fn disagreement_on_code_withholds_the_text() {
     assert!(!body.html.contains("zebra"));
     assert!(body.targets.is_empty());
 }
+
+#[test]
+fn inline_html_keeps_formatting() {
+    let html = plain(
+        "a <span class=\"x\">b</span> <kbd>K</kbd>\n\n<details><summary>S</summary>\n\nbody\n\n</details>\n",
+    );
+    assert!(html.contains("<span class=\"x\">b</span>"), "{html}");
+    assert!(html.contains("<kbd>K</kbd>"), "{html}");
+    assert!(html.contains("<details><summary>S</summary>"), "{html}");
+}
+
+#[test]
+fn inline_html_drops_scripts() {
+    let html = plain(
+        "<script>alert(1)</script>\n\n<img src=\"x.png\" onerror=\"alert(2)\">\n\n\
+         <a href=\"javascript:alert(3)\">j</a> <object data=\"x\"></object><embed src=\"y\">\n\n\
+         <p style=\"color:red\">s</p>\n",
+    );
+    for bad in [
+        "<script",
+        "alert",
+        "onerror",
+        "javascript:",
+        "<object",
+        "<embed",
+        "style=",
+    ] {
+        assert!(!html.contains(bad), "{bad} in {html}");
+    }
+    assert!(html.contains("<img src=\"x.png\">"), "{html}");
+}
+
+#[test]
+fn author_iframe_is_sandboxed() {
+    let html = plain(
+        "<iframe src=\"maps/route.html\" sandbox=\"allow-scripts allow-same-origin\" onload=\"x()\"></iframe>\n",
+    );
+    assert!(html.contains("sandbox=\"allow-scripts\""), "{html}");
+    assert!(!html.contains("allow-same-origin"), "{html}");
+    assert!(!html.contains("onload"), "{html}");
+}
+
+#[test]
+fn raw_heading_takes_no_heading_id() {
+    let html = plain("<h2>raw</h2>\n\n## Real\n");
+    assert!(html.contains("<h2>raw</h2>"), "{html}");
+    assert!(html.contains("<h2 id=\"real\">Real</h2>"), "{html}");
+}
+
+#[test]
+fn sanitizer_keeps_tachylite_markup() {
+    let md = fixture("notes/syntax.md") + "\n- [x] done\n\n[[welcome]] [[nobody]]\n\n<b>raw</b>\n";
+    let index = Index::new(["welcome.md", "notes/syntax.md"]);
+    let html = render_body("notes/syntax.md", &md, &index).html;
+    for want in [
+        "<dl class=\"properties\">",
+        "<a class=\"tag\" href=\"/.tachylite/tags/garden\">",
+        "<h1 id=\"syntax-tour-heading\">",
+        "<div class=\"callout\" data-callout=\"warning\"",
+        "<mark>highlighted</mark>",
+        "<sup class=\"footnote-ref\"><a href=\"#fn-1\" id=\"fnref-1\" data-footnote-ref",
+        "aria-label=\"Back to reference 1\"",
+        "<section class=\"footnotes\" data-footnotes",
+        "<input type=\"checkbox\" checked=\"\" disabled=\"\"",
+        "<pre class=\"mermaid\">",
+        "<a href=\"/welcome\">welcome</a>",
+        "<a class=\"broken-link\">nobody</a>",
+        "<b>raw</b>",
+    ] {
+        assert!(html.contains(want), "{want} missing from {html}");
+    }
+}
