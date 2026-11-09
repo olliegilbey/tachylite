@@ -5,7 +5,7 @@ use std::convert::Infallible;
 use std::fs;
 use std::future::IntoFuture;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::io;
+use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::pin::pin;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -103,6 +103,40 @@ fn content_type(path: &Path) -> &'static str {
     }
 }
 
+/// Text that gzip shrinks. Images and pdfs are compressed already.
+fn compressible(kind: &str) -> bool {
+    kind.starts_with("text/") || kind.ends_with("json") || kind == "image/svg+xml"
+}
+
+/// Whether `Accept-Encoding` lists gzip with a non-zero weight.
+fn accepts_gzip(headers: &HeaderMap) -> bool {
+    headers
+        .get_all(header::ACCEPT_ENCODING)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .any(|item| {
+            let mut parts = item.split(';').map(str::trim);
+            let coding = parts.next().unwrap_or_default();
+            let refused = parts.any(|p| {
+                p.strip_prefix("q=")
+                    .and_then(|q| q.parse::<f32>().ok())
+                    .is_some_and(|q| q <= 0.0)
+            });
+            (coding.eq_ignore_ascii_case("gzip") || coding == "*") && !refused
+        })
+}
+
+/// gzip at the default level: about 0.2 ms for a typical page.
+fn gzip(bytes: &[u8]) -> io::Result<Vec<u8>> {
+    let mut encoder = flate2::write::GzEncoder::new(
+        Vec::with_capacity(bytes.len() / 2),
+        flate2::Compression::default(),
+    );
+    encoder.write_all(bytes)?;
+    encoder.finish()
+}
+
 fn status(code: StatusCode) -> Response {
     (code, code.canonical_reason().unwrap_or_default()).into_response()
 }
@@ -178,20 +212,31 @@ fn vault_file(method: &Method, path: Option<PathBuf>, headers: &HeaderMap) -> Re
         Err(_) => return status(StatusCode::INTERNAL_SERVER_ERROR),
     };
     let tag = etag(&bytes);
+    let kind = content_type(&path);
+    let text = compressible(kind);
     let mut response = if matches(headers, &tag) {
-        status(StatusCode::NOT_MODIFIED)
-    } else {
-        let mut r = Response::new(Body::from(bytes));
-        r.headers_mut().insert(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static(content_type(&path)),
-        );
+        let mut r = status(StatusCode::NOT_MODIFIED);
+        *r.body_mut() = Body::empty();
         r
+    } else {
+        match (text && accepts_gzip(headers)).then(|| gzip(&bytes)) {
+            Some(Ok(zipped)) => {
+                let mut r = Response::new(Body::from(zipped));
+                r.headers_mut()
+                    .insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+                r
+            }
+            _ => Response::new(Body::from(bytes)),
+        }
     };
-    if response.status() == StatusCode::NOT_MODIFIED {
-        *response.body_mut() = Body::empty();
-    }
+    let ok = response.status() == StatusCode::OK;
     let h = response.headers_mut();
+    if ok {
+        h.insert(header::CONTENT_TYPE, HeaderValue::from_static(kind));
+    }
+    if text {
+        h.insert(header::VARY, HeaderValue::from_static("accept-encoding"));
+    }
     if let Ok(value) = HeaderValue::from_str(&tag) {
         h.insert(header::ETAG, value);
     }

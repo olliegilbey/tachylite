@@ -94,6 +94,71 @@ fn etag_gives_304() {
     assert_eq!(other.status, 200);
 }
 
+fn gunzip(bytes: &[u8]) -> Vec<u8> {
+    use std::io::Read;
+    let mut out = Vec::new();
+    flate2::read::GzDecoder::new(bytes)
+        .read_to_end(&mut out)
+        .unwrap();
+    out
+}
+
+#[test]
+fn a_page_is_gzipped_when_the_client_accepts_it() {
+    let d = Dirs::fixture();
+    let server = Server::start(&d.vault(), &d.out());
+    let plain = server.get("/welcome");
+    assert_eq!(plain.header("content-encoding"), None);
+    assert_eq!(plain.header("vary"), Some("accept-encoding"));
+    let zipped = get(
+        server.addr,
+        "/welcome",
+        &[("Accept-Encoding", "br, gzip, deflate")],
+    );
+    assert_eq!(zipped.status, 200);
+    assert_eq!(zipped.header("content-encoding"), Some("gzip"));
+    assert_eq!(zipped.header("vary"), Some("accept-encoding"));
+    assert_eq!(zipped.header("content-type"), plain.header("content-type"));
+    assert!(zipped.body.len() < plain.body.len());
+    assert_eq!(gunzip(&zipped.body), plain.body);
+}
+
+#[test]
+fn gzip_refused_by_the_client_is_not_sent() {
+    let d = Dirs::fixture();
+    let server = Server::start(&d.vault(), &d.out());
+    for accept in ["identity", "br", "gzip;q=0"] {
+        let r = get(server.addr, "/welcome", &[("Accept-Encoding", accept)]);
+        assert_eq!(r.header("content-encoding"), None, "{accept}");
+    }
+}
+
+#[test]
+fn an_image_is_never_gzipped() {
+    let d = Dirs::fixture();
+    let server = Server::start(&d.vault(), &d.out());
+    let png = get(server.addr, "/img/dot.png", &[("Accept-Encoding", "gzip")]);
+    assert_eq!(png.header("content-encoding"), None);
+    assert_eq!(png.body, fs::read(d.vault().join("img/dot.png")).unwrap());
+}
+
+#[test]
+fn the_etag_holds_across_encodings() {
+    let d = Dirs::fixture();
+    let server = Server::start(&d.vault(), &d.out());
+    let plain = server.get("/welcome");
+    let zipped = get(server.addr, "/welcome", &[("Accept-Encoding", "gzip")]);
+    let etag = plain.header("etag").unwrap();
+    assert_eq!(zipped.header("etag"), Some(etag));
+    let again = get(
+        server.addr,
+        "/welcome",
+        &[("Accept-Encoding", "gzip"), ("If-None-Match", etag)],
+    );
+    assert_eq!(again.status, 304);
+    assert!(again.body.is_empty());
+}
+
 #[test]
 fn same_length_edit_in_one_mtime_tick_changes_the_etag() {
     let d = Dirs::empty();
