@@ -7,7 +7,8 @@ expression: "built(\"notes/links\")"
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="tachylite-version" content="0be725b0dca62459">
+<link rel="manifest" href="/.tachylite/app.webmanifest">
+<meta name="tachylite-version" content="5abf163e401f3695">
 <title>links</title>
 <script src="/.tachylite/live.js" defer></script>
 </head>

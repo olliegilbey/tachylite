@@ -719,16 +719,19 @@ pub fn render_page(title: &str, body: &str, backlinks: &[(String, String)]) -> P
         }
         main.push_str("</ul></section>\n");
     }
-    let mut hasher = DefaultHasher::new();
-    (&title, &main).hash(&mut hasher);
-    let version = format!("{:016x}", hasher.finish());
-    let html = format!(
-        "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
-         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
-         <meta name=\"tachylite-version\" content=\"{version}\">\n\
-         <title>{title}</title>\n\
+    let before = "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
+                  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
+                  <link rel=\"manifest\" href=\"/.tachylite/app.webmanifest\">\n\
+                  <meta name=\"tachylite-version\" content=\"";
+    let after = format!(
+        "\">\n<title>{title}</title>\n\
          <script src=\"/.tachylite/live.js\" defer></script>\n</head>\n\
          <body>\n<main>\n{main}</main>\n</body>\n</html>\n"
     );
+    // The version hashes the whole page but itself, so a new template re-syncs every client.
+    let mut hasher = DefaultHasher::new();
+    (before, &after).hash(&mut hasher);
+    let version = format!("{:016x}", hasher.finish());
+    let html = format!("{before}{version}{after}");
     Page { html, version }
 }

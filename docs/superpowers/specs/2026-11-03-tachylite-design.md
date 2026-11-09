@@ -69,7 +69,7 @@ One binary, `tachylite`. It runs as a long-lived process:
 4. Push the new HTML of each changed page to subscribed clients over SSE.
 5. Serve the output directory and the SSE endpoint over HTTP on `127.0.0.1`.
 
-The binary serves the files itself, so it controls compression (precompressed Brotli and gzip), `ETag` and `Cache-Control`. Tailscale proxies one local port.
+The binary serves the files itself, so it controls compression, `ETag` and `Cache-Control`. It gzips each text response as it sends it. The service worker fetches a page once per change, so precompressing would save no CPU. Brotli is left out: it adds 1.1 MB to the binary and saves about 120 B on a typical page. Every response is `no-cache` with a content `ETag`, so a revalidation is a 304. Tailscale proxies one local port.
 
 `tachylite build <vault> <out>` runs a single build and exits, for tests and CI.
 
@@ -157,9 +157,11 @@ Only these file types reach the output: `.md` (rendered), `.html` (sandboxed), i
 ### Offline sync
 
 - A service worker caches the app shell, every note page and the search index.
-- The build writes a manifest listing every page with a content hash.
-- On reconnect, the client fetches the manifest and downloads only pages whose hash changed. A first sync is the whole set: a few MB compressed for a few thousand notes. Images and PDFs load on demand and stay cached once opened.
-- The site is installable as a PWA. The service worker script lives under `/.tachylite/`, so the server sends it with `Service-Worker-Allowed: /`, and the page registers it with `scope: '/'`. Both are needed for it to control the whole site.
+- The build writes `/.tachylite/manifest.json`, which lists every note page's URL and version. It follows the page writes of each apply, so a client that reads it finds pages at least that new. An `.html` page is not listed, because Tachylite copies it without reading it. It is cached on first open, like an image.
+- A page asks the worker to sync on load and each time its event stream reconnects. The worker fetches the manifest, downloads the pages whose version changed, six at a time, and drops the pages that are gone. A first sync is the whole set: a few MB compressed for a few thousand notes.
+- The worker serves every same-origin request stale-while-revalidate: the cached copy at once, and a fresh copy stored behind it. Images and PDFs load on demand and stay cached once opened.
+- A page's version hashes its head template too, so an upgrade that changes the template re-syncs every client.
+- The site is installable as a PWA. The web manifest and its SVG icon are built into the binary. The service worker script lives under `/.tachylite/`, so the server sends it with `Service-Worker-Allowed: /`, and the page registers it with `scope: '/'`. Both are needed for it to control the whole site.
 
 ### Configuration
 

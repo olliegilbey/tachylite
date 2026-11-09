@@ -161,7 +161,12 @@ proptest! {
         let mut settle = |mark: &str| {
             fs::write(d.vault().join("zz-barrier.md"), format!("# {mark}")).unwrap();
             let heading = format!("\">{mark}</h1>");
-            while !barrier.expect("page").data.contains(&heading) {}
+            loop {
+                let event = barrier.expect("page");
+                if event.data.contains(&heading) {
+                    return event.id.unwrap_or_default();
+                }
+            }
         };
 
         // A settled op is applied before the next starts; the rest land in shared batches.
@@ -171,7 +176,14 @@ proptest! {
                 settle(&format!("s{i}"));
             }
         }
-        settle("done");
+        // The manifest follows the apply's pushes, so wait for it to list the last barrier.
+        let last = format!("\"/zz-barrier\":\"{}\"", settle("done"));
+        let manifest = d.out().join(tachylite::site::MANIFEST);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !fs::read_to_string(&manifest).is_ok_and(|m| m.contains(&last)) {
+            prop_assert!(std::time::Instant::now() < deadline, "no manifest lists {}", last);
+            std::thread::yield_now();
+        }
 
         let fresh = d.tmp.path().join("fresh");
         tachylite::build::build(&d.vault(), &fresh).unwrap();

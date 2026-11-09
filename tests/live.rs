@@ -109,9 +109,12 @@ fn rename_folder_moves_its_pages() {
     let (d, server) = with_notes(&[("d/n.md", "# n"), ("d/e/m.md", "# m")]);
     let mut old = server.subscribe("/d/e/m", &version(&server, "/d/e/m"), None);
     let mut new = server.subscribe("/f/e/m", "", None);
+    // Pages are written in path order, so `f/n` lands after `f/e/m`'s push: await its own.
+    let mut moved = server.subscribe("/f/n", "", None);
     fs::rename(d.vault().join("d"), d.vault().join("f")).unwrap();
     old.expect("gone");
     new.expect("page");
+    moved.expect("page");
     assert_eq!(server.get("/f/n").status, 200);
     assert_eq!(server.get("/d/n").status, 404);
     // The moved folder is still watched under its new name.

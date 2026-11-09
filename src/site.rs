@@ -75,10 +75,23 @@ impl Sink for Delta {
     }
 }
 
+/// Where the manifest lives in the output: `/.tachylite/manifest.json`.
+pub const MANIFEST: &str = "files/.tachylite/manifest.json";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Write {
-    Page { out: String, html: Arc<str> },
-    Copy { out: String, from: String },
+    Page {
+        out: String,
+        html: Arc<str>,
+    },
+    Copy {
+        out: String,
+        from: String,
+    },
+    /// Every page's URL and version, for client sync. It follows an apply's page writes.
+    Manifest {
+        json: String,
+    },
 }
 
 /// `key` is the note path without `.md`: the decoded URL path.
@@ -102,7 +115,8 @@ pub struct Site {
     /// Vault paths whose output is written.
     winners: BTreeSet<String>,
     /// The version of each winning note's written page.
-    versions: HashMap<String, String>,
+    /// Sorted, so the manifest is written in one pass.
+    versions: BTreeMap<String, String>,
     /// The winners, for link resolution. The graph shares its paths.
     index: Index,
     /// What each rendered note links to.
@@ -116,6 +130,8 @@ pub struct Site {
     titles: HashMap<String, String>,
     /// The notes whose embeds read each path, at any depth.
     embedded_by: HashMap<Arc<str>, BTreeSet<Arc<str>>>,
+    /// Whether a manifest was written, so the first apply writes one even when empty.
+    listed: bool,
 }
 
 /// One note's outgoing links.
@@ -335,6 +351,7 @@ impl Site {
             .filter(|p| !self.winners.contains(*p) && self.entries.get(*p) == Some(&Kind::Note))
             .map(|p| note_key(p))
             .collect();
+        let mut listing = !self.listed;
         let mut gone = Vec::new();
         for path in self.winners.difference(&won) {
             // Its kind by extension: the path may be excluded now.
@@ -342,7 +359,7 @@ impl Site {
             let (_, out) = claim(path, kind);
             sink.delete(out);
             if kind == Kind::Note {
-                self.versions.remove(path);
+                listing |= self.versions.remove(path).is_some();
                 if !live.contains(note_key(path)) {
                     gone.push(note_key(path).to_string());
                 }
@@ -375,6 +392,7 @@ impl Site {
                         continue;
                     }
                     self.versions.insert(path.clone(), page.version.clone());
+                    listing = true;
                     let html: Arc<str> = Arc::from(page.html);
                     sink.write(Write::Page {
                         out,
@@ -397,9 +415,35 @@ impl Site {
             }
         }
 
+        if listing {
+            sink.write(Write::Manifest {
+                json: self.manifest(),
+            });
+            self.listed = true;
+        }
+
         self.winners = won;
         report.skipped.sort_by(|a, b| a.path.cmp(&b.path));
         report
+    }
+
+    /// `{"pages":{"<url>":"<version>",...}}`, in path order. URLs are percent-encoded and
+    /// versions are hex, so neither needs escaping.
+    fn manifest(&self) -> String {
+        let mut json = String::with_capacity(16 + self.versions.len() * 64);
+        json.push_str("{\"pages\":{");
+        for (i, (path, version)) in self.versions.iter().enumerate() {
+            if i > 0 {
+                json.push(',');
+            }
+            json.push('"');
+            json.push_str(&url(path));
+            json.push_str("\":\"");
+            json.push_str(version);
+            json.push('"');
+        }
+        json.push_str("}}");
+        json
     }
 
     /// Updates the link graph for the new winners and renders the body of every winning
