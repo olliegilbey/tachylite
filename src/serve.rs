@@ -367,12 +367,7 @@ impl Stream {
             None => None,
             Some(version) if self.client.as_deref() == Some(version.as_str()) => None,
             Some(version) => {
-                let path = self
-                    .app
-                    .out
-                    .join("pages")
-                    .join(format!("{}.html", self.key));
-                let html = fs::read_to_string(path).ok()?;
+                let html = fs::read_to_string(locate(&self.app.out, &self.key)?).ok()?;
                 self.client = Some(version.clone());
                 Some(page_event(&version, &html))
             }

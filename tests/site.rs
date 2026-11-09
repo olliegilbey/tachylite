@@ -262,7 +262,6 @@ fn unreadable_note_is_skipped_and_unpublished() {
     );
 }
 
-/// The keys of the pages a delta pushes, in order.
 /// Whether a push key is an index page's: the home page, or one under the reserved prefix.
 fn index_key(key: &str) -> bool {
     key.is_empty() || key.starts_with(".tachylite/")
@@ -962,6 +961,15 @@ fn a_folder_index_lists_its_children_by_title() {
 }
 
 #[test]
+fn subfolders_sort_ignoring_case() {
+    let (_, delta) = full(&Mem::with(&[("Zeta/a.md", "a"), ("alpha/b.md", "b")]));
+    let page = html(&delta, "");
+    let alpha = page.find(">alpha</a>").expect(page);
+    let zeta = page.find(">Zeta</a>").expect(page);
+    assert!(alpha < zeta, "{page}");
+}
+
+#[test]
 fn creating_a_note_re_renders_its_folder_index() {
     let mut mem = Mem::with(&[("a.md", "aye"), ("d/b.md", "bee")]);
     let (mut site, _) = synced(&mut mem, Exclude::default());
@@ -1039,6 +1047,37 @@ fn recent_orders_by_modified_time_then_path() {
     let at = |url: &str| page.find(&format!("href=\"{url}\"")).expect(url);
     assert!(at("/b") < at("/c") && at("/c") < at("/a"), "{page}");
     assert!(page.contains("1970-01-01"), "{page}");
+}
+
+#[test]
+fn an_edit_moves_its_note_to_the_top_of_recent() {
+    let mut source = Timed(
+        [("a.md", 10), ("b.md", 20)]
+            .iter()
+            .map(|(p, t)| (p.to_string(), (b"x".to_vec(), *t)))
+            .collect(),
+    );
+    let entries = ["a.md", "b.md"]
+        .iter()
+        .map(|p| Entry {
+            path: p.to_string(),
+            kind: classify(p, &Exclude::default()).unwrap(),
+        })
+        .collect();
+    let mut site = Site::new(Exclude::default());
+    let first = site.apply(
+        vec![Change::Sync {
+            under: String::new(),
+            entries,
+        }],
+        &mut source,
+    );
+    let page = html(&first, ".tachylite/recent");
+    assert!(page.find("\"/b\"") < page.find("\"/a\""), "{page}");
+    source.0.insert("a.md".into(), (b"edited".to_vec(), 30));
+    let delta = site.apply(vec![touch("a.md")], &mut source);
+    let page = html(&delta, ".tachylite/recent");
+    assert!(page.find("\"/a\"") < page.find("\"/b\""), "{page}");
 }
 
 #[test]

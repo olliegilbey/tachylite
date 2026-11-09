@@ -108,7 +108,9 @@
   };
   document.addEventListener("click", (e) => e.target.closest?.("button.find") && finder());
   document.addEventListener("keydown", (e) => {
-    const typing = e.target.closest?.("input, textarea, select, [contenteditable]");
+    // A closed dialog's input can keep the focus after Escape; it is not a text field then.
+    const field = e.target.closest?.("input, textarea, select, [contenteditable]");
+    const typing = field && !dialog?.contains(field);
     const open = dialog?.open;
     if (((e.ctrlKey || e.metaKey) && e.key === "k") || (e.key === "/" && !typing && !open)) {
       e.preventDefault();

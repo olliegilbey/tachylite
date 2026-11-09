@@ -469,3 +469,17 @@ fn renamed_target_pushes_broken_link_to_linker() {
             .is_some()
     );
 }
+
+#[test]
+fn a_stale_home_page_catches_up_on_connect() {
+    let (_d, server) = with_notes(&[("a.md", "# first")]);
+    let current = version(&server, "/");
+    let mut events = server.subscribe("/", "0000000000000000", None);
+    let event = events.expect("page");
+    assert_eq!(event.id.as_deref(), Some(current.as_str()));
+    assert!(
+        event.data.contains("<title>Tachylite</title>"),
+        "{}",
+        event.data
+    );
+}

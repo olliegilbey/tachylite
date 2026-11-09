@@ -77,9 +77,13 @@ async function sync() {
         const r = await fetch(url);
         if (r.status === 404) await cache.delete(url);
         if (r.status !== 200) continue;
-        // The page may have changed since the manifest was read: record what came.
-        const text = await r.clone().text();
-        const version = /<meta name="tachylite-version" content="([0-9a-f]+)">/.exec(text)?.[1] ?? "";
+        // A page may have changed since the manifest was read: record what came. A file
+        // with no version meta, such as notes.json, records the listed version.
+        const html = r.headers.get("content-type")?.startsWith("text/html");
+        const text = html ? await r.clone().text() : "";
+        const version = html
+          ? (/<meta name="tachylite-version" content="([0-9a-f]+)">/.exec(text)?.[1] ?? "")
+          : want[url];
         await cache.put(url, r);
         have[url] = version;
       } catch {

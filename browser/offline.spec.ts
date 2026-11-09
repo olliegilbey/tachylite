@@ -52,6 +52,15 @@ test("a note never opened opens with the server stopped", async ({ page }) => {
   await expect(page.locator("main")).toContainText("aye text");
 });
 
+test("a synced file without a version meta is not fetched again", async ({ page }) => {
+  await visit(page, "/a");
+  const listed = (await (await page.request.get(base + "/.tachylite/manifest.json")).json()).pages;
+  const json = "/.tachylite/notes.json";
+  const stored = () =>
+    page.evaluate(async (m) => (await (await caches.match(m))?.json())?.[ "/.tachylite/notes.json"], "/.tachylite/manifest.json");
+  await expect.poll(stored).toBe(listed[json]);
+});
+
 test("an edit made while away arrives on reconnect", async ({ page }) => {
   await visit(page, "/a");
   await expect.poll(() => cached(page, "/b")).toContain("bee text");

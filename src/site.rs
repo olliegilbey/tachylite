@@ -98,12 +98,12 @@ const SITE: &str = "Tachylite";
 /// The switcher list's URL key.
 const NOTES_JSON: &str = ".tachylite/notes.json";
 
-/// Where a generated page's key is written in the output.
 /// Whether an output path holds a generated page rather than a vault file's.
 pub fn generated(out: &str) -> bool {
     out.starts_with("pages/.tachylite/") || out.starts_with("files/.tachylite/")
 }
 
+/// Where a generated page's key is written in the output.
 fn generated_out(key: &str) -> String {
     match key {
         "" => "pages/.tachylite/home.html".into(),
@@ -533,7 +533,11 @@ impl Site {
                 items.sort_by_cached_key(|i| (i.title.to_lowercase(), i.url.clone()));
                 let folder = Folder {
                     path,
-                    folders: subs.into_iter().collect(),
+                    folders: {
+                        let mut folders: Vec<&str> = subs.into_iter().collect();
+                        folders.sort_by_cached_key(|f| (f.to_lowercase(), *f));
+                        folders
+                    },
                     items,
                 };
                 let (key, page) = if path.is_empty() {
@@ -590,7 +594,8 @@ impl Site {
         changed
     }
 
-    /// `{"pages":{"<url>":"<version>",...}}`, in path order. URLs are percent-encoded and
+    /// `{"pages":{"<url>":"<version>",...}}`: note pages in path order, then generated
+    /// pages in key order. URLs are percent-encoded and
     /// versions are hex, so neither needs escaping.
     fn manifest(&self) -> String {
         let mut json = String::with_capacity(16 + self.versions.len() * 64);
