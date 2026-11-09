@@ -79,7 +79,7 @@ The likeliest defect here is a change that works in a full build and goes stale 
 
 The stack: Rust stable, edition 2024, one crate until a second earns its place. Client assets are plain files embedded in the binary. Write code that passes the gate set by construction:
 
-- The gate set: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, and the budget benches at CI's ceiling. `make check` runs them the way CI does; run it green before any push. CI also runs `make size` for both musl targets. The first build slice creates the Makefile and CI. Until then, run the cargo commands directly.
+- The gate set: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, and the budget benches at CI's ceiling. `make check` runs them the way CI does; run it green before any push. CI also runs `make size` for both release targets. The first build slice creates the Makefile and CI. Until then, run the cargo commands directly.
 - `cargo machete` and `cargo deny check` run in `make check`. They fail on an unused crate, a disallowed licence or a known advisory.
 - Dependencies track the newest releases. Add a crate with `cargo add`. `make upgrade` updates the stable toolchain and moves every crate to its latest version, across major versions.
 - `make budget` runs the timed budgets on the reference host. Put its numbers in the PR body.

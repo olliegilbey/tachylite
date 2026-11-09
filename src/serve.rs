@@ -6,6 +6,7 @@ use std::fs;
 use std::future::IntoFuture;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{self, Write as _};
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::pin::pin;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -461,7 +462,7 @@ pub fn serve(vault: &Path, out: &Path, port: u16) -> Result<(), Error> {
             source,
         })?;
     runtime.block_on(async move {
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+        let listener = tokio::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, port)))
             .await
             .map_err(|source| Error::Bind { port, source })?;
         let addr = listener
