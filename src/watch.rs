@@ -14,7 +14,7 @@ use tokio::sync::broadcast;
 
 use crate::config::{self, Config, Exclude};
 use crate::output::Writer;
-use crate::site::{Change, Push, Site, Source};
+use crate::site::{Change, Note, Push, Site, Source};
 use crate::vault::{ReadError, VaultDir, scan_under};
 use crate::{Error, report};
 
@@ -68,8 +68,8 @@ struct Batch<'a> {
 }
 
 impl Source for Batch<'_> {
-    fn note(&mut self, path: &str) -> Result<Vec<u8>, ReadError> {
-        self.vault.read_after(path, !self.unsaved.contains(path))
+    fn note(&mut self, path: &str) -> Result<Note, ReadError> {
+        self.vault.read_note(path, !self.unsaved.contains(path))
     }
     fn file(&mut self, path: &str) -> Result<(), ReadError> {
         self.vault

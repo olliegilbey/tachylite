@@ -21,6 +21,53 @@ Tachylite renders the vault into `<out>`, watches it, and serves the site on `ht
 - It never writes to the vault.
 - It needs Linux 5.6 or later.
 
+## Find your way
+
+- The app opens on a home page: the newest notes, then the vault's top folders.
+- Each folder has an index page, and each note links to its folders at the top.
+- Recent lists the 50 newest notes.
+- Find, or Ctrl-K, Cmd-K or `/`, opens a fuzzy switcher over titles, aliases and paths. It works offline.
+
+## Run it on a server
+
+This example keeps Tachylite running on a Linux box, and reaches it from a phone over a tailnet. Build the binary and put it on your path:
+
+```sh
+cargo build --release
+install -m 755 target/release/tachylite ~/.local/bin/
+```
+
+Run it as a systemd user service. Save this as `~/.config/systemd/user/tachylite.service`, with your own vault and output paths:
+
+```ini
+[Unit]
+Description=Tachylite
+
+[Service]
+ExecStart=%h/.local/bin/tachylite serve %h/vault %h/.local/share/tachylite --port 7420
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
+```sh
+systemctl --user daemon-reload
+systemctl --user enable --now tachylite
+loginctl enable-linger "$USER"   # keeps it running when you log out
+journalctl --user -u tachylite -f
+```
+
+Then put `tailscale serve` in front, on a port your tailnet does not already use:
+
+```sh
+tailscale serve --bg --https=8443 http://127.0.0.1:7420
+```
+
+- `serve` stays inside your tailnet. `funnel` publishes to the internet; do not use it for a vault.
+- A port that already carries a Funnel route is public on every path. Check `tailscale funnel status` before you pick a port.
+- Open `https://<machine>.<tailnet>.ts.net:8443/` on the phone and install it from the browser menu. After the first sync it works offline.
+
 ## What it renders
 
 Notes render close to Obsidian's reading view:

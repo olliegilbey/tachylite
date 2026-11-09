@@ -42,7 +42,7 @@ pub struct Writer<'a, F: FnMut(Push)> {
     out: &'a Path,
     vault: &'a VaultDir,
     on_push: F,
-    /// Pages written.
+    /// Note pages written; generated index pages are not counted.
     pub pages: usize,
     /// Copies made or skipped.
     pub copies: usize,
@@ -104,7 +104,7 @@ impl<F: FnMut(Push)> Sink for Writer<'_, F> {
         }
         let result = match write {
             Write::Page { out: rel, html } => {
-                self.pages += 1;
+                self.pages += usize::from(!crate::site::generated(&rel));
                 write_via_tmp(&self.out.join(rel), |tmp| fs::write(tmp, html.as_bytes()))
             }
             Write::Copy { out: rel, from } => self.write_copy(&rel, &from),

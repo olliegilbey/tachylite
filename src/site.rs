@@ -1,14 +1,17 @@
 //! The pure core: vault changes in, output out. A full build is `Sync` of the root.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::config::Exclude;
 use crate::front;
+use crate::indexes::{self, Folder, Item};
 use crate::links::{Index, key};
 use crate::render::{
-    Body, Broken, EMBED_DEPTH, Sources, embed_targets, note_title, render_body, render_page, url,
+    Body, Broken, EMBED_DEPTH, Sources, embed_targets, encode, note_title, render_body,
+    render_page, url,
 };
 use crate::vault::{Entry, Kind, ReadError, SkipReason, Skipped, VaultDir, classify};
 
@@ -20,16 +23,30 @@ pub enum Change {
     Sync { under: String, entries: Vec<Entry> },
 }
 
+/// A note as read: its bytes, and its modified time in seconds since the epoch.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Note {
+    pub bytes: Vec<u8>,
+    pub modified: i64,
+}
+
+/// A note with no known modified time, as in-memory sources give.
+impl From<Vec<u8>> for Note {
+    fn from(bytes: Vec<u8>) -> Note {
+        Note { bytes, modified: 0 }
+    }
+}
+
 /// Where the site reads the vault. `VaultDir` in production; a map in tests.
 pub trait Source {
-    fn note(&mut self, path: &str) -> Result<Vec<u8>, ReadError>;
+    fn note(&mut self, path: &str) -> Result<Note, ReadError>;
     /// Checks that a regular file is there, without reading it.
     fn file(&mut self, path: &str) -> Result<(), ReadError>;
 }
 
 impl Source for &VaultDir {
-    fn note(&mut self, path: &str) -> Result<Vec<u8>, ReadError> {
-        self.read(path)
+    fn note(&mut self, path: &str) -> Result<Note, ReadError> {
+        self.read_note(path, true)
     }
     fn file(&mut self, path: &str) -> Result<(), ReadError> {
         self.open_file(path).map(|_| ())
@@ -72,6 +89,26 @@ impl Sink for Delta {
     }
     fn push(&mut self, push: Push) {
         self.pushes.push(push);
+    }
+}
+
+/// The site's name, until config names it.
+const SITE: &str = "Tachylite";
+
+/// The switcher list's URL key.
+const NOTES_JSON: &str = ".tachylite/notes.json";
+
+/// Whether an output path holds a generated page rather than a vault file's.
+pub fn generated(out: &str) -> bool {
+    out.starts_with("pages/.tachylite/") || out.starts_with("files/.tachylite/")
+}
+
+/// Where a generated page's key is written in the output.
+fn generated_out(key: &str) -> String {
+    match key {
+        "" => "pages/.tachylite/home.html".into(),
+        NOTES_JSON => format!("files/{key}"),
+        _ => format!("pages/{key}.html"),
     }
 }
 
@@ -130,6 +167,10 @@ pub struct Site {
     titles: HashMap<String, String>,
     /// The notes whose embeds read each path, at any depth.
     embedded_by: HashMap<Arc<str>, BTreeSet<Arc<str>>>,
+    /// The version of each index page and of the switcher list, by URL key.
+    generated: BTreeMap<String, String>,
+    /// Each read note's modified time, for the recent pages.
+    modified: HashMap<String, i64>,
     /// Whether a manifest was written, so the first apply writes one even when empty.
     listed: bool,
 }
@@ -385,7 +426,7 @@ impl Site {
                         .filter(|from| ***from != **path)
                         .map(|from| (self.title(from).to_string(), url(from)))
                         .collect();
-                    let page = render_page(self.title(path), &body, &backlinks);
+                    let page = render_page(path, self.title(path), &body, &backlinks);
                     drop(body);
                     if !new && self.versions.get(path) == Some(&page.version) {
                         continue;
@@ -414,6 +455,8 @@ impl Site {
             }
         }
 
+        self.modified.retain(|path, _| won.contains(path));
+        listing |= self.indexes(&won, sink);
         if listing {
             sink.write(Write::Manifest {
                 json: self.manifest(),
@@ -426,7 +469,133 @@ impl Site {
         report
     }
 
-    /// `{"pages":{"<url>":"<version>",...}}`, in path order. URLs are percent-encoded and
+    /// Derives every index page and the switcher list from the winners, and writes and
+    /// pushes the ones whose version changed. Returns whether any changed.
+    fn indexes(&mut self, won: &BTreeSet<String>, sink: &mut impl Sink) -> bool {
+        let mut built: Vec<(String, String, String)> = Vec::new();
+        {
+            // Every folder that holds a page, with its subfolders and pages.
+            let mut tree: BTreeMap<&str, (BTreeSet<&str>, Vec<Item>)> = BTreeMap::new();
+            tree.entry("").or_default();
+            let mut notes: Vec<(i64, &str)> = Vec::new();
+            let mut json = indexes::NotesJson::default();
+            for path in won {
+                let kind = self.entries.get(path).copied().unwrap_or(Kind::Asset);
+                if kind == Kind::Asset {
+                    continue;
+                }
+                let (folder, name) = path.rsplit_once('/').unwrap_or(("", path));
+                let mut child = folder;
+                while !child.is_empty() {
+                    let parent = child.rsplit_once('/').map_or("", |(p, _)| p);
+                    let (subs, _) = tree.entry(parent).or_default();
+                    if !subs.insert(child) {
+                        break;
+                    }
+                    child = parent;
+                }
+                let modified = self.modified.get(path).copied().unwrap_or_default();
+                let title = if kind == Kind::Note {
+                    self.title(path)
+                } else {
+                    name
+                };
+                let url = url(path);
+                if kind == Kind::Note {
+                    notes.push((modified, path));
+                    json.push(title, &url, note_key(path), self.index.aliases(path));
+                }
+                tree.entry(folder).or_default().1.push(Item {
+                    title,
+                    url,
+                    folder,
+                    modified,
+                });
+            }
+            // Newest first; equal times by path.
+            let order = |a: &(i64, &str), b: &(i64, &str)| b.0.cmp(&a.0).then(a.1.cmp(b.1));
+            if notes.len() > indexes::RECENT {
+                notes.select_nth_unstable_by(indexes::RECENT, order);
+                notes.truncate(indexes::RECENT);
+            }
+            notes.sort_unstable_by(order);
+            let recent: Vec<Item> = notes
+                .iter()
+                .map(|&(modified, path)| Item {
+                    title: self.title(path),
+                    url: url(path),
+                    folder: path.rsplit_once('/').map_or("", |(f, _)| f),
+                    modified,
+                })
+                .collect();
+            let recent: Vec<&Item> = recent.iter().collect();
+            for (path, (subs, mut items)) in tree {
+                items.sort_by_cached_key(|i| (i.title.to_lowercase(), i.url.clone()));
+                let folder = Folder {
+                    path,
+                    folders: {
+                        let mut folders: Vec<&str> = subs.into_iter().collect();
+                        folders.sort_by_cached_key(|f| (f.to_lowercase(), *f));
+                        folders
+                    },
+                    items,
+                };
+                let (key, page) = if path.is_empty() {
+                    (String::new(), indexes::home(SITE, &recent, &folder))
+                } else {
+                    (
+                        format!(".tachylite/folders/{path}"),
+                        indexes::folder(&folder),
+                    )
+                };
+                built.push((key, page.version, page.html));
+            }
+            let page = indexes::recent(&recent);
+            built.push((".tachylite/recent".into(), page.version, page.html));
+            let json = json.finish();
+            let mut hasher = DefaultHasher::new();
+            json.hash(&mut hasher);
+            built.push((NOTES_JSON.into(), format!("{:016x}", hasher.finish()), json));
+        }
+
+        let mut changed = false;
+        let fresh: HashSet<String> = built.iter().map(|(key, ..)| key.clone()).collect();
+        let gone: Vec<String> = self
+            .generated
+            .keys()
+            .filter(|key| !fresh.contains(*key))
+            .cloned()
+            .collect();
+        for key in gone {
+            self.generated.remove(&key);
+            sink.delete(generated_out(&key));
+            sink.push(Push::Gone { key });
+            changed = true;
+        }
+        for (key, version, html) in built {
+            if self.generated.get(&key) == Some(&version) {
+                continue;
+            }
+            let html: Arc<str> = Arc::from(html);
+            sink.write(Write::Page {
+                out: generated_out(&key),
+                html: Arc::clone(&html),
+            });
+            if key != NOTES_JSON {
+                sink.push(Push::Page {
+                    key: key.clone(),
+                    version: version.clone(),
+                    html,
+                });
+            }
+            self.generated.insert(key, version);
+            changed = true;
+        }
+        changed
+    }
+
+    /// `{"pages":{"<url>":"<version>",...}}`: note pages in path order, then generated
+    /// pages in key order. URLs are percent-encoded and
     /// versions are hex, so neither needs escaping.
     fn manifest(&self) -> String {
         let mut json = String::with_capacity(16 + self.versions.len() * 64);
@@ -437,6 +606,16 @@ impl Site {
             }
             json.push('"');
             json.push_str(&url(path));
+            json.push_str("\":\"");
+            json.push_str(version);
+            json.push('"');
+        }
+        for (key, version) in &self.generated {
+            if json.len() > "{\"pages\":{".len() {
+                json.push(',');
+            }
+            json.push_str("\"/");
+            json.push_str(&encode(key));
             json.push_str("\":\"");
             json.push_str(version);
             json.push('"');
@@ -549,7 +728,9 @@ impl Site {
             let notes: Vec<(&str, Vec<u8>)> = batch
                 .iter()
                 .filter_map(|path| {
-                    let bytes = fresh.remove(path).or_else(|| source.note(path).ok())?;
+                    let bytes = fresh
+                        .remove(path)
+                        .or_else(|| source.note(path).ok().map(|n| n.bytes))?;
                     Some((path.as_str(), bytes))
                 })
                 .collect();
@@ -576,7 +757,7 @@ impl Site {
             if !note || !won.contains(&path) || bodies.contains_key(&path) {
                 continue;
             }
-            if let Ok(bytes) = source.note(&path) {
+            if let Ok(Note { bytes, .. }) = source.note(&path) {
                 let notes = [(path.as_str(), bytes)];
                 if let Some((_, body)) = self.render_notes(&notes, fresh, source).pop() {
                     bodies.insert(path, body.html);
@@ -601,7 +782,7 @@ impl Site {
                 .find(|(p, _)| *p == target)
                 .map(|(_, b)| b.clone())
                 .or_else(|| fresh.get(target).cloned())
-                .or_else(|| source.note(target).ok())
+                .or_else(|| source.note(target).ok().map(|n| n.bytes))
         };
         let targets = |from: &str, bytes: &[u8]| {
             embed_targets(from, &String::from_utf8_lossy(bytes), &self.index)
@@ -731,8 +912,9 @@ impl Site {
             return false;
         };
         let result = match kind {
-            Kind::Note => source.note(path).map(|bytes| {
-                fresh.insert(path.to_string(), bytes);
+            Kind::Note => source.note(path).map(|note| {
+                self.modified.insert(path.to_string(), note.modified);
+                fresh.insert(path.to_string(), note.bytes);
             }),
             Kind::Html | Kind::Asset => source.file(path),
         };

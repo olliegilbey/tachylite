@@ -90,7 +90,7 @@ fn output_holds_only_published_files() {
     for rel in files_under(&s.out()) {
         let rel_str = rel.to_str().unwrap();
         let ok = rel_str == ".tachylite-output"
-            || rel_str == tachylite::site::MANIFEST
+            || tachylite::site::generated(rel_str)
             || (rel_str.starts_with("pages/") && rel_str.ends_with(".html"))
             || rel_str.strip_prefix("files/").is_some_and(|p| {
                 matches!(
@@ -353,7 +353,7 @@ fn no_temp_files_remain() {
             p.components()
                 .any(|c| c.as_os_str().to_string_lossy().starts_with('.'))
                 && p != Path::new(".tachylite-output")
-                && p != Path::new(tachylite::site::MANIFEST)
+                && !tachylite::site::generated(p.to_str().unwrap())
         })
         .collect();
     assert!(hidden.is_empty(), "{hidden:?}");
@@ -395,13 +395,44 @@ fn config_excludes_globs() {
     ]);
     let (vault, out) = (dir.path().join("vault"), dir.path().join("out"));
     build(&vault, &out).unwrap();
-    let pages: Vec<PathBuf> = files_under(&out.join("pages"));
+    let pages: Vec<PathBuf> = files_under(&out.join("pages"))
+        .into_iter()
+        .filter(|p| !p.starts_with(".tachylite"))
+        .collect();
     assert_eq!(pages, [PathBuf::from("notes/y.html")]);
     let text = all_output_text(&out);
     assert!(
         !text.contains("hidden-"),
         "an excluded note reached the output"
     );
+}
+
+#[test]
+fn an_excluded_name_is_in_no_generated_file() {
+    let dir = bare(&[
+        (
+            "tachylite.toml",
+            "exclude = [\"secretdir\", \"**/secretnote.md\"]\n",
+        ),
+        ("secretdir/plain.md", "# plain"),
+        ("notes/secretnote.md", "# plain"),
+        ("notes/y.md", "# shown"),
+    ]);
+    let (vault, out) = (dir.path().join("vault"), dir.path().join("out"));
+    build(&vault, &out).unwrap();
+    let generated: Vec<_> = files_under(&out)
+        .into_iter()
+        .filter(|p| tachylite::site::generated(p.to_str().unwrap()))
+        .collect();
+    assert!(generated.len() >= 4, "{generated:?}");
+    for rel in generated {
+        let text = fs::read_to_string(out.join(&rel)).unwrap();
+        assert!(!text.contains("secret"), "{rel:?} names an excluded note");
+        assert!(
+            text.contains("notes") || text.contains("{\"pages\""),
+            "{rel:?}"
+        );
+    }
 }
 
 #[test]

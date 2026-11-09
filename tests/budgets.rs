@@ -215,13 +215,17 @@ fn resident_memory() {
 #[test]
 fn typical_page_weight() {
     use std::io::Write as _;
-    use tachylite::site::{Change, Push, Site, Source};
+    use tachylite::site::{Change, Note, Push, Site, Source};
     use tachylite::vault::{Entry, ReadError, classify};
 
     struct Notes(HashMap<String, Vec<u8>>);
     impl Source for Notes {
-        fn note(&mut self, path: &str) -> Result<Vec<u8>, ReadError> {
-            self.0.get(path).cloned().ok_or(ReadError::Missing)
+        fn note(&mut self, path: &str) -> Result<Note, ReadError> {
+            self.0
+                .get(path)
+                .cloned()
+                .map(Note::from)
+                .ok_or(ReadError::Missing)
         }
         fn file(&mut self, _: &str) -> Result<(), ReadError> {
             Err(ReadError::Missing)
@@ -266,10 +270,12 @@ fn typical_page_weight() {
     pages.sort_unstable();
     let page = pages[pages.len() / 2];
     let script = gzipped(include_bytes!("../src/live.js"));
+    let style = gzipped(include_bytes!("../src/style.css"));
     let limit = 30 * 1024;
+    let total = page + script + style;
     println!(
-        "typical page weight: {} B ({page} B page + {script} B script, limit {limit} B)",
-        page + script
+        "typical page weight: {total} B ({page} B page + {script} B script + {style} B style, \
+         limit {limit} B)"
     );
-    assert!(page + script <= limit);
+    assert!(total <= limit);
 }
