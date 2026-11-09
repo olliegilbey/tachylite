@@ -74,7 +74,6 @@ fn rejects_bad_paths() {
         "/%ff",
         "/a%2",
         "/x%00",
-        "/",
     ] {
         assert_eq!(server.get(path).status, 404, "{path}");
     }
@@ -200,6 +199,54 @@ fn mermaid_js_is_gzipped() {
     assert!(r.header("etag").is_some());
     let vendored = concat!(env!("CARGO_MANIFEST_DIR"), "/src/vendor/mermaid.tiny.js.gz");
     assert_eq!(r.body, fs::read(vendored).unwrap());
+}
+
+#[test]
+fn serves_the_home_page_and_index_pages() {
+    let d = Dirs::fixture();
+    let server = Server::start(&d.vault(), &d.out());
+    for (path, title) in [
+        ("/", "<title>Tachylite</title>"),
+        ("/.tachylite/recent", "<title>Recent</title>"),
+        ("/.tachylite/folders/people", "<title>people</title>"),
+    ] {
+        let r = server.get(path);
+        assert_eq!(r.status, 200, "{path}");
+        assert_eq!(r.header("content-type"), Some("text/html; charset=utf-8"));
+        assert!(r.text().contains(title), "{path}: {}", r.text());
+    }
+    let home = server.get("/").text();
+    assert!(
+        home.contains("href=\"/people/Jane%20Doe\"")
+            || home.contains("href=\"/.tachylite/folders/people\""),
+        "{home}"
+    );
+    let notes = server.get("/.tachylite/notes.json");
+    assert_eq!(notes.header("content-type"), Some("application/json"));
+    assert!(
+        notes
+            .text()
+            .contains("[\"Jane Doe\",\"/people/Jane%20Doe\""),
+        "{}",
+        notes.text()
+    );
+}
+
+#[test]
+fn serves_the_stylesheet() {
+    let d = Dirs::fixture();
+    let server = Server::start(&d.vault(), &d.out());
+    let r = get(
+        server.addr,
+        "/.tachylite/style.css",
+        &[("Accept-Encoding", "gzip")],
+    );
+    assert_eq!(r.status, 200);
+    assert_eq!(r.header("content-type"), Some("text/css"));
+    assert_eq!(r.header("content-encoding"), Some("gzip"));
+    assert_eq!(r.header("cache-control"), Some("no-cache"));
+    let page = server.get("/welcome").text();
+    assert!(page.contains("<link rel=\"stylesheet\" href=\"/.tachylite/style.css\">"));
 }
 
 #[test]

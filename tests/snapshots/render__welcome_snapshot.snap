@@ -7,12 +7,15 @@ expression: welcome()
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
 <link rel="manifest" href="/.tachylite/app.webmanifest">
-<meta name="tachylite-version" content="08178971ad785bd7">
+<link rel="stylesheet" href="/.tachylite/style.css">
+<meta name="tachylite-version" content="498d5df886bd1030">
 <title>welcome</title>
 <script src="/.tachylite/live.js" defer></script>
 </head>
 <body>
+<header><a href="/">Home</a><a href="/.tachylite/recent">Recent</a><button type="button" class="find" title="Find a note (Ctrl-K)">Find</button></header>
 <main>
 <dl class="properties"><dt>title</dt><dd>Welcome</dd><dt>tags</dt><dd><a class="tag" href="/.tachylite/tags/guide">#guide</a>, <a class="tag" href="/.tachylite/tags/sample">#sample</a></dd></dl>
 <h1 id="welcome-to-the-sample-vault">Welcome to the sample vault</h1>

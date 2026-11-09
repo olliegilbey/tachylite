@@ -701,17 +701,43 @@ fn replace<'a>(arena: &'a Arena<'a>, node: &'a AstNode<'a>, html: String) {
     node.detach();
 }
 
-fn escape(text: &str) -> String {
+pub fn escape(text: &str) -> String {
     let mut escaped = String::with_capacity(text.len());
     // Writing into a String cannot fail.
     let _ = comrak::html::escape(&mut escaped, text);
     escaped
 }
 
-/// Wraps a body in the page shell, with its backlinks as `(title, url)` pairs.
-pub fn render_page(title: &str, body: &str, backlinks: &[(String, String)]) -> Page {
-    let title = escape(title);
-    let mut main = body.to_string();
+/// The URL of a folder's index page.
+pub fn folder_url(folder: &str) -> String {
+    format!("/.tachylite/folders/{}", encode(folder))
+}
+
+/// Links to each folder above a path, outermost first, or nothing at the root.
+pub fn crumbs(folder: &str) -> String {
+    if folder.is_empty() {
+        return String::new();
+    }
+    let mut html = String::from("<nav class=\"crumbs\">");
+    let mut end = 0;
+    for (i, name) in folder.split('/').enumerate() {
+        if i > 0 {
+            html.push_str(" / ");
+        }
+        end += name.len() + usize::from(i > 0);
+        let href = folder_url(&folder[..end]);
+        html.push_str(&format!("<a href=\"{href}\">{}</a>", escape(name)));
+    }
+    html.push_str("</nav>\n");
+    html
+}
+
+/// Wraps a note's body in the page shell, under links to its folders and above its
+/// backlinks, given as `(title, url)` pairs.
+pub fn render_page(path: &str, title: &str, body: &str, backlinks: &[(String, String)]) -> Page {
+    let folder = path.rsplit_once('/').map_or("", |(folder, _)| folder);
+    let mut main = crumbs(folder);
+    main.push_str(body);
     if !backlinks.is_empty() {
         main.push_str("<section class=\"backlinks\"><h2>Backlinks</h2><ul>");
         for (text, href) in backlinks {
@@ -719,14 +745,24 @@ pub fn render_page(title: &str, body: &str, backlinks: &[(String, String)]) -> P
         }
         main.push_str("</ul></section>\n");
     }
+    shell(title, &main)
+}
+
+/// Every page's template: the head, the header, and `main`. `title` is plain text.
+pub fn shell(title: &str, main: &str) -> Page {
+    let title = escape(title);
     let before = "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
                   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
+                  <meta name=\"color-scheme\" content=\"dark light\">\n\
                   <link rel=\"manifest\" href=\"/.tachylite/app.webmanifest\">\n\
+                  <link rel=\"stylesheet\" href=\"/.tachylite/style.css\">\n\
                   <meta name=\"tachylite-version\" content=\"";
     let after = format!(
         "\">\n<title>{title}</title>\n\
-         <script src=\"/.tachylite/live.js\" defer></script>\n</head>\n\
-         <body>\n<main>\n{main}</main>\n</body>\n</html>\n"
+         <script src=\"/.tachylite/live.js\" defer></script>\n</head>\n<body>\n\
+         <header><a href=\"/\">Home</a><a href=\"/.tachylite/recent\">Recent</a>\
+         <button type=\"button\" class=\"find\" title=\"Find a note (Ctrl-K)\">Find</button>\
+         </header>\n<main>\n{main}</main>\n</body>\n</html>\n"
     );
     // The version hashes the whole page but itself, so a new template re-syncs every client.
     let mut hasher = DefaultHasher::new();

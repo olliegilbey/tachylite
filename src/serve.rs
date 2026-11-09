@@ -32,6 +32,7 @@ const LIVE_JS: &str = include_str!("live.js");
 const SW_JS: &str = include_str!("sw.js");
 const APP_MANIFEST: &str = include_str!("app.webmanifest");
 const ICON_SVG: &str = include_str!("icon.svg");
+const STYLE_CSS: &str = include_str!("style.css");
 /// `@mermaid-js/tiny`, gzipped by `make mermaid`. Every browser accepts gzip, so it is served
 /// as stored.
 const MERMAID_JS_GZ: &[u8] = include_bytes!("vendor/mermaid.tiny.js.gz");
@@ -290,6 +291,10 @@ async fn icon_svg(headers: HeaderMap) -> Response {
     embedded(ICON_SVG, "image/svg+xml", &headers)
 }
 
+async fn style_css(headers: HeaderMap) -> Response {
+    embedded(STYLE_CSS, "text/css", &headers)
+}
+
 async fn mermaid_js(headers: HeaderMap) -> Response {
     static TAG: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| etag(MERMAID_JS_GZ));
     let mut r = if matches(&headers, &TAG) {
@@ -431,6 +436,7 @@ pub fn router(app: App) -> Router {
         .route("/.tachylite/sw.js", get(sw_js))
         .route("/.tachylite/app.webmanifest", get(app_manifest))
         .route("/.tachylite/icon.svg", get(icon_svg))
+        .route("/.tachylite/style.css", get(style_css))
         .route("/.tachylite/mermaid.js", get(mermaid_js))
         .route("/.tachylite/events", get(events))
         .fallback(file)

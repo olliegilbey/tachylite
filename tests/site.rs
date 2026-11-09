@@ -69,20 +69,37 @@ fn fold(out: &mut Out, delta: &Delta, mem: &Mem) {
     }
 }
 
-/// The page and file writes, without the manifest.
+const HOME: &str = "pages/.tachylite/home.html";
+
+/// Where a pushed page's key is written.
+fn page_out(key: &str) -> String {
+    if key.is_empty() {
+        HOME.into()
+    } else {
+        format!("pages/{key}.html")
+    }
+}
+
+/// Whether an output path is generated: an index page, the manifest or the switcher list.
+fn generated(out: &str) -> bool {
+    out.starts_with("pages/.tachylite/") || out.starts_with("files/.tachylite/")
+}
+
+/// The note page, html page and asset writes, without generated output.
 fn files(delta: &Delta) -> Vec<&Write> {
     delta
         .writes
         .iter()
-        .filter(|w| !matches!(w, Write::Manifest { .. }))
+        .filter(|w| match w {
+            Write::Page { out, .. } | Write::Copy { out, .. } => !generated(out),
+            Write::Manifest { .. } => false,
+        })
         .collect()
 }
 
-/// The output paths, without the manifest.
+/// The output paths, without generated output.
 fn published(out: &Out) -> Vec<&String> {
-    out.keys()
-        .filter(|k| *k != tachylite::site::MANIFEST)
-        .collect()
+    out.keys().filter(|k| !generated(k)).collect()
 }
 
 fn sync_all(mem: &Mem) -> Change {
@@ -119,26 +136,17 @@ fn full_sync_writes_every_page() {
         published(&out),
         ["files/img/x.png", "pages/a.html", "pages/d/b.html"]
     );
-    let pages = delta
-        .writes
-        .iter()
+    let pages = files(&delta)
+        .into_iter()
         .filter(|w| matches!(w, Write::Page { .. }))
         .count();
-    let copies = delta
-        .writes
-        .iter()
+    let copies = files(&delta)
+        .into_iter()
         .filter(|w| matches!(w, Write::Copy { .. }))
         .count();
     assert_eq!((pages, copies), (2, 1));
-    let keys: Vec<_> = delta
-        .pushes
-        .iter()
-        .map(|p| match p {
-            Push::Page { key, .. } => key.as_str(),
-            Push::Gone { key } => panic!("unexpected gone for {key}"),
-        })
-        .collect();
-    assert_eq!(keys, ["a", "d/b"]);
+    assert_eq!(pushed(&delta), ["a", "d/b"]);
+    assert!(!delta.pushes.iter().any(|p| matches!(p, Push::Gone { .. })));
     assert!(delta.deletes.is_empty());
     assert!(delta.skipped.is_empty());
 }
@@ -178,7 +186,12 @@ fn deleted_note_is_deleted_and_gone() {
     mem.0.remove("a.md");
     let delta = site.apply(vec![touch("a.md")], &mut mem);
     assert_eq!(delta.deletes, ["pages/a.html"]);
-    assert!(matches!(&delta.pushes[..], [Push::Gone { key }] if key == "a"));
+    let gone: Vec<_> = delta
+        .pushes
+        .iter()
+        .filter(|p| matches!(p, Push::Gone { .. }))
+        .collect();
+    assert!(matches!(&gone[..], [Push::Gone { key }] if key == "a"));
 }
 
 #[test]
@@ -221,7 +234,7 @@ fn excluded_touch_is_ignored() {
     let mut mem = Mem::with(&[(".obsidian/x.md", "# hidden")]);
     let mut site = Site::new(Exclude::default());
     let delta = site.apply(vec![touch(".obsidian/x.md")], &mut mem);
-    assert!(files(&delta).is_empty() && delta.pushes.is_empty() && delta.deletes.is_empty());
+    assert!(files(&delta).is_empty() && pushed(&delta).is_empty() && delta.deletes.is_empty());
 }
 
 #[test]
@@ -250,13 +263,31 @@ fn unreadable_note_is_skipped_and_unpublished() {
 }
 
 /// The keys of the pages a delta pushes, in order.
+/// Whether a push key is an index page's: the home page, or one under the reserved prefix.
+fn index_key(key: &str) -> bool {
+    key.is_empty() || key.starts_with(".tachylite/")
+}
+
+/// The note pages pushed.
 fn pushed(delta: &Delta) -> Vec<&str> {
     delta
         .pushes
         .iter()
         .filter_map(|p| match p {
-            Push::Page { key, .. } => Some(key.as_str()),
-            Push::Gone { .. } => None,
+            Push::Page { key, .. } if !index_key(key) => Some(key.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The index pages pushed.
+fn indexed(delta: &Delta) -> Vec<&str> {
+    delta
+        .pushes
+        .iter()
+        .filter_map(|p| match p {
+            Push::Page { key, .. } if index_key(key) => Some(key.as_str()),
+            _ => None,
         })
         .collect()
 }
@@ -649,7 +680,7 @@ proptest! {
         prop_assert_eq!(&out, &expected);
 
         for (key, push) in &last_push {
-            let page = expected.get(&format!("pages/{key}.html"));
+            let page = expected.get(&page_out(key));
             match push {
                 Push::Page { html, .. } => {
                     prop_assert_eq!(page.map(|b| b.as_slice()), Some(html.as_bytes()));
@@ -658,7 +689,7 @@ proptest! {
             }
         }
         for path in expected.keys().filter(|p| p.starts_with("pages/")) {
-            let key = &path["pages/".len()..path.len() - ".html".len()];
+            let key = if path == HOME { "" } else { &path["pages/".len()..path.len() - ".html".len()] };
             prop_assert!(last_push.contains_key(key), "{key} was published without a push");
         }
     }
@@ -770,6 +801,19 @@ fn manifest(delta: &Delta) -> Option<&str> {
     })
 }
 
+/// The manifest's note entries, as `{"pages":{…}}`, without the generated pages.
+fn note_manifest(delta: &Delta) -> Option<String> {
+    let json = manifest(delta)?;
+    let inner = &json[r#"{"pages":{"#.len()..json.len() - 2];
+    let quoted: Vec<&str> = inner.split('"').skip(1).step_by(2).collect();
+    let notes: Vec<String> = quoted
+        .chunks(2)
+        .filter(|kv| kv[0] != "/" && !kv[0].starts_with("/.tachylite/"))
+        .map(|kv| format!(r#""{}":"{}""#, kv[0], kv[1]))
+        .collect();
+    Some(format!(r#"{{"pages":{{{}}}}}"#, notes.join(",")))
+}
+
 fn version(delta: &Delta, key: &str) -> String {
     delta
         .pushes
@@ -799,19 +843,27 @@ fn the_manifest_lists_every_note_page_with_its_version() {
         version(&delta, "b"),
         version(&delta, "sub/c d"),
     );
-    assert_eq!(manifest(&delta), Some(want.as_str()));
+    assert_eq!(note_manifest(&delta).as_deref(), Some(want.as_str()));
     assert_eq!(
         out.get(tachylite::site::MANIFEST).map(Vec::as_slice),
-        Some(want.as_bytes())
+        manifest(&delta).map(str::as_bytes)
     );
     let last = delta.writes.last();
     assert!(matches!(last, Some(Write::Manifest { .. })), "{last:?}");
 }
 
 #[test]
-fn an_empty_vault_has_an_empty_manifest() {
+fn an_empty_vault_lists_only_generated_pages() {
     let (_, delta) = full(&Mem::default());
-    assert_eq!(manifest(&delta), Some(r#"{"pages":{}}"#));
+    assert_eq!(note_manifest(&delta).as_deref(), Some(r#"{"pages":{}}"#));
+    let json = manifest(&delta).unwrap();
+    for url in [
+        "\"/\"",
+        "\"/.tachylite/recent\"",
+        "\"/.tachylite/notes.json\"",
+    ] {
+        assert!(json.contains(url), "{json}");
+    }
 }
 
 #[test]
@@ -823,11 +875,11 @@ fn the_manifest_follows_edits_and_deletes() {
     let delta = site.apply(vec![touch("a.md")], &mut mem);
     let a = version(&delta, "a");
     let want = format!(r#"{{"pages":{{"/a":"{a}","/b":"{b}"}}}}"#);
-    assert_eq!(manifest(&delta), Some(want.as_str()));
+    assert_eq!(note_manifest(&delta).as_deref(), Some(want.as_str()));
     mem.0.remove("a.md");
     let delta = site.apply(vec![touch("a.md")], &mut mem);
     let want = format!(r#"{{"pages":{{"/b":"{b}"}}}}"#);
-    assert_eq!(manifest(&delta), Some(want.as_str()));
+    assert_eq!(note_manifest(&delta).as_deref(), Some(want.as_str()));
 }
 
 #[test]
@@ -839,4 +891,199 @@ fn a_change_no_page_shows_writes_no_manifest() {
     assert_eq!(manifest(&delta), None);
     let delta = site.apply(vec![touch("a.md")], &mut mem);
     assert_eq!(manifest(&delta), None, "an unchanged note");
+}
+
+/// An in-memory vault whose notes carry modified times.
+struct Timed(BTreeMap<String, (Vec<u8>, i64)>);
+
+impl Source for Timed {
+    fn note(&mut self, path: &str) -> Result<Note, ReadError> {
+        self.0
+            .get(path)
+            .map(|(bytes, modified)| Note {
+                bytes: bytes.clone(),
+                modified: *modified,
+            })
+            .ok_or(ReadError::Missing)
+    }
+    fn file(&mut self, path: &str) -> Result<(), ReadError> {
+        self.0.get(path).map(|_| ()).ok_or(ReadError::Missing)
+    }
+}
+
+fn written<'a>(delta: &'a Delta, out: &str) -> &'a str {
+    delta
+        .writes
+        .iter()
+        .find_map(|w| match w {
+            Write::Page { out: o, html } if o == out => Some(&**html),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("nothing written to {out}"))
+}
+
+#[test]
+fn the_home_page_lists_recent_notes_and_the_root() {
+    let (_, delta) = full(&Mem::with(&[
+        ("a.md", "aye"),
+        ("d/b.md", "bee"),
+        ("p.html", "<p>"),
+    ]));
+    let home = html(&delta, "");
+    assert!(home.contains("<a href=\"/a\">a</a>"), "{home}");
+    assert!(home.contains("<a href=\"/p.html\">p.html</a>"), "{home}");
+    assert!(
+        home.contains("<a href=\"/.tachylite/folders/d\">d</a>"),
+        "{home}"
+    );
+    assert!(home.contains("<a href=\"/d/b\">b</a>"), "recent: {home}");
+    assert!(home.contains("<a href=\"/.tachylite/recent\">"), "{home}");
+    assert_eq!(written(&delta, "pages/.tachylite/home.html"), home);
+}
+
+#[test]
+fn a_folder_index_lists_its_children_by_title() {
+    let (_, delta) = full(&Mem::with(&[
+        ("d/zed.md", "---\ntitle: Apple\n---\n"),
+        ("d/m.md", "em"),
+        ("d/e/x.md", "ex"),
+        ("d/img.png", "png"),
+    ]));
+    let page = html(&delta, ".tachylite/folders/d");
+    let apple = page.find("<a href=\"/d/zed\">Apple</a>").expect(page);
+    let m = page.find("<a href=\"/d/m\">m</a>").expect(page);
+    assert!(apple < m, "{page}");
+    assert!(
+        page.contains("<a href=\"/.tachylite/folders/d/e\">e</a>"),
+        "{page}"
+    );
+    assert!(!page.contains("img.png"), "assets are not listed: {page}");
+    assert!(html(&delta, ".tachylite/folders/d/e").contains("<a href=\"/d/e/x\">x</a>"));
+}
+
+#[test]
+fn creating_a_note_re_renders_its_folder_index() {
+    let mut mem = Mem::with(&[("a.md", "aye"), ("d/b.md", "bee")]);
+    let (mut site, _) = synced(&mut mem, Exclude::default());
+    mem.0.insert("d/c.md".into(), b"sea".to_vec());
+    let delta = site.apply(vec![touch("d/c.md")], &mut mem);
+    assert!(
+        indexed(&delta).contains(&".tachylite/folders/d"),
+        "{:?}",
+        indexed(&delta)
+    );
+    assert!(html(&delta, ".tachylite/folders/d").contains("/d/c"));
+}
+
+#[test]
+fn deleting_a_folders_last_note_deletes_its_index() {
+    let mut mem = Mem::with(&[("a.md", "aye"), ("d/b.md", "bee")]);
+    let (mut site, _) = synced(&mut mem, Exclude::default());
+    mem.0.remove("d/b.md");
+    let delta = site.apply(vec![touch("d/b.md")], &mut mem);
+    assert!(
+        delta
+            .deletes
+            .contains(&"pages/.tachylite/folders/d.html".to_string())
+    );
+    assert!(delta.pushes.contains(&Push::Gone {
+        key: ".tachylite/folders/d".into()
+    }));
+    assert!(!html(&delta, "").contains("folders/d"));
+}
+
+#[test]
+fn a_title_change_re_renders_the_folder_index() {
+    let mut mem = Mem::with(&[("d/b.md", "---\ntitle: Old\n---\n")]);
+    let (mut site, _) = synced(&mut mem, Exclude::default());
+    mem.0
+        .insert("d/b.md".into(), b"---\ntitle: New\n---\n".to_vec());
+    let delta = site.apply(vec![touch("d/b.md")], &mut mem);
+    assert!(html(&delta, ".tachylite/folders/d").contains(">New</a>"));
+}
+
+#[test]
+fn an_edit_that_keeps_titles_and_times_re_renders_no_index() {
+    let mut mem = Mem::with(&[("a.md", "aye"), ("d/b.md", "bee")]);
+    let (mut site, _) = synced(&mut mem, Exclude::default());
+    mem.0.insert("d/b.md".into(), b"new body".to_vec());
+    let delta = site.apply(vec![touch("d/b.md")], &mut mem);
+    assert_eq!(pushed(&delta), ["d/b"]);
+    assert!(indexed(&delta).is_empty(), "{:?}", indexed(&delta));
+}
+
+#[test]
+fn recent_orders_by_modified_time_then_path() {
+    let notes = [("a.md", 10), ("b.md", 30), ("c.md", 30)];
+    let mut source = Timed(
+        notes
+            .iter()
+            .map(|(p, t)| (p.to_string(), (b"x".to_vec(), *t)))
+            .collect(),
+    );
+    let entries = notes
+        .iter()
+        .map(|(p, _)| Entry {
+            path: p.to_string(),
+            kind: classify(p, &Exclude::default()).unwrap(),
+        })
+        .collect();
+    let delta = Site::new(Exclude::default()).apply(
+        vec![Change::Sync {
+            under: String::new(),
+            entries,
+        }],
+        &mut source,
+    );
+    let page = html(&delta, ".tachylite/recent");
+    let at = |url: &str| page.find(&format!("href=\"{url}\"")).expect(url);
+    assert!(at("/b") < at("/c") && at("/c") < at("/a"), "{page}");
+    assert!(page.contains("1970-01-01"), "{page}");
+}
+
+#[test]
+fn the_switcher_list_names_every_note_with_its_aliases() {
+    let (_, delta) = full(&Mem::with(&[
+        ("q.md", "---\ntitle: Say \"hi\"\naliases: [Greeting]\n---\n"),
+        ("d/b.md", "bee"),
+    ]));
+    let json = written(&delta, "files/.tachylite/notes.json");
+    assert_eq!(
+        json,
+        r#"[["b","/d/b","d/b"],["Say \"hi\"","/q","q","Greeting"]]"#
+    );
+}
+
+#[test]
+fn the_manifest_lists_every_index_page() {
+    let (_, delta) = full(&Mem::with(&[("a.md", "aye"), ("d/b.md", "bee")]));
+    let manifest = manifest(&delta).unwrap();
+    for url in [
+        "/",
+        "/.tachylite/recent",
+        "/.tachylite/folders/d",
+        "/.tachylite/notes.json",
+    ] {
+        assert!(
+            manifest.contains(&format!("\"{url}\":\"")),
+            "{url} in {manifest}"
+        );
+    }
+}
+
+#[test]
+fn an_excluded_note_is_on_no_index_page() {
+    let mut mem = Mem::with(&[("a.md", "aye"), ("private/zebra.md", "secret")]);
+    let (_, delta) = synced(&mut mem, Exclude::new(&["private".to_string()]).unwrap());
+    for w in &delta.writes {
+        let text = match w {
+            Write::Page { html, .. } => html.to_string(),
+            Write::Manifest { json } => json.clone(),
+            Write::Copy { .. } => continue,
+        };
+        assert!(
+            !text.contains("zebra") && !text.contains("private"),
+            "{text}"
+        );
+    }
 }

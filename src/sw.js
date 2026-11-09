@@ -1,7 +1,12 @@
 // Offline: every page from the cache, and a sync that fetches only the pages that changed.
 const CACHE = "tachylite";
 const MANIFEST = "/.tachylite/manifest.json";
-const SHELL = ["/.tachylite/live.js", "/.tachylite/app.webmanifest", "/.tachylite/icon.svg"];
+const SHELL = [
+  "/.tachylite/live.js",
+  "/.tachylite/style.css",
+  "/.tachylite/app.webmanifest",
+  "/.tachylite/icon.svg",
+];
 const PASS = new Set(["/.tachylite/events", "/.tachylite/sw.js", MANIFEST]);
 
 self.addEventListener("install", (e) => {

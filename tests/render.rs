@@ -18,6 +18,7 @@ fn fixture(name: &str) -> String {
 /// A page with no links to resolve and no backlinks.
 fn render_note(title: &str, markdown: &str) -> Page {
     render_page(
+        "x.md",
         title,
         &render_body("x.md", markdown, &Index::default(), &Sources::new()).html,
         &[],
@@ -161,6 +162,7 @@ fn heading_links_use_heading_ids() {
 #[test]
 fn backlinks_list_at_the_foot_of_main() {
     let page = render_page(
+        "b.md",
         "b",
         "<p>body</p>\n",
         &[("a<1>".to_string(), "/a%3C1%3E".to_string())],
@@ -174,7 +176,7 @@ fn backlinks_list_at_the_foot_of_main() {
         page.html
     );
     assert!(
-        !render_page("b", "<p>body</p>\n", &[])
+        !render_page("b.md", "b", "<p>body</p>\n", &[])
             .html
             .contains("backlinks")
     );
@@ -184,8 +186,8 @@ fn backlinks_list_at_the_foot_of_main() {
 fn version_covers_backlinks() {
     let link = [("a".to_string(), "/a".to_string())];
     assert_ne!(
-        render_page("b", "x", &[]).version,
-        render_page("b", "x", &link).version
+        render_page("b.md", "b", "x", &[]).version,
+        render_page("b.md", "b", "x", &link).version
     );
 }
 

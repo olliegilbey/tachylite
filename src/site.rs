@@ -1,14 +1,17 @@
 //! The pure core: vault changes in, output out. A full build is `Sync` of the root.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::config::Exclude;
 use crate::front;
+use crate::indexes::{self, Folder, Item};
 use crate::links::{Index, key};
 use crate::render::{
-    Body, Broken, EMBED_DEPTH, Sources, embed_targets, note_title, render_body, render_page, url,
+    Body, Broken, EMBED_DEPTH, Sources, embed_targets, encode, note_title, render_body,
+    render_page, url,
 };
 use crate::vault::{Entry, Kind, ReadError, SkipReason, Skipped, VaultDir, classify};
 
@@ -89,6 +92,26 @@ impl Sink for Delta {
     }
 }
 
+/// The site's name, until config names it.
+const SITE: &str = "Tachylite";
+
+/// The switcher list's URL key.
+const NOTES_JSON: &str = ".tachylite/notes.json";
+
+/// Where a generated page's key is written in the output.
+/// Whether an output path holds a generated page rather than a vault file's.
+pub fn generated(out: &str) -> bool {
+    out.starts_with("pages/.tachylite/") || out.starts_with("files/.tachylite/")
+}
+
+fn generated_out(key: &str) -> String {
+    match key {
+        "" => "pages/.tachylite/home.html".into(),
+        NOTES_JSON => format!("files/{key}"),
+        _ => format!("pages/{key}.html"),
+    }
+}
+
 /// Where the manifest lives in the output: `/.tachylite/manifest.json`.
 pub const MANIFEST: &str = "files/.tachylite/manifest.json";
 
@@ -144,6 +167,8 @@ pub struct Site {
     titles: HashMap<String, String>,
     /// The notes whose embeds read each path, at any depth.
     embedded_by: HashMap<Arc<str>, BTreeSet<Arc<str>>>,
+    /// The version of each index page and of the switcher list, by URL key.
+    generated: BTreeMap<String, String>,
     /// Each read note's modified time, for the recent pages.
     modified: HashMap<String, i64>,
     /// Whether a manifest was written, so the first apply writes one even when empty.
@@ -401,7 +426,7 @@ impl Site {
                         .filter(|from| ***from != **path)
                         .map(|from| (self.title(from).to_string(), url(from)))
                         .collect();
-                    let page = render_page(self.title(path), &body, &backlinks);
+                    let page = render_page(path, self.title(path), &body, &backlinks);
                     drop(body);
                     if !new && self.versions.get(path) == Some(&page.version) {
                         continue;
@@ -430,6 +455,8 @@ impl Site {
             }
         }
 
+        self.modified.retain(|path, _| won.contains(path));
+        listing |= self.indexes(&won, sink);
         if listing {
             sink.write(Write::Manifest {
                 json: self.manifest(),
@@ -440,6 +467,116 @@ impl Site {
         self.winners = won;
         report.skipped.sort_by(|a, b| a.path.cmp(&b.path));
         report
+    }
+
+    /// Derives every index page and the switcher list from the winners, and writes and
+    /// pushes the ones whose version changed. Returns whether any changed.
+    fn indexes(&mut self, won: &BTreeSet<String>, sink: &mut impl Sink) -> bool {
+        let mut built: Vec<(String, String, String)> = Vec::new();
+        {
+            // Every folder that holds a page, with its subfolders and pages.
+            let mut tree: BTreeMap<&str, (BTreeSet<&str>, Vec<Item>)> = BTreeMap::new();
+            tree.entry("").or_default();
+            let mut recent = Vec::new();
+            for path in won {
+                let kind = self.entries.get(path).copied().unwrap_or(Kind::Asset);
+                if kind == Kind::Asset {
+                    continue;
+                }
+                let (folder, name) = path.rsplit_once('/').unwrap_or(("", path));
+                let mut child = folder;
+                while !child.is_empty() {
+                    let parent = child.rsplit_once('/').map_or("", |(p, _)| p);
+                    let (subs, _) = tree.entry(parent).or_default();
+                    if !subs.insert(child) {
+                        break;
+                    }
+                    child = parent;
+                }
+                let item = Item {
+                    title: if kind == Kind::Note {
+                        self.title(path)
+                    } else {
+                        name
+                    },
+                    url: url(path),
+                    folder,
+                    modified: self.modified.get(path).copied().unwrap_or_default(),
+                };
+                if kind == Kind::Note {
+                    recent.push(Item {
+                        url: item.url.clone(),
+                        ..item
+                    });
+                }
+                tree.entry(folder).or_default().1.push(item);
+            }
+            recent.sort_by(|a, b| b.modified.cmp(&a.modified).then_with(|| a.url.cmp(&b.url)));
+            recent.truncate(indexes::RECENT);
+            let recent: Vec<&Item> = recent.iter().collect();
+            for (path, (subs, mut items)) in tree {
+                items.sort_by_cached_key(|i| (i.title.to_lowercase(), i.url.clone()));
+                let folder = Folder {
+                    path,
+                    folders: subs.into_iter().collect(),
+                    items,
+                };
+                let (key, page) = if path.is_empty() {
+                    (String::new(), indexes::home(SITE, &recent, &folder))
+                } else {
+                    (
+                        format!(".tachylite/folders/{path}"),
+                        indexes::folder(&folder),
+                    )
+                };
+                built.push((key, page.version, page.html));
+            }
+            let page = indexes::recent(&recent);
+            built.push((".tachylite/recent".into(), page.version, page.html));
+            let json = indexes::notes_json(
+                won.iter()
+                    .filter(|p| self.entries.get(*p) == Some(&Kind::Note))
+                    .map(|p| (self.title(p), url(p), note_key(p), self.index.aliases(p))),
+            );
+            let mut hasher = DefaultHasher::new();
+            json.hash(&mut hasher);
+            built.push((NOTES_JSON.into(), format!("{:016x}", hasher.finish()), json));
+        }
+
+        let mut changed = false;
+        let fresh: HashSet<String> = built.iter().map(|(key, ..)| key.clone()).collect();
+        let gone: Vec<String> = self
+            .generated
+            .keys()
+            .filter(|key| !fresh.contains(*key))
+            .cloned()
+            .collect();
+        for key in gone {
+            self.generated.remove(&key);
+            sink.delete(generated_out(&key));
+            sink.push(Push::Gone { key });
+            changed = true;
+        }
+        for (key, version, html) in built {
+            if self.generated.get(&key) == Some(&version) {
+                continue;
+            }
+            let html: Arc<str> = Arc::from(html);
+            sink.write(Write::Page {
+                out: generated_out(&key),
+                html: Arc::clone(&html),
+            });
+            if key != NOTES_JSON {
+                sink.push(Push::Page {
+                    key: key.clone(),
+                    version: version.clone(),
+                    html,
+                });
+            }
+            self.generated.insert(key, version);
+            changed = true;
+        }
+        changed
     }
 
     /// `{"pages":{"<url>":"<version>",...}}`, in path order. URLs are percent-encoded and
@@ -453,6 +590,16 @@ impl Site {
             }
             json.push('"');
             json.push_str(&url(path));
+            json.push_str("\":\"");
+            json.push_str(version);
+            json.push('"');
+        }
+        for (key, version) in &self.generated {
+            if json.len() > "{\"pages\":{".len() {
+                json.push(',');
+            }
+            json.push_str("\"/");
+            json.push_str(&encode(key));
             json.push_str("\":\"");
             json.push_str(version);
             json.push('"');

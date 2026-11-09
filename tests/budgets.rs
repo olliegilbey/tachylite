@@ -270,10 +270,12 @@ fn typical_page_weight() {
     pages.sort_unstable();
     let page = pages[pages.len() / 2];
     let script = gzipped(include_bytes!("../src/live.js"));
+    let style = gzipped(include_bytes!("../src/style.css"));
     let limit = 30 * 1024;
+    let total = page + script + style;
     println!(
-        "typical page weight: {} B ({page} B page + {script} B script, limit {limit} B)",
-        page + script
+        "typical page weight: {total} B ({page} B page + {script} B script + {style} B style, \
+         limit {limit} B)"
     );
-    assert!(page + script <= limit);
+    assert!(total <= limit);
 }
