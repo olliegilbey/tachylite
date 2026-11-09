@@ -7,7 +7,9 @@ use std::sync::Arc;
 use crate::config::Exclude;
 use crate::front;
 use crate::links::{Index, key};
-use crate::render::{Body, Broken, Sources, note_title, render_body, render_page, url};
+use crate::render::{
+    Body, Broken, EMBED_DEPTH, Sources, embed_targets, note_title, render_body, render_page, url,
+};
 use crate::vault::{Entry, Kind, ReadError, SkipReason, Skipped, VaultDir, classify};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,6 +114,8 @@ pub struct Site {
     unresolved: HashMap<String, BTreeSet<Arc<str>>>,
     /// Frontmatter titles, for the notes that set one.
     titles: HashMap<String, String>,
+    /// The notes whose embeds read each path, at any depth.
+    embedded_by: HashMap<Arc<str>, BTreeSet<Arc<str>>>,
 }
 
 /// One note's outgoing links.
@@ -121,6 +125,8 @@ struct Links {
     targets: Vec<Arc<str>>,
     /// The keys of its broken and ambiguous links.
     unresolved: Vec<String>,
+    /// The notes its embeds read, at any depth, sorted.
+    embeds: Vec<Arc<str>>,
 }
 
 fn under(path: &str, folder: &str) -> bool {
@@ -176,19 +182,18 @@ fn winners(entries: &BTreeMap<String, Kind>) -> (BTreeSet<String>, Vec<String>) 
 
 /// Renders each note's body, on as many threads as the batch is worth. A save of a few notes
 /// stays on this thread, so the push path pays no spawn.
-fn render_all<'p>(notes: &[(&'p str, Vec<u8>)], index: &Index) -> Vec<(&'p str, Body)> {
+fn render_all<'p>(
+    notes: &[(&'p str, Vec<u8>)],
+    index: &Index,
+    sources: &Sources,
+) -> Vec<(&'p str, Body)> {
     let render = |notes: &[(&'p str, Vec<u8>)]| -> Vec<(&'p str, Body)> {
         notes
             .iter()
             .map(|(path, bytes)| {
                 (
                     *path,
-                    render_body(
-                        path,
-                        &String::from_utf8_lossy(bytes),
-                        index,
-                        &Sources::new(),
-                    ),
+                    render_body(path, &String::from_utf8_lossy(bytes), index, sources),
                 )
             })
             .collect()
@@ -467,6 +472,16 @@ impl Site {
                     .map(|n| n.to_string()),
             );
         }
+        // An embedder shows the note's body, so it re-renders with it. Embeds list what
+        // they read at any depth, so one step reaches every embedder.
+        let embedders: Vec<String> = first
+            .iter()
+            .chain(&removed)
+            .filter_map(|p| self.embedded_by.get(p.as_str()))
+            .flatten()
+            .map(|n| n.to_string())
+            .collect();
+        first.extend(embedders);
         first.retain(|p| won.contains(p));
 
         for path in &removed {
@@ -495,12 +510,14 @@ impl Site {
                     Some((path.as_str(), bytes))
                 })
                 .collect();
-            let rendered = render_all(&notes, &self.index);
-            drop(notes);
+            let sources = self.embed_sources(&notes, fresh, source);
+            let rendered = render_all(&notes, &self.index, &sources);
+            drop((notes, sources));
             for (path, body) in rendered {
                 let links = Links {
                     targets: body.targets.into_iter().collect(),
                     unresolved: body.broken.iter().map(|b| key(&b.target)).collect(),
+                    embeds: body.embeds.into_iter().collect(),
                 };
                 broken.extend(body.broken);
                 if let Some(note) = self.index.get(path) {
@@ -518,16 +535,49 @@ impl Site {
                 continue;
             }
             if let Ok(bytes) = source.note(&path) {
-                let body = render_body(
-                    &path,
-                    &String::from_utf8_lossy(&bytes),
-                    &self.index,
-                    &Sources::new(),
-                );
+                let notes = [(path.as_str(), bytes)];
+                let sources = self.embed_sources(&notes, fresh, source);
+                let markdown = String::from_utf8_lossy(&notes[0].1);
+                let body = render_body(&path, &markdown, &self.index, &sources);
                 bodies.insert(path, body.html);
             }
         }
         bodies
+    }
+
+    /// The notes the embeds in `notes` may read, to `EMBED_DEPTH` levels. A note that cannot
+    /// be read is left out, and its embed renders as a link.
+    fn embed_sources(
+        &self,
+        notes: &[(&str, Vec<u8>)],
+        fresh: &HashMap<String, Vec<u8>>,
+        source: &mut impl Source,
+    ) -> Sources {
+        let targets = |from: &str, bytes: &[u8]| {
+            embed_targets(from, &String::from_utf8_lossy(bytes), &self.index)
+        };
+        let mut sources = Sources::new();
+        let mut level: Vec<Arc<str>> = notes.iter().flat_map(|(p, b)| targets(p, b)).collect();
+        for _ in 0..EMBED_DEPTH {
+            let mut next = Vec::new();
+            for target in level {
+                if sources.contains_key(&*target) {
+                    continue;
+                }
+                let bytes = notes
+                    .iter()
+                    .find(|(p, _)| **p == *target)
+                    .map(|(_, b)| b.clone())
+                    .or_else(|| fresh.get(&*target).cloned())
+                    .or_else(|| source.note(&target).ok());
+                if let Some(bytes) = bytes {
+                    next.extend(targets(&target, &bytes));
+                    sources.insert(target.to_string(), bytes);
+                }
+            }
+            level = next;
+        }
+        sources
     }
 
     /// A note's frontmatter title, else its file stem.
@@ -577,6 +627,24 @@ impl Site {
                 .or_default()
                 .insert(Arc::clone(note));
             changed.insert(Arc::clone(target));
+        }
+        for target in old
+            .embeds
+            .iter()
+            .filter(|t| links.embeds.binary_search(t).is_err())
+        {
+            if let Some(by) = self.embedded_by.get_mut(target) {
+                by.remove(note);
+                if by.is_empty() {
+                    self.embedded_by.remove(target);
+                }
+            }
+        }
+        for target in &links.embeds {
+            self.embedded_by
+                .entry(Arc::clone(target))
+                .or_default()
+                .insert(Arc::clone(note));
         }
         self.links.insert(Arc::clone(note), links);
     }
