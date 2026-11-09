@@ -75,12 +75,15 @@ pub const EMBED_DEPTH: usize = 3;
 
 /// Percent-encodes all but unreserved characters and `/`.
 pub fn encode(path: &str) -> String {
-    let mut out = String::with_capacity(path.len());
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(path.len() + 8);
     for b in path.bytes() {
         if b.is_ascii_alphanumeric() || b"-._~/".contains(&b) {
-            out.push(b as char);
+            out.push(char::from(b));
         } else {
-            out.push_str(&format!("%{b:02X}"));
+            out.push('%');
+            out.push(char::from(HEX[usize::from(b >> 4)]));
+            out.push(char::from(HEX[usize::from(b & 15)]));
         }
     }
     out
@@ -88,13 +91,16 @@ pub fn encode(path: &str) -> String {
 
 /// The URL path of a published file: a note drops `.md`, any other file keeps its name.
 pub fn url(path: &str) -> String {
-    let lower = path.to_ascii_lowercase();
-    let stem = if lower.ends_with(".md") {
-        &path[..path.len() - ".md".len()]
+    let n = path.len().saturating_sub(".md".len());
+    let stem = if path.as_bytes()[n..].eq_ignore_ascii_case(b".md") {
+        &path[..n]
     } else {
         path
     };
-    format!("/{}", encode(stem))
+    let mut out = String::with_capacity(path.len() + 9);
+    out.push('/');
+    out.push_str(&encode(stem));
+    out
 }
 
 fn decode(s: &str) -> Option<String> {

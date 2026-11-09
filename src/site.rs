@@ -477,7 +477,8 @@ impl Site {
             // Every folder that holds a page, with its subfolders and pages.
             let mut tree: BTreeMap<&str, (BTreeSet<&str>, Vec<Item>)> = BTreeMap::new();
             tree.entry("").or_default();
-            let mut recent = Vec::new();
+            let mut notes: Vec<(i64, &str)> = Vec::new();
+            let mut json = indexes::NotesJson::default();
             for path in won {
                 let kind = self.entries.get(path).copied().unwrap_or(Kind::Asset);
                 if kind == Kind::Asset {
@@ -493,26 +494,40 @@ impl Site {
                     }
                     child = parent;
                 }
-                let item = Item {
-                    title: if kind == Kind::Note {
-                        self.title(path)
-                    } else {
-                        name
-                    },
-                    url: url(path),
-                    folder,
-                    modified: self.modified.get(path).copied().unwrap_or_default(),
+                let modified = self.modified.get(path).copied().unwrap_or_default();
+                let title = if kind == Kind::Note {
+                    self.title(path)
+                } else {
+                    name
                 };
+                let url = url(path);
                 if kind == Kind::Note {
-                    recent.push(Item {
-                        url: item.url.clone(),
-                        ..item
-                    });
+                    notes.push((modified, path));
+                    json.push(title, &url, note_key(path), self.index.aliases(path));
                 }
-                tree.entry(folder).or_default().1.push(item);
+                tree.entry(folder).or_default().1.push(Item {
+                    title,
+                    url,
+                    folder,
+                    modified,
+                });
             }
-            recent.sort_by(|a, b| b.modified.cmp(&a.modified).then_with(|| a.url.cmp(&b.url)));
-            recent.truncate(indexes::RECENT);
+            // Newest first; equal times by path.
+            let order = |a: &(i64, &str), b: &(i64, &str)| b.0.cmp(&a.0).then(a.1.cmp(b.1));
+            if notes.len() > indexes::RECENT {
+                notes.select_nth_unstable_by(indexes::RECENT, order);
+                notes.truncate(indexes::RECENT);
+            }
+            notes.sort_unstable_by(order);
+            let recent: Vec<Item> = notes
+                .iter()
+                .map(|&(modified, path)| Item {
+                    title: self.title(path),
+                    url: url(path),
+                    folder: path.rsplit_once('/').map_or("", |(f, _)| f),
+                    modified,
+                })
+                .collect();
             let recent: Vec<&Item> = recent.iter().collect();
             for (path, (subs, mut items)) in tree {
                 items.sort_by_cached_key(|i| (i.title.to_lowercase(), i.url.clone()));
@@ -533,11 +548,7 @@ impl Site {
             }
             let page = indexes::recent(&recent);
             built.push((".tachylite/recent".into(), page.version, page.html));
-            let json = indexes::notes_json(
-                won.iter()
-                    .filter(|p| self.entries.get(*p) == Some(&Kind::Note))
-                    .map(|p| (self.title(p), url(p), note_key(p), self.index.aliases(p))),
-            );
+            let json = json.finish();
             let mut hasher = DefaultHasher::new();
             json.hash(&mut hasher);
             built.push((NOTES_JSON.into(), format!("{:016x}", hasher.finish()), json));

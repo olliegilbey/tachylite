@@ -101,29 +101,35 @@ pub fn recent(recent: &[&Item]) -> Page {
 }
 
 /// `/.tachylite/notes.json`: `[[title, url, path, alias…], …]`, for the switcher.
-pub fn notes_json<'a>(
-    notes: impl Iterator<Item = (&'a str, String, &'a str, &'a [String])>,
-) -> String {
-    let mut json = String::from("[");
-    for (i, (title, url, path, aliases)) in notes.enumerate() {
-        if i > 0 {
-            json.push(',');
-        }
-        json.push('[');
-        json_string(&mut json, title);
-        json.push(',');
-        json_string(&mut json, &url);
-        json.push(',');
-        json_string(&mut json, path);
+#[derive(Default)]
+pub struct NotesJson(String);
+
+impl NotesJson {
+    pub fn push(&mut self, title: &str, url: &str, path: &str, aliases: &[String]) {
+        self.0.push(if self.0.is_empty() { '[' } else { ',' });
+        self.0.push('[');
+        json_string(&mut self.0, title);
+        self.0.push(',');
+        json_string(&mut self.0, url);
+        self.0.push(',');
+        json_string(&mut self.0, path);
         for alias in aliases {
-            json.push(',');
-            json_string(&mut json, alias);
+            self.0.push(',');
+            json_string(&mut self.0, alias);
         }
-        json.push(']');
+        self.0.push(']');
     }
-    json.push(']');
-    json
+
+    pub fn finish(mut self) -> String {
+        if self.0.is_empty() {
+            self.0.push('[');
+        }
+        self.0.push(']');
+        self.0
+    }
 }
+
+const HEX: &[u8; 16] = b"0123456789abcdef";
 
 fn json_string(out: &mut String, text: &str) {
     out.push('"');
@@ -131,7 +137,11 @@ fn json_string(out: &mut String, text: &str) {
         match c {
             '"' => out.push_str("\\\""),
             '\\' => out.push_str("\\\\"),
-            c if c < ' ' => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c if c < ' ' => {
+                out.push_str("\\u00");
+                out.push(char::from(HEX[c as usize >> 4]));
+                out.push(char::from(HEX[c as usize & 15]));
+            }
             c => out.push(c),
         }
     }

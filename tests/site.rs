@@ -1042,6 +1042,35 @@ fn recent_orders_by_modified_time_then_path() {
 }
 
 #[test]
+fn recent_ties_sort_by_path_not_url() {
+    // Path order puts `z` before `é`; URL order (`%C3%A9`) would not.
+    let notes = [("é.md", 5), ("z.md", 5)];
+    let mut source = Timed(
+        notes
+            .iter()
+            .map(|(p, t)| (p.to_string(), (b"x".to_vec(), *t)))
+            .collect(),
+    );
+    let entries = notes
+        .iter()
+        .map(|(p, _)| Entry {
+            path: p.to_string(),
+            kind: classify(p, &Exclude::default()).unwrap(),
+        })
+        .collect();
+    let delta = Site::new(Exclude::default()).apply(
+        vec![Change::Sync {
+            under: String::new(),
+            entries,
+        }],
+        &mut source,
+    );
+    let page = html(&delta, ".tachylite/recent");
+    let at = |url: &str| page.find(&format!("href=\"{url}\"")).expect(url);
+    assert!(at("/z") < at("/%C3%A9"), "{page}");
+}
+
+#[test]
 fn the_switcher_list_names_every_note_with_its_aliases() {
     let (_, delta) = full(&Mem::with(&[
         ("q.md", "---\ntitle: Say \"hi\"\naliases: [Greeting]\n---\n"),
