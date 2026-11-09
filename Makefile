@@ -1,6 +1,6 @@
 BUDGET_SCALE ?= 3
-TARGET ?= x86_64-unknown-linux-musl
-SIZE_LIMIT := 10000000
+TARGET ?= x86_64-unknown-linux-gnu
+SIZE_LIMIT := 5000000
 
 .PHONY: check browser budget size upgrade mermaid
 
@@ -24,11 +24,12 @@ browser:
 budget:
 	BUDGET_SCALE=1 cargo test --release --test budgets -- --ignored --nocapture
 
+# A static glibc build: musl's allocator serialises the render threads.
 size:
-	cargo build --release --target $(TARGET)
-	@bytes=$$(stat -c%s target/$(TARGET)/release/tachylite); \
+	RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --target $(TARGET)
+	@bin=target/$(TARGET)/release/tachylite; bytes=$$(stat -c%s $$bin); \
 	echo "release binary $(TARGET): $$bytes bytes (limit $(SIZE_LIMIT))"; \
-	test $$bytes -le $(SIZE_LIMIT)
+	file -b $$bin | grep -q static && test $$bytes -le $(SIZE_LIMIT)
 
 upgrade:
 	rustup update stable

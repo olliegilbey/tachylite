@@ -186,7 +186,7 @@ Budgets run against a synthetic vault of 2,000 notes and about 20 MB of text. A 
 | Search, per keystroke, mid-range phone, offline | ≤ 50 ms |
 | Idle CPU | ~0 % |
 | Resident memory, 2,000-note vault | ≤ 65 MB |
-| Release binary | ≤ 10 MB, stripped |
+| Release binary | ≤ 5 MB, stripped |
 
 CI enforces the deterministic budgets as absolute limits: page weight, binary size and memory. Timed budgets are set on the reference host. `make budget` measures them there, and each PR reports the numbers before and after. CI also runs the timed benches with a ceiling at three times each budget, to catch gross regressions on noisy runners. Headless Chrome measures save-to-screen and search time in CI, on localhost with CPU throttling. Both are also measured by hand on the reference phone.
 
@@ -200,7 +200,7 @@ The binary is light. The repo is heavy on purpose: it carries every test and che
 
 The reference phone and a Raspberry Pi are checked by hand each release. An agent skill guides an integrated QA pass in a real browser.
 
-Release binaries are static musl builds for `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`, with no runtime dependencies. CI checks both builds. A Raspberry Pi is a portability aim, checked by hand once per release. It has no budgets of its own.
+Release binaries are static glibc builds for `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`, linked with `crt-static`, with no runtime dependencies. They are not musl builds: musl's allocator serialises the render threads, which made the cold build three times slower. CI checks both builds. A Raspberry Pi is a portability aim, checked by hand once per release. It has no budgets of its own.
 
 ### Repository
 

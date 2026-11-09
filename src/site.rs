@@ -214,8 +214,7 @@ fn render_all<'p>(
             })
             .collect()
     };
-    // musl's allocator takes one lock, so threads make its build slower.
-    if notes.len() <= 16 || cfg!(target_env = "musl") {
+    if notes.len() <= 16 {
         return render(notes);
     }
     let cores = std::thread::available_parallelism().map_or(1, usize::from);
