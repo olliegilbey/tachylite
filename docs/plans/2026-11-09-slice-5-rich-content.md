@@ -6,7 +6,7 @@
 
 ## Global constraints
 
-- Inline HTML passes through `ammonia`. It drops `script`, `object`, `embed`, event handlers and `javascript:` URLs.
+- Inline HTML passes through an allowlist sanitizer. It drops `script`, `iframe`, `object`, `embed`, event handlers and `javascript:` URLs.
 - An `.html` file renders in `<iframe sandbox="allow-scripts">`, with no `allow-same-origin`, and is served with `Content-Security-Policy: sandbox allow-scripts`.
 - The main origin's CSP blocks outbound requests and inline script.
 - An excluded note reaches no output, embedded or not.
@@ -14,9 +14,7 @@
 
 ## Decisions
 
-- **Sanitize the whole body, and only when the note has raw HTML.** comrak splits inline HTML into single tags (`<span>`, then text, then `</span>`), so it cannot be sanitized per node. Without raw HTML, comrak escapes every author byte, and Tachylite's own markup is safe by construction. So notes without raw HTML pay nothing.
-- **The allowlist keeps what Tachylite writes:** `class`, `id`, `data-*` and `aria-*` on any tag, plus `section`, the task checkbox `input` (`type`, `checked`, `disabled`) and `iframe`. No `style` attribute.
-- **Iframes stay, always sandboxed.** ammonia forces `sandbox="allow-scripts"` on every `iframe`, and the CSP's `frame-src 'self'` keeps them on the origin. Tachylite's own `.html` embeds pass the sanitizer too, so a note with raw HTML keeps them. An author's iframe gets the same sandbox as an embed. The spec text changes to match.
+- **A hand-written allowlist re-serializer, per raw HTML node.** `ammonia` was built in first and measured: +1.24 MB of binary, an MPL-2.0 licence exception, and 0.47 ms per note. The maintainer chose the hand-written one. `sanitize` tokenizes like a browser, emits only allowlisted tags it builds itself, and escapes every other `<` and `>`. It runs on each `HtmlInline` and `HtmlBlock` literal, so Tachylite's own markup never passes through it, and a note without raw HTML pays nothing. Author iframes are dropped; an `.html` page embeds with `![[page.html]]`.
 - **Heading ids move into the AST.** Each heading becomes raw `<hN id>` tags around its children, as links already are. The post-pass `add_ids` matched `<hN>` in the output, and it would give an author's raw `<h2>` the next heading's id.
 - **Embeds by target kind:**
   - an image becomes `<img src alt loading="lazy">`. The alt is the label, unless the label is an Obsidian size (`300`, `300x200`); sizing stays out of scope.
@@ -33,11 +31,11 @@
 
 ## Tasks
 
-1. **Sanitizer.** `render.r#unsafe` on, `sanitize(html) -> String` behind one `LazyLock` builder, heading ids in the AST. Render tests: `script`, `onclick`, `javascript:`, `object` dropped; `style` dropped; an author iframe forced to the sandbox; a raw `<h2>` takes no heading id; a fixture note with raw HTML keeps every Tachylite construct (link, broken link, tag, heading id, callout, footnote, task checkbox, Mermaid, highlight, properties).
+1. **Sanitizer.** `render.r#unsafe` on, `sanitize(html) -> String` in `src/sanitize.rs`, heading ids in the AST. Sanitizer tests: classic script vectors, entity-hidden schemes, and a property test that the output holds only allowlisted markup. Render tests: `script`, `onclick`, `javascript:`, `object` dropped; `style` dropped; an author iframe dropped; a raw `<h2>` takes no heading id; a fixture note with raw HTML keeps every Tachylite construct (link, broken link, tag, heading id, callout, footnote, task checkbox, Mermaid, highlight, properties).
 2. **Embeds in render.** `render_body(from, markdown, index, sources)`, `Body.embeds`, `pub fn embed_targets(from, markdown, index)`. Render tests per kind, depth, cycle, self-embed, heading embed, missing target, Markdown image.
 3. **Site.** Load embed sources per batch and in the `changed` pass. `Links.embeds`, `embedded_by`, the closure into `first`. Site tests: editing, creating and deleting an embedded note re-render the embedder; a nested embed; a cycle. Both property tests gain embeds. Build test: an excluded note embedded anywhere reaches no output.
 4. **CSP.** Serve tests for each header. Browser tests: an embedded `.html` page runs its script and cannot read the parent; Mermaid still draws under the CSP.
-5. **Docs and budgets.** The spec's security and embed text. `make budget`, and the cold build with every note forced through the sanitizer, as its worst case.
+5. **Docs and budgets.** The spec's security and embed text. 3% of budget-vault notes carry raw HTML, so the budgets cover the sanitizer.
 
 ## Paths
 

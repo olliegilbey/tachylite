@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap};
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 use comrak::adapters::CodefenceRendererAdapter;
 use comrak::nodes::Sourcepos;
@@ -12,6 +12,7 @@ use comrak::{Anchorizer, Arena, Options, format_html_with_plugins, parse_documen
 use crate::config::Exclude;
 use crate::front::{self, Value};
 use crate::links::{Index, Resolved, resolve, split};
+use crate::sanitize::sanitize;
 use crate::vault::{Kind, classify, is_image};
 
 /// The file stem of the last path segment: `people/Jane Doe.md` gives `Jane Doe`.
@@ -31,7 +32,7 @@ fn options() -> Options<'static> {
     options.extension.ofm_callouts = true;
     options.parse.escaped_char_spans = true;
     options.extension.highlight = true;
-    // Raw HTML reaches the page only through `sanitize`.
+    // Raw HTML reaches the page only through `sanitize`, node by node.
     options.render.r#unsafe = true;
     options
 }
@@ -350,7 +351,7 @@ fn render(
     let mut headings = Vec::new();
     let mut embeds = Vec::new();
     let mut images = Vec::new();
-    let mut raw = false;
+    let mut raw = Vec::new();
     for node in root.descendants() {
         match &node.data().value {
             NodeValue::Heading(heading) => {
@@ -359,7 +360,7 @@ fn render(
                 continue;
             }
             NodeValue::HtmlInline(_) | NodeValue::HtmlBlock(_) => {
-                raw = true;
+                raw.push(node);
                 continue;
             }
             NodeValue::WikiLink(link) if link.embed => {
@@ -406,6 +407,13 @@ fn render(
         };
         let tag = open(&mut body, from, index, &path, heading.as_deref());
         rewrites.push((node, tag));
+    }
+    for node in raw {
+        match &mut node.data_mut().value {
+            NodeValue::HtmlInline(html) => *html = sanitize(html),
+            NodeValue::HtmlBlock(block) => block.literal = sanitize(&block.literal),
+            _ => {}
+        }
     }
     for (node, open) in rewrites {
         wrap(&arena, node, open, "</a>".to_string());
@@ -458,7 +466,7 @@ fn render(
         .insert("mermaid".to_string(), &Mermaid);
     // Writing into a String cannot fail.
     let _ = format_html_with_plugins(root, &options, &mut html, &plugins);
-    body.html = if raw { sanitize(&html) } else { html };
+    body.html = html;
     body
 }
 
@@ -665,25 +673,6 @@ fn wrap<'a>(arena: &'a Arena<'a>, node: &'a AstNode<'a>, open: String, close: St
 fn replace<'a>(arena: &'a Arena<'a>, node: &'a AstNode<'a>, html: String) {
     node.insert_before(arena.alloc(AstNode::from(NodeValue::Raw(html))));
     node.detach();
-}
-
-/// The allowlist for a body with raw HTML: ammonia's formatting tags, and what Tachylite
-/// itself writes. Every iframe is sandboxed without `allow-same-origin`.
-static SANITIZER: LazyLock<ammonia::Builder<'static>> = LazyLock::new(|| {
-    let mut b = ammonia::Builder::default();
-    b.add_tags(["section", "input", "iframe"])
-        .add_generic_attributes(["class", "id"])
-        .generic_attribute_prefixes(["data-", "aria-"].into())
-        .add_tag_attributes("input", ["type", "checked", "disabled"])
-        .add_tag_attributes("img", ["loading"])
-        .add_tag_attributes("iframe", ["src", "loading"])
-        .set_tag_attribute_value("iframe", "sandbox", "allow-scripts")
-        .link_rel(None);
-    b
-});
-
-fn sanitize(html: &str) -> String {
-    SANITIZER.clean(html).to_string()
 }
 
 fn escape(text: &str) -> String {

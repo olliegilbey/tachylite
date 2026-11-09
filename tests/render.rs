@@ -500,13 +500,12 @@ fn inline_html_drops_scripts() {
 }
 
 #[test]
-fn author_iframe_is_sandboxed() {
+fn author_iframe_is_dropped() {
     let html = plain(
-        "<iframe src=\"maps/route.html\" sandbox=\"allow-scripts allow-same-origin\" onload=\"x()\"></iframe>\n",
+        "<iframe src=\"maps/route.html\" sandbox=\"allow-scripts allow-same-origin\"></iframe>\n\nafter\n",
     );
-    assert!(html.contains("sandbox=\"allow-scripts\""), "{html}");
-    assert!(!html.contains("allow-same-origin"), "{html}");
-    assert!(!html.contains("onload"), "{html}");
+    assert!(!html.contains("<iframe"), "{html}");
+    assert!(html.contains("after"), "{html}");
 }
 
 #[test]
