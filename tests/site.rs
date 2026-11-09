@@ -637,3 +637,29 @@ proptest! {
         }
     }
 }
+
+/// 300 notes cross the 256-note batch edge and the threshold for threads.
+/// Each group of 16 touches renders on one thread.
+#[test]
+fn threaded_full_build_equals_small_applies() {
+    let notes = tachylite::budget_vault::generate(7, 300);
+    let pairs: Vec<(&str, &str)> = notes
+        .iter()
+        .map(|(p, c)| (p.as_str(), c.as_str()))
+        .collect();
+    let mem = Mem::with(&pairs);
+    let (want, delta) = full(&mem);
+    assert!(delta.broken.windows(2).all(|w| w[0].from <= w[1].from));
+
+    let mut site = Site::new(Exclude::default());
+    let mut source = mem.clone();
+    let mut got = Out::new();
+    for group in notes.chunks(16) {
+        let delta = site.apply(group.iter().map(|(p, _)| touch(p)).collect(), &mut source);
+        fold(&mut got, &delta, &mem);
+    }
+    assert_eq!(got.len(), want.len());
+    for (path, html) in &want {
+        assert!(got.get(path) == Some(html), "{path} differs");
+    }
+}

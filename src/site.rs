@@ -188,6 +188,10 @@ fn render_all<'p>(notes: &[(&'p str, Vec<u8>)], index: &Index) -> Vec<(&'p str, 
             })
             .collect()
     };
+    // musl's allocator takes one lock, so threads make its build slower.
+    if notes.len() <= 16 || cfg!(target_env = "musl") {
+        return render(notes);
+    }
     let cores = std::thread::available_parallelism().map_or(1, usize::from);
     let threads = cores.min(notes.len().div_ceil(16));
     if threads <= 1 {
@@ -202,7 +206,7 @@ fn render_all<'p>(notes: &[(&'p str, Vec<u8>)], index: &Index) -> Vec<(&'p str, 
         handles
             .into_iter()
             .flat_map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
-            // Copied on this thread, so a worker's heap is empty once its batch is done.
+            // Copied on this thread, so a worker's heap holds no page once its batch is done.
             .map(|(path, body)| {
                 let html = body.html.as_str().to_owned();
                 (path, Body { html, ..body })
