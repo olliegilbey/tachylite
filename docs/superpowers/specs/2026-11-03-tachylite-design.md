@@ -121,10 +121,13 @@ Notes are trusted content, but agents write them, and a prompt-injected agent co
 
 ### Navigation
 
+- Every page shares one shell: a header with Home, Recent and a Find button, then `<main>`. A note page opens with breadcrumbs to its folders' index pages. A push swaps `<main>`, so the crumbs follow a rename.
+- `/` is the home page: the 10 most recent notes, a link to all recent notes, then the vault root's folders, notes and html pages.
+- `/.tachylite/folders/<folder>` mirrors one folder: its subfolders, then its notes and html pages, sorted by title, ignoring case.
+- `/.tachylite/recent` lists the 50 most recent notes by modified time, each with its folder and date (UTC). Equal times sort by path. `/.tachylite/recent/<folder>` scopes it to a folder, for example a meetings folder.
+- Index pages are derived, not tracked. Every apply rebuilds each index page from the site's state, and writes and pushes only those whose version changed. That is O(notes) per apply, about 4 ms for 2,000 notes on the reference host, and it runs after the changed note's push. It needs no dependency tracking, so a full build and an incremental one cannot disagree.
+- The quick switcher opens on Ctrl-K, Cmd-K, `/` outside a text field, or the Find button. It reads `/.tachylite/notes.json`, one `[title, url, path, alias…]` entry per note. That file is in the manifest, so the switcher works offline. A query matches as a subsequence of a title, an alias or the path. A title match ranks first, then fewer runs, then an earlier start. It shows the top 20, and Enter opens the first.
 - `/.tachylite/today` redirects to the newest daily note dated on or before today. The daily folder and date format come from `.obsidian/daily-notes.json` when present, else from config.
-- `/.tachylite/recent` lists notes by modified time. `/.tachylite/recent/<folder>` scopes it to a folder, for example a meetings folder.
-- Quick switcher on a keyboard shortcut and a visible button: fuzzy match on title, path and aliases, offline.
-- Folder index pages mirror the vault tree, at `/.tachylite/folders/<folder>`.
 - Pins: config lists links shown at the top of every page.
 
 ### Tasks
