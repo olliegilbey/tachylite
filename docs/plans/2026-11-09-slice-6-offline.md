@@ -29,18 +29,14 @@
 - **The page version covers the template.** Today it hashes the title and `<main>`. The head is hashed too, so a binary upgrade that changes the head changes every version, and clients re-sync.
 - **Service worker strategy:**
   - **Install.** Precache the shell (`live.js`, the web manifest, the icon), then `skipWaiting`. Activate calls `clients.claim`.
-  - **Fetch.** It handles same-origin GETs, except `/.tachylite/events`, `/.tachylite/manifest.json` and `/.tachylite/sw.js`.
-    - A URL in the stored manifest is served cache-first, because sync keeps it fresh.
-    - Anything else is stale-while-revalidate: serve the cached copy, and refetch it in the background.
-    - A miss goes to the network and is stored.
-    - A miss with no network returns 503.
+  - **Fetch.** It handles same-origin GETs, except `/.tachylite/events`, `/.tachylite/manifest.json` and `/.tachylite/sw.js`. Every one is stale-while-revalidate: serve the cached copy, and refetch it in the background. A miss goes to the network and is stored. A miss with no network returns 503. Built as one path for pages and assets. A cache-first path for manifest pages would save a 304 per open, at the cost of a second path.
   - **Sync.** The page posts a `sync` message on load and on every SSE `open`. The worker then:
     - fetches the manifest;
     - fetches the pages whose version differs, 6 at a time;
     - deletes the pages that are gone;
     - stores the manifest with only the versions it got.
     One sync runs at a time. A failed page is retried on the next sync.
-- **PWA.** `/.tachylite/app.webmanifest` and `/.tachylite/icon.svg` are embedded and served from memory. Each page's head links the web manifest. Chromium's `Page.getInstallabilityErrors` proves the site is installable.
+- **PWA.** `/.tachylite/app.webmanifest` and `/.tachylite/icon.svg` are embedded and served from memory. Each page's head links the web manifest. The headless shell skips Chromium's install check, so `Page.getInstallabilityErrors` is always empty. The test reads `Page.getAppManifest` instead: no errors, a name, a start URL, standalone display, an icon that loads, and a worker in control.
 
 ## Tasks
 
@@ -61,7 +57,8 @@
      - a note never opened opens offline after one sync;
      - an edit made while the client was away arrives after reconnect;
      - a deleted page leaves the cache;
-     - the site is installable.
+     - the app manifest meets the install criteria;
+     - an image opened once loads offline.
 4. **Page-weight budget.** A deterministic test in `tests/budgets.rs`, not ignored: the gzipped size of the median fixture page plus `live.js` is ≤ 30 KB. The weight of the budget vault's median page is printed too.
 5. **Docs.** Rewrite the spec's serving line, the Offline sync section and the budget row to match these decisions.
 
