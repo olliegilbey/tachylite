@@ -58,8 +58,27 @@ fn fold(out: &mut Out, delta: &Delta, mem: &Mem) {
             Write::Copy { out: path, from } => {
                 out.insert(path.clone(), mem.0[from].clone());
             }
+            Write::Manifest { json } => {
+                out.insert(tachylite::site::MANIFEST.into(), json.as_bytes().to_vec());
+            }
         }
     }
+}
+
+/// The page and file writes, without the manifest.
+fn files(delta: &Delta) -> Vec<&Write> {
+    delta
+        .writes
+        .iter()
+        .filter(|w| !matches!(w, Write::Manifest { .. }))
+        .collect()
+}
+
+/// The output paths, without the manifest.
+fn published(out: &Out) -> Vec<&String> {
+    out.keys()
+        .filter(|k| *k != tachylite::site::MANIFEST)
+        .collect()
 }
 
 fn sync_all(mem: &Mem) -> Change {
@@ -93,7 +112,7 @@ fn full_sync_writes_every_page() {
     let mem = Mem::with(&[("a.md", "# A"), ("d/b.md", "# B"), ("img/x.png", "png")]);
     let (out, delta) = full(&mem);
     assert_eq!(
-        out.keys().collect::<Vec<_>>(),
+        published(&out),
         ["files/img/x.png", "pages/a.html", "pages/d/b.html"]
     );
     let pages = delta
@@ -126,7 +145,7 @@ fn unchanged_touch_writes_and_pushes_nothing() {
     let mut site = Site::new(Exclude::default());
     site.apply(vec![sync_all(&mem)], &mut mem);
     let delta = site.apply(vec![touch("a.md")], &mut mem);
-    assert!(delta.writes.is_empty() && delta.pushes.is_empty() && delta.deletes.is_empty());
+    assert!(files(&delta).is_empty() && delta.pushes.is_empty() && delta.deletes.is_empty());
 }
 
 #[test]
@@ -136,7 +155,7 @@ fn edited_note_is_written_and_pushed() {
     site.apply(vec![sync_all(&mem)], &mut mem);
     mem.0.insert("a.md".into(), b"# Edited".to_vec());
     let delta = site.apply(vec![touch("a.md")], &mut mem);
-    assert_eq!(delta.writes.len(), 1);
+    assert_eq!(files(&delta).len(), 1);
     match &delta.pushes[..] {
         [Push::Page { key, html, version }] => {
             assert_eq!(key, "a");
@@ -162,7 +181,7 @@ fn deleted_note_is_deleted_and_gone() {
 fn html_page_beats_note_with_its_url() {
     let mem = Mem::with(&[("x.html", "<p>page</p>"), ("x.html.md", "# note")]);
     let (out, delta) = full(&mem);
-    assert_eq!(out.keys().collect::<Vec<_>>(), ["files/x.html"]);
+    assert_eq!(published(&out), ["files/x.html"]);
     assert_eq!(delta.skipped, [clash("x.html.md")]);
 }
 
@@ -170,7 +189,7 @@ fn html_page_beats_note_with_its_url() {
 fn folder_page_clash() {
     let mem = Mem::with(&[("x.md", "# x"), ("x.html/y.md", "# y")]);
     let (out, delta) = full(&mem);
-    assert_eq!(out.keys().collect::<Vec<_>>(), ["pages/x.html/y.html"]);
+    assert_eq!(published(&out), ["pages/x.html/y.html"]);
     assert_eq!(delta.skipped, [clash("x.md")]);
 }
 
@@ -198,7 +217,7 @@ fn excluded_touch_is_ignored() {
     let mut mem = Mem::with(&[(".obsidian/x.md", "# hidden")]);
     let mut site = Site::new(Exclude::default());
     let delta = site.apply(vec![touch(".obsidian/x.md")], &mut mem);
-    assert!(delta.writes.is_empty() && delta.pushes.is_empty() && delta.deletes.is_empty());
+    assert!(files(&delta).is_empty() && delta.pushes.is_empty() && delta.deletes.is_empty());
 }
 
 #[test]
@@ -271,7 +290,7 @@ fn link_adds_backlink() {
     mem.0.insert("a.md".into(), b"[[b]]".to_vec());
     let delta = site.apply(vec![touch("a.md")], &mut mem);
     assert_eq!(pushed(&delta), ["a", "b"]);
-    assert_eq!(delta.writes.len(), 2);
+    assert_eq!(files(&delta).len(), 2);
     assert!(html(&delta, "a").contains("<a href=\"/b\">b</a>"));
     assert!(
         html(&delta, "b").contains("<h2>Backlinks</h2><ul><li><a href=\"/a\">a</a></li></ul>"),
@@ -493,7 +512,7 @@ fn mid_save_keeps_published_pages() {
     mem.0.insert("a.md".into(), b"# B".to_vec());
     let delta = site.apply(vec![touch("a.md")], &mut mem);
     assert_eq!(
-        delta.writes.len(),
+        files(&delta).len(),
         1,
         "the save after a mid-save is published"
     );
@@ -508,7 +527,7 @@ fn mid_save_new_file_waits_for_its_save() {
     assert_eq!(delta, Delta::default());
     mem.0.insert("b.md".into(), b"# B".to_vec());
     let delta = site.apply(vec![touch("b.md")], &mut mem);
-    assert_eq!(delta.writes.len(), 1);
+    assert_eq!(files(&delta).len(), 1);
 }
 
 #[test]
@@ -531,9 +550,9 @@ fn mid_save_loser_does_not_block_promotion() {
     }
     let delta = site.apply(vec![touch("a.MD")], &mut Mixed);
     assert_eq!(delta.deletes, ["pages/a.html"]);
-    assert!(delta.writes.is_empty());
+    assert!(files(&delta).is_empty());
     let delta = site.apply(vec![touch("a.md")], &mut mem);
-    assert_eq!(delta.writes.len(), 1, "its save publishes it");
+    assert_eq!(files(&delta).len(), 1, "its save publishes it");
 }
 
 #[derive(Debug, Clone)]
@@ -738,4 +757,82 @@ fn an_embed_the_scan_misses_still_renders_alone() {
     mem.0.insert("a.md".into(), b"new".to_vec());
     let delta = site.apply(vec![touch("a.md")], &mut mem);
     assert!(html(&delta, "n").contains("new"));
+}
+
+fn manifest(delta: &Delta) -> Option<&str> {
+    delta.writes.iter().find_map(|w| match w {
+        Write::Manifest { json } => Some(json.as_str()),
+        _ => None,
+    })
+}
+
+fn version(delta: &Delta, key: &str) -> String {
+    delta
+        .pushes
+        .iter()
+        .find_map(|p| match p {
+            Push::Page {
+                key: k, version, ..
+            } if k == key => Some(version.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no page pushed for {key}"))
+}
+
+#[test]
+fn the_manifest_lists_every_note_page_with_its_version() {
+    let mem = Mem::with(&[
+        ("b.md", "bee"),
+        ("a.md", "aye"),
+        ("sub/c d.md", "sea"),
+        ("img.png", "png"),
+        ("page.html", "<p>page</p>"),
+    ]);
+    let (out, delta) = full(&mem);
+    let want = format!(
+        r#"{{"pages":{{"/a":"{}","/b":"{}","/sub/c%20d":"{}"}}}}"#,
+        version(&delta, "a"),
+        version(&delta, "b"),
+        version(&delta, "sub/c d"),
+    );
+    assert_eq!(manifest(&delta), Some(want.as_str()));
+    assert_eq!(
+        out.get(tachylite::site::MANIFEST).map(Vec::as_slice),
+        Some(want.as_bytes())
+    );
+    let last = delta.writes.last();
+    assert!(matches!(last, Some(Write::Manifest { .. })), "{last:?}");
+}
+
+#[test]
+fn an_empty_vault_has_an_empty_manifest() {
+    let (_, delta) = full(&Mem::default());
+    assert_eq!(manifest(&delta), Some(r#"{"pages":{}}"#));
+}
+
+#[test]
+fn the_manifest_follows_edits_and_deletes() {
+    let mut mem = Mem::with(&[("a.md", "aye"), ("b.md", "bee")]);
+    let (mut site, first) = synced(&mut mem, Exclude::default());
+    let b = version(&first, "b");
+    mem.0.insert("a.md".into(), b"new".to_vec());
+    let delta = site.apply(vec![touch("a.md")], &mut mem);
+    let a = version(&delta, "a");
+    let want = format!(r#"{{"pages":{{"/a":"{a}","/b":"{b}"}}}}"#);
+    assert_eq!(manifest(&delta), Some(want.as_str()));
+    mem.0.remove("a.md");
+    let delta = site.apply(vec![touch("a.md")], &mut mem);
+    let want = format!(r#"{{"pages":{{"/b":"{b}"}}}}"#);
+    assert_eq!(manifest(&delta), Some(want.as_str()));
+}
+
+#[test]
+fn a_change_no_page_shows_writes_no_manifest() {
+    let mut mem = Mem::with(&[("a.md", "aye"), ("img.png", "png")]);
+    let (mut site, _) = synced(&mut mem, Exclude::default());
+    mem.0.insert("img.png".into(), b"new png".to_vec());
+    let delta = site.apply(vec![touch("img.png")], &mut mem);
+    assert_eq!(manifest(&delta), None);
+    let delta = site.apply(vec![touch("a.md")], &mut mem);
+    assert_eq!(manifest(&delta), None, "an unchanged note");
 }

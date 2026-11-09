@@ -108,6 +108,11 @@ impl<F: FnMut(Push)> Sink for Writer<'_, F> {
                 write_via_tmp(&self.out.join(rel), |tmp| fs::write(tmp, html.as_bytes()))
             }
             Write::Copy { out: rel, from } => self.write_copy(&rel, &from),
+            Write::Manifest { json } => {
+                write_via_tmp(&self.out.join(crate::site::MANIFEST), |tmp| {
+                    fs::write(tmp, json.as_bytes())
+                })
+            }
         };
         self.error = result.err();
     }

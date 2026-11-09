@@ -90,6 +90,7 @@ fn output_holds_only_published_files() {
     for rel in files_under(&s.out()) {
         let rel_str = rel.to_str().unwrap();
         let ok = rel_str == ".tachylite-output"
+            || rel_str == tachylite::site::MANIFEST
             || (rel_str.starts_with("pages/") && rel_str.ends_with(".html"))
             || rel_str.strip_prefix("files/").is_some_and(|p| {
                 matches!(
@@ -107,6 +108,9 @@ fn html_pages_and_assets_are_byte_identical() {
     build(&s.vault(), &s.out()).unwrap();
     let files = s.out().join("files");
     for rel in files_under(&files) {
+        if rel.starts_with(".tachylite") {
+            continue;
+        }
         assert_eq!(
             fs::read(files.join(&rel)).unwrap(),
             fs::read(s.vault().join(&rel)).unwrap(),
@@ -349,6 +353,7 @@ fn no_temp_files_remain() {
             p.components()
                 .any(|c| c.as_os_str().to_string_lossy().starts_with('.'))
                 && p != Path::new(".tachylite-output")
+                && p != Path::new(tachylite::site::MANIFEST)
         })
         .collect();
     assert!(hidden.is_empty(), "{hidden:?}");
@@ -480,4 +485,18 @@ fn an_embedded_excluded_note_reaches_no_output() {
         !text.contains("zebra"),
         "an excluded note reached the output"
     );
+}
+
+#[test]
+fn the_manifest_lists_no_excluded_note() {
+    let dir = bare(&[
+        ("tachylite.toml", "exclude = [\"private\"]\n"),
+        ("private/zebra-secret.md", "# hidden"),
+        ("a.md", "aye"),
+    ]);
+    let (vault, out) = (dir.path().join("vault"), dir.path().join("out"));
+    build(&vault, &out).unwrap();
+    let manifest = fs::read_to_string(out.join("files/.tachylite/manifest.json")).unwrap();
+    assert!(manifest.contains("\"/a\""), "{manifest}");
+    assert!(!manifest.contains("zebra"), "{manifest}");
 }

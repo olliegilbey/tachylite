@@ -251,3 +251,14 @@ fn every_vault_response_carries_a_csp() {
         );
     }
 }
+
+#[test]
+fn serves_the_manifest_as_json() {
+    let d = Dirs::fixture();
+    let server = Server::start(&d.vault(), &d.out());
+    let r = server.get("/.tachylite/manifest.json");
+    assert_eq!(r.status, 200);
+    assert_eq!(r.header("content-type"), Some("application/json"));
+    assert!(r.text().starts_with("{\"pages\":{"), "{}", r.text());
+    assert!(r.text().contains("\"/welcome\":\""), "{}", r.text());
+}

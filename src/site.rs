@@ -75,10 +75,23 @@ impl Sink for Delta {
     }
 }
 
+/// Where the manifest lives in the output: `/.tachylite/manifest.json`.
+pub const MANIFEST: &str = "files/.tachylite/manifest.json";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Write {
-    Page { out: String, html: Arc<str> },
-    Copy { out: String, from: String },
+    Page {
+        out: String,
+        html: Arc<str>,
+    },
+    Copy {
+        out: String,
+        from: String,
+    },
+    /// Every page's URL and version, for client sync. It follows an apply's page writes.
+    Manifest {
+        json: String,
+    },
 }
 
 /// `key` is the note path without `.md`: the decoded URL path.
@@ -116,6 +129,8 @@ pub struct Site {
     titles: HashMap<String, String>,
     /// The notes whose embeds read each path, at any depth.
     embedded_by: HashMap<Arc<str>, BTreeSet<Arc<str>>>,
+    /// Whether a manifest was written, so the first apply writes one even when empty.
+    listed: bool,
 }
 
 /// One note's outgoing links.
@@ -335,6 +350,7 @@ impl Site {
             .filter(|p| !self.winners.contains(*p) && self.entries.get(*p) == Some(&Kind::Note))
             .map(|p| note_key(p))
             .collect();
+        let mut listing = !self.listed;
         let mut gone = Vec::new();
         for path in self.winners.difference(&won) {
             // Its kind by extension: the path may be excluded now.
@@ -342,7 +358,7 @@ impl Site {
             let (_, out) = claim(path, kind);
             sink.delete(out);
             if kind == Kind::Note {
-                self.versions.remove(path);
+                listing |= self.versions.remove(path).is_some();
                 if !live.contains(note_key(path)) {
                     gone.push(note_key(path).to_string());
                 }
@@ -375,6 +391,7 @@ impl Site {
                         continue;
                     }
                     self.versions.insert(path.clone(), page.version.clone());
+                    listing = true;
                     let html: Arc<str> = Arc::from(page.html);
                     sink.write(Write::Page {
                         out,
@@ -397,9 +414,35 @@ impl Site {
             }
         }
 
+        if listing {
+            sink.write(Write::Manifest {
+                json: self.manifest(),
+            });
+            self.listed = true;
+        }
+
         self.winners = won;
         report.skipped.sort_by(|a, b| a.path.cmp(&b.path));
         report
+    }
+
+    /// `{"pages":{"<url>":"<version>",...}}`, sorted by URL. URLs are percent-encoded and
+    /// versions are hex, so neither needs escaping.
+    fn manifest(&self) -> String {
+        let pages: BTreeMap<String, &str> = self
+            .versions
+            .iter()
+            .map(|(path, version)| (url(path), version.as_str()))
+            .collect();
+        let mut json = String::from("{\"pages\":{");
+        for (i, (url, version)) in pages.iter().enumerate() {
+            if i > 0 {
+                json.push(',');
+            }
+            json.push_str(&format!("\"{url}\":\"{version}\""));
+        }
+        json.push_str("}}");
+        json
     }
 
     /// Updates the link graph for the new winners and renders the body of every winning
