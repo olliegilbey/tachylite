@@ -23,10 +23,16 @@
   };
   diagrams();
 
+  // Offline: the worker caches every page. Each (re)connect syncs the pages that changed.
+  const worker = navigator.serviceWorker;
+  worker?.register("/.tachylite/sw.js", { scope: "/" }).catch(() => {});
+  const sync = () => worker?.ready.then((r) => r.active?.postMessage("sync"));
+
   const meta = document.querySelector('meta[name="tachylite-version"]');
   if (!meta || !window.EventSource) return;
   const url = "/.tachylite/events?page=" + encodeURIComponent(location.pathname) + "&v=" + meta.content;
   const events = new EventSource(url);
+  events.addEventListener("open", sync);
   let notice = 0;
   events.addEventListener("page", (e) => {
     clearTimeout(notice);

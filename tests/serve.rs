@@ -262,3 +262,38 @@ fn serves_the_manifest_as_json() {
     assert!(r.text().starts_with("{\"pages\":{"), "{}", r.text());
     assert!(r.text().contains("\"/welcome\":\""), "{}", r.text());
 }
+
+#[test]
+fn serves_the_service_worker_for_the_whole_site() {
+    let d = Dirs::fixture();
+    let server = Server::start(&d.vault(), &d.out());
+    let r = server.get("/.tachylite/sw.js");
+    assert_eq!(r.status, 200);
+    assert_eq!(r.header("content-type"), Some("text/javascript"));
+    assert_eq!(r.header("service-worker-allowed"), Some("/"));
+    assert_eq!(r.header("cache-control"), Some("no-cache"));
+}
+
+#[test]
+fn serves_the_app_manifest_and_icon() {
+    let d = Dirs::fixture();
+    let server = Server::start(&d.vault(), &d.out());
+    let m = server.get("/.tachylite/app.webmanifest");
+    assert_eq!(m.status, 200);
+    assert_eq!(m.header("content-type"), Some("application/manifest+json"));
+    assert!(m.text().contains("\"start_url\": \"/\""), "{}", m.text());
+    let icon = server.get("/.tachylite/icon.svg");
+    assert_eq!(icon.status, 200);
+    assert_eq!(icon.header("content-type"), Some("image/svg+xml"));
+}
+
+#[test]
+fn every_page_links_the_app_manifest() {
+    let d = Dirs::fixture();
+    let server = Server::start(&d.vault(), &d.out());
+    let page = server.get("/welcome").text();
+    assert!(
+        page.contains("<link rel=\"manifest\" href=\"/.tachylite/app.webmanifest\">"),
+        "{page}"
+    );
+}

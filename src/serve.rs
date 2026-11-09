@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use axum::Router;
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri, header};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -28,6 +28,9 @@ use crate::{Error, output};
 
 pub const DEFAULT_PORT: u16 = 7420;
 const LIVE_JS: &str = include_str!("live.js");
+const SW_JS: &str = include_str!("sw.js");
+const APP_MANIFEST: &str = include_str!("app.webmanifest");
+const ICON_SVG: &str = include_str!("icon.svg");
 /// `@mermaid-js/tiny`, gzipped by `make mermaid`. Every browser accepts gzip, so it is served
 /// as stored.
 const MERMAID_JS_GZ: &[u8] = include_bytes!("vendor/mermaid.tiny.js.gz");
@@ -187,16 +190,9 @@ async fn file(
         p.starts_with(app.out.join("files")) && content_type(p) != "application/pdf"
     });
     let mut response = vault_file(&method, path, &headers);
-    let csp = if sandboxed { SANDBOX_CSP } else { MAIN_CSP };
-    let h = response.headers_mut();
-    h.insert(
-        header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static(csp),
-    );
-    // Without it, a vault file served as html or pdf could load as a same-origin script.
-    h.insert(
-        header::X_CONTENT_TYPE_OPTIONS,
-        HeaderValue::from_static("nosniff"),
+    guard(
+        &mut response,
+        if sandboxed { SANDBOX_CSP } else { MAIN_CSP },
     );
     response
 }
@@ -208,14 +204,17 @@ fn vault_file(method: &Method, path: Option<PathBuf>, headers: &HeaderMap) -> Re
     let Some(path) = path else {
         return status(StatusCode::NOT_FOUND);
     };
-    // Small files from the page cache; slice 6 owns streaming, compression and caching.
     let bytes = match fs::read(&path) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return status(StatusCode::NOT_FOUND),
         Err(_) => return status(StatusCode::INTERNAL_SERVER_ERROR),
     };
+    respond(bytes, content_type(&path), headers)
+}
+
+/// The response for `bytes`: a 304 when the client holds them, gzipped when it takes gzip.
+fn respond(bytes: Vec<u8>, kind: &'static str, headers: &HeaderMap) -> Response {
     let tag = etag(&bytes);
-    let kind = content_type(&path);
     let text = compressible(kind);
     let mut response = if matches(headers, &tag) {
         let mut r = status(StatusCode::NOT_MODIFIED);
@@ -247,15 +246,47 @@ fn vault_file(method: &Method, path: Option<PathBuf>, headers: &HeaderMap) -> Re
     response
 }
 
-async fn live_js() -> Response {
-    let mut r = Response::new(Body::from(LIVE_JS));
-    let h = r.headers_mut();
+fn guard(response: &mut Response, csp: &'static str) {
+    let h = response.headers_mut();
     h.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("text/javascript"),
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(csp),
     );
-    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    // Without it, a vault file served as html or pdf could load as a same-origin script.
+    h.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+}
+
+/// A client file built into the binary.
+fn embedded(text: &'static str, kind: &'static str, headers: &HeaderMap) -> Response {
+    let mut r = respond(text.as_bytes().to_vec(), kind, headers);
+    guard(&mut r, MAIN_CSP);
     r
+}
+
+async fn live_js(headers: HeaderMap) -> Response {
+    embedded(LIVE_JS, "text/javascript", &headers)
+}
+
+/// The worker lives under `/.tachylite/`, so it may control the whole site only with this
+/// header.
+async fn sw_js(headers: HeaderMap) -> Response {
+    let mut r = embedded(SW_JS, "text/javascript", &headers);
+    r.headers_mut().insert(
+        HeaderName::from_static("service-worker-allowed"),
+        HeaderValue::from_static("/"),
+    );
+    r
+}
+
+async fn app_manifest(headers: HeaderMap) -> Response {
+    embedded(APP_MANIFEST, "application/manifest+json", &headers)
+}
+
+async fn icon_svg(headers: HeaderMap) -> Response {
+    embedded(ICON_SVG, "image/svg+xml", &headers)
 }
 
 async fn mermaid_js(headers: HeaderMap) -> Response {
@@ -396,6 +427,9 @@ async fn events(State(app): State<Arc<App>>, uri: Uri, headers: HeaderMap) -> Re
 pub fn router(app: App) -> Router {
     Router::new()
         .route("/.tachylite/live.js", get(live_js))
+        .route("/.tachylite/sw.js", get(sw_js))
+        .route("/.tachylite/app.webmanifest", get(app_manifest))
+        .route("/.tachylite/icon.svg", get(icon_svg))
         .route("/.tachylite/mermaid.js", get(mermaid_js))
         .route("/.tachylite/events", get(events))
         .fallback(file)

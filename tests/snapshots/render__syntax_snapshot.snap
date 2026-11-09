@@ -7,7 +7,8 @@ expression: "built(\"notes/syntax\")"
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="tachylite-version" content="a1169b8064b605e1">
+<link rel="manifest" href="/.tachylite/app.webmanifest">
+<meta name="tachylite-version" content="5906edf9b862ee46">
 <title>Syntax tour</title>
 <script src="/.tachylite/live.js" defer></script>
 </head>

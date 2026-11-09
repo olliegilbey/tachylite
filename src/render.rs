@@ -711,7 +711,8 @@ fn escape(text: &str) -> String {
 /// Wraps a body in the page shell, with its backlinks as `(title, url)` pairs.
 /// The head every page shares, before its version and title.
 const HEAD: &str = "<meta charset=\"utf-8\">\n\
-                    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n";
+                    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
+                    <link rel=\"manifest\" href=\"/.tachylite/app.webmanifest\">\n";
 
 pub fn render_page(title: &str, body: &str, backlinks: &[(String, String)]) -> Page {
     let title = escape(title);
