@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use proptest::prelude::*;
 use tachylite::config::Exclude;
 use tachylite::render::Broken;
-use tachylite::site::{Change, Delta, Push, Site, Source, Write};
+use tachylite::site::{Change, Delta, Note, Push, Site, Source, Write};
 use tachylite::vault::{Entry, ReadError, SkipReason, Skipped, classify};
 
 /// An in-memory vault: path to bytes. Folders are implied by paths.
@@ -14,8 +14,12 @@ use tachylite::vault::{Entry, ReadError, SkipReason, Skipped, classify};
 struct Mem(BTreeMap<String, Vec<u8>>);
 
 impl Source for Mem {
-    fn note(&mut self, path: &str) -> Result<Vec<u8>, ReadError> {
-        self.0.get(path).cloned().ok_or(ReadError::Missing)
+    fn note(&mut self, path: &str) -> Result<Note, ReadError> {
+        self.0
+            .get(path)
+            .cloned()
+            .map(Note::from)
+            .ok_or(ReadError::Missing)
     }
     fn file(&mut self, path: &str) -> Result<(), ReadError> {
         self.0.get(path).map(|_| ()).ok_or(ReadError::Missing)
@@ -224,7 +228,7 @@ fn excluded_touch_is_ignored() {
 fn unreadable_note_is_skipped_and_unpublished() {
     struct Denied;
     impl Source for Denied {
-        fn note(&mut self, _: &str) -> Result<Vec<u8>, ReadError> {
+        fn note(&mut self, _: &str) -> Result<Note, ReadError> {
             Err(ReadError::Skip(SkipReason::Symlink))
         }
         fn file(&mut self, _: &str) -> Result<(), ReadError> {
@@ -494,7 +498,7 @@ const CONTENTS: [&str; 13] = [
 struct MidSave;
 
 impl Source for MidSave {
-    fn note(&mut self, _: &str) -> Result<Vec<u8>, ReadError> {
+    fn note(&mut self, _: &str) -> Result<Note, ReadError> {
         Err(ReadError::MidSave)
     }
     fn file(&mut self, _: &str) -> Result<(), ReadError> {
@@ -538,7 +542,7 @@ fn mid_save_loser_does_not_block_promotion() {
     // a.MD wins; deleting it promotes a.md, which is mid-save.
     struct Mixed;
     impl Source for Mixed {
-        fn note(&mut self, path: &str) -> Result<Vec<u8>, ReadError> {
+        fn note(&mut self, path: &str) -> Result<Note, ReadError> {
             match path {
                 "a.md" => Err(ReadError::MidSave),
                 _ => Err(ReadError::Missing),

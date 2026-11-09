@@ -20,16 +20,30 @@ pub enum Change {
     Sync { under: String, entries: Vec<Entry> },
 }
 
+/// A note as read: its bytes, and its modified time in seconds since the epoch.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Note {
+    pub bytes: Vec<u8>,
+    pub modified: i64,
+}
+
+/// A note with no known modified time, as in-memory sources give.
+impl From<Vec<u8>> for Note {
+    fn from(bytes: Vec<u8>) -> Note {
+        Note { bytes, modified: 0 }
+    }
+}
+
 /// Where the site reads the vault. `VaultDir` in production; a map in tests.
 pub trait Source {
-    fn note(&mut self, path: &str) -> Result<Vec<u8>, ReadError>;
+    fn note(&mut self, path: &str) -> Result<Note, ReadError>;
     /// Checks that a regular file is there, without reading it.
     fn file(&mut self, path: &str) -> Result<(), ReadError>;
 }
 
 impl Source for &VaultDir {
-    fn note(&mut self, path: &str) -> Result<Vec<u8>, ReadError> {
-        self.read(path)
+    fn note(&mut self, path: &str) -> Result<Note, ReadError> {
+        self.read_note(path, true)
     }
     fn file(&mut self, path: &str) -> Result<(), ReadError> {
         self.open_file(path).map(|_| ())
@@ -130,6 +144,8 @@ pub struct Site {
     titles: HashMap<String, String>,
     /// The notes whose embeds read each path, at any depth.
     embedded_by: HashMap<Arc<str>, BTreeSet<Arc<str>>>,
+    /// Each read note's modified time, for the recent pages.
+    modified: HashMap<String, i64>,
     /// Whether a manifest was written, so the first apply writes one even when empty.
     listed: bool,
 }
@@ -549,7 +565,9 @@ impl Site {
             let notes: Vec<(&str, Vec<u8>)> = batch
                 .iter()
                 .filter_map(|path| {
-                    let bytes = fresh.remove(path).or_else(|| source.note(path).ok())?;
+                    let bytes = fresh
+                        .remove(path)
+                        .or_else(|| source.note(path).ok().map(|n| n.bytes))?;
                     Some((path.as_str(), bytes))
                 })
                 .collect();
@@ -576,7 +594,7 @@ impl Site {
             if !note || !won.contains(&path) || bodies.contains_key(&path) {
                 continue;
             }
-            if let Ok(bytes) = source.note(&path) {
+            if let Ok(Note { bytes, .. }) = source.note(&path) {
                 let notes = [(path.as_str(), bytes)];
                 if let Some((_, body)) = self.render_notes(&notes, fresh, source).pop() {
                     bodies.insert(path, body.html);
@@ -601,7 +619,7 @@ impl Site {
                 .find(|(p, _)| *p == target)
                 .map(|(_, b)| b.clone())
                 .or_else(|| fresh.get(target).cloned())
-                .or_else(|| source.note(target).ok())
+                .or_else(|| source.note(target).ok().map(|n| n.bytes))
         };
         let targets = |from: &str, bytes: &[u8]| {
             embed_targets(from, &String::from_utf8_lossy(bytes), &self.index)
@@ -731,8 +749,9 @@ impl Site {
             return false;
         };
         let result = match kind {
-            Kind::Note => source.note(path).map(|bytes| {
-                fresh.insert(path.to_string(), bytes);
+            Kind::Note => source.note(path).map(|note| {
+                self.modified.insert(path.to_string(), note.modified);
+                fresh.insert(path.to_string(), note.bytes);
             }),
             Kind::Html | Kind::Asset => source.file(path),
         };

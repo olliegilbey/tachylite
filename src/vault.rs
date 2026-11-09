@@ -297,15 +297,16 @@ impl VaultDir {
     }
 
     pub fn read(&self, rel: &str) -> Result<Vec<u8>, ReadError> {
-        self.read_after(rel, true)
+        self.read_note(rel, true).map(|note| note.bytes)
     }
 
-    /// Reads like `read`, with `open_after`'s mid-save check.
-    pub fn read_after(&self, rel: &str, saved: bool) -> Result<Vec<u8>, ReadError> {
+    /// Reads a file with `open_after`'s mid-save check, and its modified time.
+    pub fn read_note(&self, rel: &str, saved: bool) -> Result<crate::site::Note, ReadError> {
         let mut file = self.open_after(rel, saved)?;
+        let unreadable = |e: io::Error| ReadError::Skip(SkipReason::Unreadable(e.kind()));
+        let modified = file.metadata().map_err(unreadable)?.mtime();
         let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)
-            .map_err(|e| ReadError::Skip(SkipReason::Unreadable(e.kind())))?;
-        Ok(bytes)
+        file.read_to_end(&mut bytes).map_err(unreadable)?;
+        Ok(crate::site::Note { bytes, modified })
     }
 }
