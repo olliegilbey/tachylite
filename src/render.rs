@@ -709,11 +709,6 @@ fn escape(text: &str) -> String {
 }
 
 /// Wraps a body in the page shell, with its backlinks as `(title, url)` pairs.
-/// The head every page shares, before its version and title.
-const HEAD: &str = "<meta charset=\"utf-8\">\n\
-                    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
-                    <link rel=\"manifest\" href=\"/.tachylite/app.webmanifest\">\n";
-
 pub fn render_page(title: &str, body: &str, backlinks: &[(String, String)]) -> Page {
     let title = escape(title);
     let mut main = body.to_string();
@@ -724,16 +719,19 @@ pub fn render_page(title: &str, body: &str, backlinks: &[(String, String)]) -> P
         }
         main.push_str("</ul></section>\n");
     }
-    let mut hasher = DefaultHasher::new();
-    // The template is hashed too, so an upgrade that changes it re-syncs every client.
-    (HEAD, &title, &main).hash(&mut hasher);
-    let version = format!("{:016x}", hasher.finish());
-    let html = format!(
-        "<!doctype html>\n<html lang=\"en\">\n<head>\n{HEAD}\
-         <meta name=\"tachylite-version\" content=\"{version}\">\n\
-         <title>{title}</title>\n\
+    let before = "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
+                  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
+                  <link rel=\"manifest\" href=\"/.tachylite/app.webmanifest\">\n\
+                  <meta name=\"tachylite-version\" content=\"";
+    let after = format!(
+        "\">\n<title>{title}</title>\n\
          <script src=\"/.tachylite/live.js\" defer></script>\n</head>\n\
          <body>\n<main>\n{main}</main>\n</body>\n</html>\n"
     );
+    // The version hashes the whole page but itself, so a new template re-syncs every client.
+    let mut hasher = DefaultHasher::new();
+    (before, &after).hash(&mut hasher);
+    let version = format!("{:016x}", hasher.finish());
+    let html = format!("{before}{version}{after}");
     Page { html, version }
 }
