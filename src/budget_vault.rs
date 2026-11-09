@@ -233,6 +233,10 @@ fn note(rng: &mut Rng, path: &str, paths: &[String]) -> String {
             }
         }
     }
+    // A few notes carry raw HTML, so the sanitizer is under the budgets.
+    if rng.chance(3) {
+        out.push_str("<details><summary>More</summary>\n\nHidden <kbd>K</kbd>.\n\n</details>\n");
+    }
     out
 }
 
