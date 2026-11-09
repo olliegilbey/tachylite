@@ -115,7 +115,8 @@ pub struct Site {
     /// Vault paths whose output is written.
     winners: BTreeSet<String>,
     /// The version of each winning note's written page.
-    versions: HashMap<String, String>,
+    /// Sorted, so the manifest is written in one pass.
+    versions: BTreeMap<String, String>,
     /// The winners, for link resolution. The graph shares its paths.
     index: Index,
     /// What each rendered note links to.
@@ -426,20 +427,20 @@ impl Site {
         report
     }
 
-    /// `{"pages":{"<url>":"<version>",...}}`, sorted by URL. URLs are percent-encoded and
+    /// `{"pages":{"<url>":"<version>",...}}`, in path order. URLs are percent-encoded and
     /// versions are hex, so neither needs escaping.
     fn manifest(&self) -> String {
-        let pages: BTreeMap<String, &str> = self
-            .versions
-            .iter()
-            .map(|(path, version)| (url(path), version.as_str()))
-            .collect();
-        let mut json = String::from("{\"pages\":{");
-        for (i, (url, version)) in pages.iter().enumerate() {
+        let mut json = String::with_capacity(16 + self.versions.len() * 64);
+        json.push_str("{\"pages\":{");
+        for (i, (path, version)) in self.versions.iter().enumerate() {
             if i > 0 {
                 json.push(',');
             }
-            json.push_str(&format!("\"{url}\":\"{version}\""));
+            json.push('"');
+            json.push_str(&url(path));
+            json.push_str("\":\"");
+            json.push_str(version);
+            json.push('"');
         }
         json.push_str("}}");
         json

@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc fda25f25884ee0994a7a920419f209f26fc403c4720175012e102e67b9bdf3ef # shrinks to ops = [(Write(6, 0), false), (Write(0, 0), true), (RenameFolder, false)]
+cc fd99d138af377aefcbb3e768acbf2fe1e065ad35dad88c81271a2c39bf76d01c # shrinks to ops = [(RenameFolder, false), (Config(true), true), (Write(0, 6), true), (Delete(4), true), (Write(8, 10), false)]
