@@ -455,7 +455,7 @@ const PATHS: [&str; 10] = [
     "d/e/m.md",
     ".h.md",
 ];
-const CONTENTS: [&str; 10] = [
+const CONTENTS: [&str; 13] = [
     "# one",
     "two *b*",
     "- [ ] three",
@@ -466,6 +466,9 @@ const CONTENTS: [&str; 10] = [
     "---\naliases: [n, q]\ntitle: T1\n---\n[[q]]",
     "---\naliases: m\n---\n[[a]]",
     "---\ntitle: T2\n---\n[[q]] [[m]]",
+    "two ![[a]] ![[q]]",
+    "![[n]] ![[d/e/m]] ![[p.png]] ![[x.html]]",
+    "| t |\n|---|\n| ![[a\\|x]] ![[n\\|y]] |",
 ];
 
 /// A source where every file is mid-save.
@@ -662,4 +665,77 @@ fn threaded_full_build_equals_small_applies() {
     for (path, html) in &want {
         assert!(got.get(path) == Some(html), "{path} differs");
     }
+}
+
+#[test]
+fn full_build_transcludes() {
+    let mem = Mem::with(&[("a.md", "![[b]]"), ("b.md", "bee ![[c]]"), ("c.md", "sea")]);
+    let (out, delta) = full(&mem);
+    let a = String::from_utf8_lossy(&out["pages/a.html"]).to_string();
+    assert!(a.contains("bee") && a.contains("sea"), "{a}");
+    assert!(
+        html(&delta, "b").contains("Backlinks"),
+        "an embed is a backlink"
+    );
+}
+
+#[test]
+fn editing_an_embedded_note_re_renders_its_embedders() {
+    let mut mem = Mem::with(&[("a.md", "![[b]]"), ("b.md", "![[c]]"), ("c.md", "old")]);
+    let (mut site, _) = synced(&mut mem, Exclude::default());
+    mem.0.insert("c.md".into(), b"new".to_vec());
+    let delta = site.apply(vec![touch("c.md")], &mut mem);
+    assert_eq!(pushed(&delta), ["a", "b", "c"]);
+    assert!(html(&delta, "a").contains("new"));
+}
+
+#[test]
+fn creating_and_deleting_an_embedded_note() {
+    let mut mem = Mem::with(&[("a.md", "![[b]]")]);
+    let (mut site, _) = synced(&mut mem, Exclude::default());
+    mem.0.insert("b.md".into(), b"bee".to_vec());
+    let delta = site.apply(vec![touch("b.md")], &mut mem);
+    assert!(html(&delta, "a").contains("bee"));
+    mem.0.remove("b.md");
+    let delta = site.apply(vec![touch("b.md")], &mut mem);
+    assert!(!html(&delta, "a").contains("bee"));
+    assert!(html(&delta, "a").contains("broken-link"));
+}
+
+#[test]
+fn a_change_inside_an_embed_reaches_the_embedder() {
+    let mut mem = Mem::with(&[("a.md", "![[b]]"), ("b.md", "see [[c]]")]);
+    let (mut site, _) = synced(&mut mem, Exclude::default());
+    mem.0.insert("c.md".into(), b"sea".to_vec());
+    let delta = site.apply(vec![touch("c.md")], &mut mem);
+    assert!(html(&delta, "a").contains("<a href=\"/c\">c</a>"));
+}
+
+#[test]
+fn embed_cycle_renders_and_updates() {
+    let mut mem = Mem::with(&[("a.md", "aye ![[b]]"), ("b.md", "bee ![[a]]")]);
+    let (mut site, first) = synced(&mut mem, Exclude::default());
+    assert!(html(&first, "a").contains("bee"));
+    mem.0.insert("a.md".into(), b"new ![[b]]".to_vec());
+    let delta = site.apply(vec![touch("a.md")], &mut mem);
+    assert_eq!(pushed(&delta), ["a", "b"]);
+    assert!(html(&delta, "b").contains("new"));
+}
+
+#[test]
+fn an_embed_the_scan_misses_still_renders_alone() {
+    let mut mem = Mem::with(&[
+        ("a.md", "aye"),
+        ("b.md", "![[a]]"),
+        ("n.md", "| t |\n|---|\n| ![[a\\|x]] |"),
+    ]);
+    let (mut site, first) = synced(&mut mem, Exclude::default());
+    assert!(html(&first, "n").contains("aye"));
+    mem.0
+        .insert("n.md".into(), b"| t |\n|---|\n| ![[a\\|x]] two |".to_vec());
+    let delta = site.apply(vec![touch("n.md")], &mut mem);
+    assert!(html(&delta, "n").contains("aye"), "{}", html(&delta, "n"));
+    mem.0.insert("a.md".into(), b"new".to_vec());
+    let delta = site.apply(vec![touch("a.md")], &mut mem);
+    assert!(html(&delta, "n").contains("new"));
 }

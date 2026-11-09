@@ -7,7 +7,7 @@ expression: welcome()
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="tachylite-version" content="dbc966db2d5a4838">
+<meta name="tachylite-version" content="de1d27c32b4b26c3">
 <title>welcome</title>
 <script src="/.tachylite/live.js" defer></script>
 </head>
@@ -48,7 +48,7 @@ expression: welcome()
     println!(&quot;hello&quot;);
 }
 </code></pre>
-<!-- raw HTML omitted -->
+
 <section class="footnotes" data-footnotes>
 <ol>
 <li id="fn-cup">

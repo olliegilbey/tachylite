@@ -156,3 +156,33 @@ fn refuses_out_inside_vault() {
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("overlap"));
 }
+
+#[test]
+fn every_vault_response_carries_a_csp() {
+    let d = Dirs::fixture();
+    fs::write(
+        d.vault().join("img/v.svg"),
+        "<svg xmlns=\"http://www.w3.org/2000/svg\"/>",
+    )
+    .unwrap();
+    let server = Server::start(&d.vault(), &d.out());
+    let main = "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; \
+                object-src 'none'; base-uri 'none'; form-action 'none'";
+    // A vault file opened as a document runs in an opaque origin; a pdf viewer needs the page's.
+    for (path, csp) in [
+        ("/people/Jane%20Doe", main),
+        ("/docs/guide.pdf", main),
+        ("/nope", main),
+        ("/maps/route.html", "sandbox allow-scripts"),
+        ("/img/dot.png", "sandbox allow-scripts"),
+        ("/img/v.svg", "sandbox allow-scripts"),
+    ] {
+        let r = server.get(path);
+        assert_eq!(r.header("content-security-policy"), Some(csp), "{path}");
+        assert_eq!(
+            r.header("x-content-type-options"),
+            Some("nosniff"),
+            "{path}"
+        );
+    }
+}

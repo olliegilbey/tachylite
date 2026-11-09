@@ -1,16 +1,20 @@
 use std::borrow::Cow;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
 use comrak::adapters::CodefenceRendererAdapter;
+use comrak::html::dangerous_url;
 use comrak::nodes::Sourcepos;
 use comrak::nodes::{AstNode, NodeValue};
 use comrak::options::Plugins;
 use comrak::{Anchorizer, Arena, Options, format_html_with_plugins, parse_document};
 
+use crate::config::Exclude;
 use crate::front::{self, Value};
 use crate::links::{Index, Resolved, resolve, split};
+use crate::sanitize::sanitize;
+use crate::vault::{Kind, classify, is_image};
 
 /// The file stem of the last path segment: `people/Jane Doe.md` gives `Jane Doe`.
 pub fn note_title(path: &str) -> &str {
@@ -29,6 +33,8 @@ fn options() -> Options<'static> {
     options.extension.ofm_callouts = true;
     options.parse.escaped_char_spans = true;
     options.extension.highlight = true;
+    // Raw HTML reaches the page only through `sanitize`, node by node.
+    options.render.r#unsafe = true;
     options
 }
 
@@ -55,7 +61,17 @@ pub struct Body {
     /// The published paths its links resolve to.
     pub targets: BTreeSet<Arc<str>>,
     pub broken: Vec<Broken>,
+    /// Every note its embeds read, at any depth.
+    pub embeds: BTreeSet<Arc<str>>,
+    /// The notes it would have transcluded, had `Sources` held them.
+    pub missing: BTreeSet<Arc<str>>,
 }
+
+/// The notes an embed may read, by path.
+pub type Sources = HashMap<String, Vec<u8>>;
+
+/// How many levels of notes one page embeds.
+pub const EMBED_DEPTH: usize = 3;
 
 /// Percent-encodes all but unreserved characters and `/`.
 pub fn encode(path: &str) -> String {
@@ -129,18 +145,121 @@ fn open(body: &mut Body, from: &str, index: &Index, path: &str, heading: Option<
             tag
         }
         unresolved => {
-            let matches = match unresolved {
-                Resolved::Ambiguous(n) => n,
-                _ => 0,
-            };
-            body.broken.push(Broken {
-                from: from.to_string(),
-                target: path.to_string(),
-                matches,
-            });
+            body.broken.push(broken(from, path, &unresolved));
             "<a class=\"broken-link\">".to_string()
         }
     }
+}
+
+fn broken(from: &str, target: &str, resolved: &Resolved) -> Broken {
+    Broken {
+        from: from.to_string(),
+        target: target.to_string(),
+        matches: match resolved {
+            Resolved::Ambiguous(n) => *n,
+            _ => 0,
+        },
+    }
+}
+
+enum Embed {
+    /// Stays in its paragraph.
+    Inline(String),
+    /// Takes its paragraph's place when it is the paragraph's only content.
+    Block(String),
+    /// A plain link: this opening tag around the label.
+    Link(String),
+}
+
+/// `![[raw]]` from `from`, at `depth` levels of embedding, with `label` as its text.
+/// `seen` holds the notes already on the page; each is transcluded once.
+fn embed(
+    body: &mut Body,
+    (from, index, sources): (&str, &Index, &Sources),
+    (depth, seen): (usize, &mut HashSet<String>),
+    raw: &str,
+    label: &str,
+) -> Embed {
+    let (path, heading) = split(raw);
+    let path = path.trim();
+    let link = |body: &mut Body| Embed::Link(open(body, from, index, path, heading));
+    let Resolved::Found(target) = resolve(index, from, path) else {
+        return link(body);
+    };
+    if heading.is_some() {
+        return link(body);
+    }
+    let src = url(&target);
+    let kind = classify(&target, &Exclude::default());
+    let html = match kind {
+        Some(Kind::Asset) if is_image(&target) => {
+            let sized = label
+                .split('x')
+                .all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+            let alt = if sized {
+                path.rsplit('/').next().unwrap_or(path)
+            } else {
+                label
+            };
+            Embed::Inline(format!(
+                "<img src=\"{src}\" alt=\"{}\" loading=\"lazy\">",
+                escape(alt)
+            ))
+        }
+        Some(Kind::Html) => Embed::Block(format!(
+            "<iframe class=\"embed-html\" sandbox=\"allow-scripts\" src=\"{src}\" \
+             loading=\"lazy\"></iframe>\n"
+        )),
+        Some(Kind::Note) if depth < EMBED_DEPTH && !seen.contains(&*target) => {
+            let Some(bytes) = sources.get(&*target) else {
+                body.missing.insert(target);
+                return link(body);
+            };
+            let markdown = String::from_utf8_lossy(bytes);
+            seen.insert(target.to_string());
+            let inner = render(&target, &markdown, index, sources, (depth + 1, seen));
+            body.missing.extend(inner.missing);
+            let title = front::meta(&markdown)
+                .title
+                .unwrap_or_else(|| note_title(&target).to_string());
+            body.embeds.insert(Arc::clone(&target));
+            body.embeds.extend(inner.embeds);
+            Embed::Block(format!(
+                "<div class=\"embed\"><a class=\"embed-link\" href=\"{src}\">{}</a>\n{}</div>\n",
+                escape(&title),
+                inner.html
+            ))
+        }
+        _ => return link(body),
+    };
+    body.targets.insert(target);
+    html
+}
+
+/// The notes `markdown`'s embeds may read, without parsing it. It over-matches, in code
+/// and comments, so it loads a superset of what the render reads.
+pub fn embed_targets(from: &str, markdown: &str, index: &Index) -> Vec<Arc<str>> {
+    let mut targets: Vec<Arc<str>> = Vec::new();
+    let mut rest = markdown;
+    while let Some(i) = rest.find("![[") {
+        rest = &rest[i + 3..];
+        let Some(end) = rest.find("]]") else {
+            break;
+        };
+        let inner = &rest[..end];
+        rest = &rest[end + 2..];
+        let path = inner.split('|').next().unwrap_or(inner);
+        if path.contains('#') {
+            continue;
+        }
+        if let Resolved::Found(target) = resolve(index, from, path.trim())
+            && classify(&target, &Exclude::default()) == Some(Kind::Note)
+            && !targets.contains(&target)
+        {
+            targets.push(target);
+        }
+    }
+    targets
 }
 
 /// A tag link. Tag pages are keyed by the lowercased tag.
@@ -196,11 +315,28 @@ fn properties(body: &mut Body, from: &str, yaml: &str, index: &Index) -> String 
 }
 
 /// Renders a note's Markdown and resolves its links against the published paths.
-pub fn render_body(from: &str, markdown: &str, index: &Index) -> Body {
+/// Renders a note's body. `sources` holds the notes its embeds may read; an embed of a note
+/// missing from it renders as a link.
+pub fn render_body(from: &str, markdown: &str, index: &Index, sources: &Sources) -> Body {
+    let mut seen = HashSet::from([from.to_string()]);
+    render(from, markdown, index, sources, (0, &mut seen))
+}
+
+fn render(
+    from: &str,
+    markdown: &str,
+    index: &Index,
+    sources: &Sources,
+    (depth, seen): (usize, &mut HashSet<String>),
+) -> Body {
     let (yaml, markdown) = front::split(markdown);
     let markdown = strip_comments(markdown);
     let mut body = Body::default();
-    let props = yaml.map_or_else(String::new, |y| properties(&mut body, from, y, index));
+    // An embedded note shows its body only.
+    let props = match yaml {
+        Some(yaml) if depth == 0 => properties(&mut body, from, yaml, index),
+        _ => String::new(),
+    };
     let arena = Arena::new();
     let options = options();
     let root = parse_document(&arena, &markdown, &options);
@@ -217,11 +353,40 @@ pub fn render_body(from: &str, markdown: &str, index: &Index) -> Body {
     let mut rewrites = Vec::new();
     let mut texts = Vec::new();
     let mut anchorizer = Anchorizer::new();
-    let mut ids = Vec::new();
+    let mut headings = Vec::new();
+    let mut embeds = Vec::new();
+    let mut images = Vec::new();
+    let mut scripted = Vec::new();
+    let mut raw = Vec::new();
     for node in root.descendants() {
-        if let NodeValue::Heading(_) = node.data().value {
-            ids.push(anchorizer.anchorize(&node.collect_text()));
-            continue;
+        match &node.data().value {
+            NodeValue::Heading(heading) => {
+                let id = escape(&anchorizer.anchorize(&node.collect_text()));
+                headings.push((node, heading.level, id));
+                continue;
+            }
+            NodeValue::HtmlInline(_) | NodeValue::HtmlBlock(_) => {
+                raw.push(node);
+                continue;
+            }
+            NodeValue::WikiLink(link) if link.embed => {
+                embeds.push((node, link.url.clone()));
+                continue;
+            }
+            NodeValue::Image(link) if local(&link.url) => {
+                images.push((node, link.url.clone()));
+                continue;
+            }
+            // Raw HTML on also turns off comrak's own check of link URLs.
+            NodeValue::Link(link) if dangerous_url(&link.url) => {
+                rewrites.push((node, "<a>".to_string()));
+                continue;
+            }
+            NodeValue::Image(link) if dangerous_url(&link.url) => {
+                scripted.push(node);
+                continue;
+            }
+            _ => {}
         }
         if let NodeValue::Text(text) = &node.data().value {
             if !text.contains('#') {
@@ -241,7 +406,7 @@ pub fn render_body(from: &str, markdown: &str, index: &Index) -> Body {
             }
             continue;
         }
-        let raw = match &node.data().value {
+        let link = match &node.data().value {
             NodeValue::WikiLink(link) => {
                 let (path, heading) = split(&link.url);
                 Some((path.trim().to_string(), heading.map(str::to_string)))
@@ -252,14 +417,69 @@ pub fn render_body(from: &str, markdown: &str, index: &Index) -> Body {
             }
             _ => None,
         };
-        let Some((path, heading)) = raw else {
+        let Some((path, heading)) = link else {
             continue;
         };
         let tag = open(&mut body, from, index, &path, heading.as_deref());
         rewrites.push((node, tag));
     }
+    for node in scripted {
+        if let NodeValue::Image(link) = &mut node.data_mut().value {
+            link.url.clear();
+        }
+    }
+    for node in raw {
+        match &mut node.data_mut().value {
+            NodeValue::HtmlInline(html) => *html = sanitize(html),
+            NodeValue::HtmlBlock(block) => block.literal = sanitize(&block.literal),
+            _ => {}
+        }
+    }
     for (node, open) in rewrites {
-        wrap(&arena, node, open);
+        wrap(&arena, node, open, "</a>".to_string());
+    }
+    for (node, src) in images {
+        let Some(path) = decode(split(&src).0) else {
+            continue;
+        };
+        match resolve(index, from, &path) {
+            Resolved::Found(target) => {
+                if let NodeValue::Image(link) = &mut node.data_mut().value {
+                    link.url = url(&target);
+                }
+                body.targets.insert(target);
+            }
+            unresolved => body.broken.push(broken(from, &path, &unresolved)),
+        }
+    }
+    for (node, raw) in embeds {
+        let label = node.collect_text();
+        match embed(
+            &mut body,
+            (from, index, sources),
+            (depth, &mut *seen),
+            &raw,
+            &label,
+        ) {
+            Embed::Inline(html) => replace(&arena, node, html),
+            Embed::Block(html) => {
+                let parent = node.parent().filter(|p| {
+                    matches!(p.data().value, NodeValue::Paragraph)
+                        && p.first_child().is_some_and(|c| c.same_node(node))
+                        && p.last_child().is_some_and(|c| c.same_node(node))
+                });
+                replace(&arena, parent.unwrap_or(node), html);
+            }
+            Embed::Link(open) => wrap(&arena, node, open, "</a>".to_string()),
+        }
+    }
+    for (node, level, id) in headings {
+        wrap(
+            &arena,
+            node,
+            format!("<h{level} id=\"{id}\">"),
+            format!("</h{level}>\n"),
+        );
     }
     for node in texts {
         link_tags(&arena, node);
@@ -272,7 +492,7 @@ pub fn render_body(from: &str, markdown: &str, index: &Index) -> Body {
         .insert("mermaid".to_string(), &Mermaid);
     // Writing into a String cannot fail.
     let _ = format_html_with_plugins(root, &options, &mut html, &plugins);
-    body.html = add_ids(&html, &ids);
+    body.html = html;
     body
 }
 
@@ -464,41 +684,21 @@ impl CodefenceRendererAdapter for Mermaid {
     }
 }
 
-/// Replaces a link node with raw tags around its children. comrak's own link markup would
-/// leave `#` and `?` in a file name unescaped.
-fn wrap<'a>(arena: &'a Arena<'a>, node: &'a AstNode<'a>, open: String) {
+/// Replaces a node with raw tags around its children. comrak's own link markup would
+/// leave `#` and `?` in a file name unescaped, and its heading ids add an anchor link.
+fn wrap<'a>(arena: &'a Arena<'a>, node: &'a AstNode<'a>, open: String, close: String) {
     let raw = |html: String| arena.alloc(AstNode::from(NodeValue::Raw(html)));
     node.insert_before(raw(open));
     while let Some(child) = node.first_child() {
         node.insert_before(child);
     }
-    node.insert_before(raw("</a>".to_string()));
+    node.insert_before(raw(close));
     node.detach();
 }
 
-/// Gives each `<hN>` tag the next id, in document order. With raw HTML off, only a heading
-/// writes `<hN>`. comrak's own heading ids would add an anchor link to every heading.
-fn add_ids(html: &str, ids: &[String]) -> String {
-    let mut out =
-        String::with_capacity(html.len() + ids.iter().map(|id| id.len() + 6).sum::<usize>());
-    let mut ids = ids.iter();
-    let mut rest = html;
-    while let Some(i) = rest.find("<h") {
-        let heading = matches!(rest.as_bytes().get(i + 2..i + 4), Some([b'1'..=b'6', b'>']));
-        match if heading { ids.next() } else { None } {
-            Some(id) => {
-                out.push_str(&rest[..i + 3]);
-                out.push_str(&format!(" id=\"{}\">", escape(id)));
-                rest = &rest[i + 4..];
-            }
-            None => {
-                out.push_str(&rest[..i + 2]);
-                rest = &rest[i + 2..];
-            }
-        }
-    }
-    out.push_str(rest);
-    out
+fn replace<'a>(arena: &'a Arena<'a>, node: &'a AstNode<'a>, html: String) {
+    node.insert_before(arena.alloc(AstNode::from(NodeValue::Raw(html))));
+    node.detach();
 }
 
 fn escape(text: &str) -> String {

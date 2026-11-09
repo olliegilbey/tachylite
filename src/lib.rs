@@ -9,6 +9,7 @@ pub mod links;
 pub mod output;
 pub mod render;
 pub mod report;
+pub mod sanitize;
 pub mod serve;
 pub mod site;
 pub mod vault;

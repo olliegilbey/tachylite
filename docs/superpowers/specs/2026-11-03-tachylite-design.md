@@ -94,7 +94,10 @@ The binary serves the files itself, so it controls compression (precompressed Br
 - URLs keep the vault path. A note drops `.md` and keeps its case, and the path is percent-encoded: `people/Jane Doe.md` is served at `/people/Jane%20Doe`. An `.html` page keeps its extension. There are no slugs. Two notes whose paths differ only in the case of `.md` (`a.md`, `a.MD`) would share a URL: the first in byte order wins, and the build logs the other.
 - Everything Tachylite generates lives under one reserved prefix, `/.tachylite/`: index pages, the SSE endpoint, the manifest, the service worker and client assets. Dot names are always excluded, so no vault path starts with `.`. No vault file can collide with a generated page. A vault may hold `tasks.md`, `Today.md`, or a folder note `people.md` beside `people/`. Each keeps its plain URL. The prefix mirrors `.obsidian`: a dot folder belongs to the app.
 - `/` is the home page: the folder index of the vault root, with the pins at the top.
-- Embeds: `![[image.png]]` shows an image. `![[note]]` transcludes a note, depth limited. `![[page.html]]` embeds a sandboxed iframe.
+- Embeds: `![[image.png]]` shows an image, with the label as its alt text unless the label is an Obsidian size. `![[page.html]]` embeds a sandboxed iframe. `![[note]]` transcludes the note's body, without its properties, under a link to it. A heading embed (`![[note#Heading]]`), a pdf and any other file render as a plain link.
+  Transclusion nests 3 levels deep, and a note transcludes once per page. A deeper embed, or a second embed of a note already on the page, renders as a link, so a cycle ends and three small notes cannot multiply into a huge page. An embed is a link: it resolves the same way, adds a backlink, and a missing or excluded target renders and logs as broken. The links inside an embedded note stay that note's own.
+  When a note changes, every note that embeds it, at any depth, re-renders with it.
+  A Markdown image with no scheme, `![alt](dot.png)`, resolves like a link.
 - Links to HTML: `[[page.html]]` and `[label](page.html)` open the page full screen, scripts running. The page runs exactly as written, with no Tachylite shell around it. The browser's back button returns to the note.
 - Obsidian callouts (`> [!note]`) and `==highlight==`.
 - `%%comments%%` are stripped and never published. Obsidian does not specify every case, so Tachylite fails closed. Before parsing, it removes each comment from the note's text in note order: from a `%%` to the next `%%`, or to the end of the note. Fenced code and code spans keep their `%%`, unless a comment holds them. So a link inside a comment makes no backlink. If the parser still finds `%%` in text afterwards, the stripper and the parser disagree about code. The note's text is then withheld, and a notice shows in its place.
@@ -108,11 +111,13 @@ The binary serves the files itself, so it controls compression (precompressed Br
 
 Notes are trusted content, but agents write them, and a prompt-injected agent could plant a script. A script running on the main origin could read every cached note. So:
 
-- Inline HTML in Markdown passes through an allowlist sanitizer (the `ammonia` crate fits). It keeps layout and formatting tags and drops `script`, `iframe`, `object`, `embed`, event-handler attributes and `javascript:` URLs.
+- Inline HTML in Markdown passes through Tachylite's allowlist sanitizer. It keeps layout and formatting tags and drops `script`, `iframe`, `object`, `embed`, `style` attributes, event-handler attributes and `javascript:` URLs. A link or image URL survives only with a web or mail scheme, as a path, or as a relative URL with no scheme and no character reference.
+  The sanitizer rebuilds each raw HTML fragment from the allowlist: it emits only tags it builds itself, and escapes every other `<` and `>`. A tag it misreads is dropped, never run. A crate such as `ammonia` was measured and declined: it added 1.24 MB to the binary, an MPL-2.0 dependency, and 0.47 ms per note.
 - Anything that needs JavaScript (a map, an interactive mockup) is a standalone `.html` file. It renders inside `<iframe sandbox="allow-scripts">`, with no `allow-same-origin`. It cannot read the main origin's storage or cache.
-- Every `.html` file is also served with the header `Content-Security-Policy: sandbox allow-scripts`. Opened directly as a full page, it still runs in an opaque origin.
+- Every vault file but a pdf, `.html` and `.svg` included, is served with the header `Content-Security-Policy: sandbox allow-scripts`. Opened directly as a full page, it runs in an opaque origin, so an `.svg` with a `<script>` cannot reach the main origin. A pdf keeps the main policy, since the browser's viewer needs it. Every response sends `X-Content-Type-Options: nosniff`, so no vault file loads as a script.
 - Embedded `.html` pages may load from the network, for example map tiles or a library from a CDN. The service worker caches the `.html` file itself. Its external assets work offline only if the browser happens to have them cached. A map can show blank tiles with no signal; that is accepted.
-- The main origin sends a Content-Security-Policy that blocks outbound requests (`connect-src 'self'`) and inline script.
+- Markdown links and images with a script URL (`javascript:`, `vbscript:`, `file:`, `data:` but images) lose it, as comrak's own filter would.
+- The main origin sends a Content-Security-Policy that blocks inline script and every outbound request but images: `default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'none'`. Mermaid injects `<style>`, so styles may be inline. Remote images in notes keep working.
 
 ### Navigation
 
@@ -217,5 +222,4 @@ The README documents this setup as the default route. It is an example, not buil
 - Crate choices beyond those named, and client code structure (vanilla JS, no framework). The HTTP stack is axum on a single-threaded tokio runtime.
 - Debounce length, within the 10 ms push budget.
 - The exact search implementation, chosen by measurement.
-- Transclusion depth limit and cycle handling.
 - How the 100 ms end-to-end figure is measured and recorded.

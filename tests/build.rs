@@ -463,3 +463,21 @@ fn comments_reach_no_output() {
         assert!(a.contains(kept), "{kept} not in {a}");
     }
 }
+
+#[test]
+fn an_embedded_excluded_note_reaches_no_output() {
+    let dir = bare(&[
+        ("tachylite.toml", "exclude = [\"private\"]\n"),
+        ("private/secret.md", "# zebra-secret"),
+        ("a.md", "![[secret]] ![[private/secret]] ![[b]]"),
+        ("b.md", "bee ![[private/secret]]"),
+    ]);
+    let (vault, out) = (dir.path().join("vault"), dir.path().join("out"));
+    build(&vault, &out).unwrap();
+    let text = all_output_text(&out);
+    assert!(text.contains("bee"), "the embed itself renders");
+    assert!(
+        !text.contains("zebra"),
+        "an excluded note reached the output"
+    );
+}

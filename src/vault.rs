@@ -63,6 +63,11 @@ pub fn classify(path: &str, exclude: &Exclude) -> Option<Kind> {
     }
 }
 
+pub fn is_image(path: &str) -> bool {
+    path.rsplit_once('.')
+        .is_some_and(|(_, ext)| IMAGE_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
+}
+
 /// Lists what the vault publishes. Reads only; never follows a symlink or enters an excluded folder.
 pub fn scan(vault: &Path, exclude: &Exclude) -> Result<Scan, Error> {
     scan_under(vault, "", exclude)

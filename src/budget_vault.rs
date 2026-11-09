@@ -233,6 +233,16 @@ fn note(rng: &mut Rng, path: &str, paths: &[String]) -> String {
             }
         }
     }
+    // A few notes carry raw HTML, so the sanitizer is under the budgets.
+    if rng.chance(3) {
+        out.push_str("<details><summary>More</summary>\n\nHidden <kbd>K</kbd>.\n\n</details>\n");
+    }
+    // And a few embed another note, so its edits re-render them.
+    if rng.chance(2) {
+        out.push_str("\n!");
+        link(rng, path, paths, &mut out);
+        out.push('\n');
+    }
     out
 }
 

@@ -129,16 +129,46 @@ pub struct App {
     pub live: Live,
 }
 
+/// The main origin's policy: no inline script, and no requests off the origin but images.
+/// Mermaid injects `<style>`, so styles may be inline.
+const MAIN_CSP: &str = "default-src 'self'; img-src 'self' data: https:; \
+                        style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; \
+                        form-action 'none'";
+
+/// A vault file opened as a page runs in an opaque origin: an html page, and an svg, which
+/// can hold script. A pdf keeps the main policy, since a browser's viewer needs the origin.
+const SANDBOX_CSP: &str = "sandbox allow-scripts";
+
 async fn file(
     State(app): State<Arc<App>>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
 ) -> Response {
+    let path = decode(uri.path()).and_then(|key| locate(&app.out, &key));
+    let sandboxed = path.as_ref().is_some_and(|p| {
+        p.starts_with(app.out.join("files")) && content_type(p) != "application/pdf"
+    });
+    let mut response = vault_file(&method, path, &headers);
+    let csp = if sandboxed { SANDBOX_CSP } else { MAIN_CSP };
+    let h = response.headers_mut();
+    h.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(csp),
+    );
+    // Without it, a vault file served as html or pdf could load as a same-origin script.
+    h.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    response
+}
+
+fn vault_file(method: &Method, path: Option<PathBuf>, headers: &HeaderMap) -> Response {
     if method != Method::GET && method != Method::HEAD {
         return status(StatusCode::METHOD_NOT_ALLOWED);
     }
-    let Some(path) = decode(uri.path()).and_then(|key| locate(&app.out, &key)) else {
+    let Some(path) = path else {
         return status(StatusCode::NOT_FOUND);
     };
     // Small files from the page cache; slice 6 owns streaming, compression and caching.
@@ -148,7 +178,7 @@ async fn file(
         Err(_) => return status(StatusCode::INTERNAL_SERVER_ERROR),
     };
     let tag = etag(&bytes);
-    let mut response = if matches(&headers, &tag) {
+    let mut response = if matches(headers, &tag) {
         status(StatusCode::NOT_MODIFIED)
     } else {
         let mut r = Response::new(Body::from(bytes));
