@@ -29,7 +29,9 @@ size:
 	RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --target $(TARGET)
 	@bin=target/$(TARGET)/release/tachylite; bytes=$$(stat -c%s $$bin); \
 	echo "release binary $(TARGET): $$bytes bytes (limit $(SIZE_LIMIT))"; \
-	file -b $$bin | grep -q static && test $$bytes -le $(SIZE_LIMIT)
+	file -b $$bin | grep -q static || { echo "$$bin is not static"; exit 1; }; \
+	test $$bytes -le $(SIZE_LIMIT) || { echo "over the size limit"; exit 1; }; \
+	out=$$(mktemp -d) && $$bin build tests/fixtures/vault $$out/site && rm -rf $$out
 
 upgrade:
 	rustup update stable

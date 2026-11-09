@@ -200,7 +200,7 @@ The binary is light. The repo is heavy on purpose: it carries every test and che
 
 The reference phone and a Raspberry Pi are checked by hand each release. An agent skill guides an integrated QA pass in a real browser.
 
-Release binaries are static glibc builds for `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`, linked with `crt-static`, with no runtime dependencies. They are not musl builds: musl's allocator serialises the render threads, which made the cold build three times slower. CI checks both builds. A Raspberry Pi is a portability aim, checked by hand once per release. It has no budgets of its own.
+Release binaries are static glibc builds for `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`, linked with `crt-static`, with no runtime dependencies. They are not musl builds: musl's allocator serialises the render threads. On the budget vault, the musl cold build took 1.9-2.1 s against 0.33 s for static glibc. Static glibc costs about 0.9 MB of binary size over musl. CI checks both builds. A Raspberry Pi is a portability aim, checked by hand once per release. It has no budgets of its own.
 
 ### Repository
 
