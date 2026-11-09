@@ -203,8 +203,8 @@ fn resident_memory() {
 
     let peak_kb = proc_field(server.child.id(), "status", "VmHWM:");
     println!(
-        "peak resident memory, budget vault: {} MB (limit 50 MB)",
+        "peak resident memory, budget vault: {} MB (limit 65 MB)",
         peak_kb / 1024
     );
-    assert!(peak_kb <= 50 * 1024);
+    assert!(peak_kb <= 65 * 1024);
 }

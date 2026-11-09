@@ -7,7 +7,7 @@ use std::sync::Arc;
 use crate::config::Exclude;
 use crate::front;
 use crate::links::{Index, key};
-use crate::render::{Broken, note_title, render_body, render_page, url};
+use crate::render::{Body, Broken, note_title, render_body, render_page, url};
 use crate::vault::{Entry, Kind, ReadError, SkipReason, Skipped, VaultDir, classify};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -172,6 +172,43 @@ fn winners(entries: &BTreeMap<String, Kind>) -> (BTreeSet<String>, Vec<String>) 
         won.insert(path.clone());
     }
     (won, lost)
+}
+
+/// Renders each note's body, on as many threads as the batch is worth. A save of a few notes
+/// stays on this thread, so the push path pays no spawn.
+fn render_all<'p>(notes: &[(&'p str, Vec<u8>)], index: &Index) -> Vec<(&'p str, Body)> {
+    let render = |notes: &[(&'p str, Vec<u8>)]| -> Vec<(&'p str, Body)> {
+        notes
+            .iter()
+            .map(|(path, bytes)| {
+                (
+                    *path,
+                    render_body(path, &String::from_utf8_lossy(bytes), index),
+                )
+            })
+            .collect()
+    };
+    let cores = std::thread::available_parallelism().map_or(1, usize::from);
+    let threads = cores.min(notes.len().div_ceil(16));
+    if threads <= 1 {
+        return render(notes);
+    }
+    let size = notes.len().div_ceil(threads);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = notes
+            .chunks(size)
+            .map(|part| scope.spawn(move || render(part)))
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
+            // Copied on this thread, so a worker's heap is empty once its batch is done.
+            .map(|(path, body)| {
+                let html = body.html.as_str().to_owned();
+                (path, Body { html, ..body })
+            })
+            .collect()
+    })
 }
 
 impl Site {
@@ -438,23 +475,30 @@ impl Site {
         }
 
         let mut bodies = HashMap::new();
-        for path in first {
-            // A dependent that cannot be read keeps its page; its own event follows. Each
-            // source is dropped once rendered, so a full sync never holds both.
-            let Some(bytes) = fresh.remove(&path).or_else(|| source.note(&path).ok()) else {
-                continue;
-            };
-            let body = render_body(&path, &String::from_utf8_lossy(&bytes), &self.index);
-            drop(bytes);
-            let links = Links {
-                targets: body.targets.into_iter().collect(),
-                unresolved: body.broken.iter().map(|b| key(&b.target)).collect(),
-            };
-            broken.extend(body.broken);
-            if let Some(note) = self.index.get(&path) {
-                self.relink(&note, links, &mut changed);
+        let first: Vec<String> = first.into_iter().collect();
+        // Batches keep a full sync from holding every source and every body at once.
+        for batch in first.chunks(256) {
+            // A dependent that cannot be read keeps its page; its own event follows.
+            let notes: Vec<(&str, Vec<u8>)> = batch
+                .iter()
+                .filter_map(|path| {
+                    let bytes = fresh.remove(path).or_else(|| source.note(path).ok())?;
+                    Some((path.as_str(), bytes))
+                })
+                .collect();
+            let rendered = render_all(&notes, &self.index);
+            drop(notes);
+            for (path, body) in rendered {
+                let links = Links {
+                    targets: body.targets.into_iter().collect(),
+                    unresolved: body.broken.iter().map(|b| key(&b.target)).collect(),
+                };
+                broken.extend(body.broken);
+                if let Some(note) = self.index.get(path) {
+                    self.relink(&note, links, &mut changed);
+                }
+                bodies.insert(path.to_string(), body.html);
             }
-            bodies.insert(path, body.html);
         }
 
         // Their links resolve as before, so the graph stands.
