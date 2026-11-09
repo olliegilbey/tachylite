@@ -208,3 +208,68 @@ fn resident_memory() {
     );
     assert!(peak_kb <= 65 * 1024);
 }
+
+/// A deterministic budget, so it runs in every `cargo test`: the median budget-vault page
+/// and the script every page loads, gzipped as the server sends them. Mermaid loads only on
+/// a page with a diagram, so a typical page does not carry it.
+#[test]
+fn typical_page_weight() {
+    use std::io::Write as _;
+    use tachylite::site::{Change, Push, Site, Source};
+    use tachylite::vault::{Entry, ReadError, classify};
+
+    struct Notes(HashMap<String, Vec<u8>>);
+    impl Source for Notes {
+        fn note(&mut self, path: &str) -> Result<Vec<u8>, ReadError> {
+            self.0.get(path).cloned().ok_or(ReadError::Missing)
+        }
+        fn file(&mut self, _: &str) -> Result<(), ReadError> {
+            Err(ReadError::Missing)
+        }
+    }
+    fn gzipped(bytes: &[u8]) -> usize {
+        let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        e.write_all(bytes).unwrap();
+        e.finish().unwrap().len()
+    }
+
+    let notes = tachylite::budget_vault::generate(1, 500);
+    let exclude = tachylite::config::Exclude::default();
+    let entries = notes
+        .iter()
+        .map(|(path, _)| Entry {
+            path: path.clone(),
+            kind: classify(path, &exclude).unwrap(),
+        })
+        .collect();
+    let mut source = Notes(
+        notes
+            .into_iter()
+            .map(|(p, c)| (p, c.into_bytes()))
+            .collect(),
+    );
+    let delta = Site::new(exclude).apply(
+        vec![Change::Sync {
+            under: String::new(),
+            entries,
+        }],
+        &mut source,
+    );
+    let mut pages: Vec<usize> = delta
+        .pushes
+        .iter()
+        .filter_map(|p| match p {
+            Push::Page { html, .. } => Some(gzipped(html.as_bytes())),
+            Push::Gone { .. } => None,
+        })
+        .collect();
+    pages.sort_unstable();
+    let page = pages[pages.len() / 2];
+    let script = gzipped(include_bytes!("../src/live.js"));
+    let limit = 30 * 1024;
+    println!(
+        "typical page weight: {} B ({page} B page + {script} B script, limit {limit} B)",
+        page + script
+    );
+    assert!(page + script <= limit);
+}
