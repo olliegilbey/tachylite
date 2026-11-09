@@ -194,3 +194,28 @@ test("a page with a Mermaid block draws on first load", async ({ page }, info) =
   await expect(page.locator("main pre.mermaid svg")).toBeVisible();
   expect(errors).toEqual([]);
 });
+
+test("an embedded html page runs its script in an opaque origin", async ({ page }, info) => {
+  const name = `embed-html-${info.project.name}`;
+  writeFileSync(
+    join(vault, `${name}.html`),
+    `<!doctype html><p id="out">waiting</p><script>
+      const probe = (f) => { try { f(); return "open"; } catch { return "blocked"; } };
+      document.getElementById("out").textContent =
+        "ran, parent " + probe(() => parent.document.title) + ", storage " + probe(() => localStorage.length);
+    </script>`,
+  );
+  note(name, `# Embeds\n\n![[${name}.html]]\n`);
+  await open(page, name, "Embeds");
+  await expect(page.frameLocator("main iframe.embed-html").locator("#out")).toHaveText(
+    "ran, parent blocked, storage blocked",
+  );
+  expect(errors).toEqual([]);
+});
+
+test("a script in a note never runs", async ({ page }, info) => {
+  const name = `script-${info.project.name}`;
+  note(name, `# Scripted\n\n<img src="x.png" onerror="window.ran = 1">\n\n<script>window.ran = 2</script>\n`);
+  await open(page, name, "Scripted");
+  expect(await page.evaluate(() => (window as any).ran ?? 0)).toBe(0);
+});

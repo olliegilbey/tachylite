@@ -156,3 +156,25 @@ fn refuses_out_inside_vault() {
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("overlap"));
 }
+
+#[test]
+fn every_vault_response_carries_a_csp() {
+    let d = Dirs::fixture();
+    let server = Server::start(&d.vault(), &d.out());
+    let main = "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; \
+                object-src 'none'; base-uri 'none'; form-action 'none'";
+    for path in [
+        "/people/Jane%20Doe",
+        "/img/dot.png",
+        "/docs/guide.pdf",
+        "/nope",
+    ] {
+        let r = server.get(path);
+        assert_eq!(r.header("content-security-policy"), Some(main), "{path}");
+    }
+    let page = server.get("/maps/route.html");
+    assert_eq!(
+        page.header("content-security-policy"),
+        Some("sandbox allow-scripts")
+    );
+}

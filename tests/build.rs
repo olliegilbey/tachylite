@@ -476,5 +476,8 @@ fn an_embedded_excluded_note_reaches_no_output() {
     build(&vault, &out).unwrap();
     let text = all_output_text(&out);
     assert!(text.contains("bee"), "the embed itself renders");
-    assert!(!text.contains("zebra"), "an excluded note reached the output");
+    assert!(
+        !text.contains("zebra"),
+        "an excluded note reached the output"
+    );
 }
