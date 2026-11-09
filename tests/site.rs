@@ -455,7 +455,7 @@ const PATHS: [&str; 10] = [
     "d/e/m.md",
     ".h.md",
 ];
-const CONTENTS: [&str; 12] = [
+const CONTENTS: [&str; 13] = [
     "# one",
     "two *b*",
     "- [ ] three",
@@ -468,6 +468,7 @@ const CONTENTS: [&str; 12] = [
     "---\ntitle: T2\n---\n[[q]] [[m]]",
     "two ![[a]] ![[q]]",
     "![[n]] ![[d/e/m]] ![[p.png]] ![[x.html]]",
+    "| t |\n|---|\n| ![[a\\|x]] ![[n\\|y]] |",
 ];
 
 /// A source where every file is mid-save.
@@ -719,4 +720,22 @@ fn embed_cycle_renders_and_updates() {
     let delta = site.apply(vec![touch("a.md")], &mut mem);
     assert_eq!(pushed(&delta), ["a", "b"]);
     assert!(html(&delta, "b").contains("new"));
+}
+
+#[test]
+fn an_embed_the_scan_misses_still_renders_alone() {
+    let mut mem = Mem::with(&[
+        ("a.md", "aye"),
+        ("b.md", "![[a]]"),
+        ("n.md", "| t |\n|---|\n| ![[a\\|x]] |"),
+    ]);
+    let (mut site, first) = synced(&mut mem, Exclude::default());
+    assert!(html(&first, "n").contains("aye"));
+    mem.0
+        .insert("n.md".into(), b"| t |\n|---|\n| ![[a\\|x]] two |".to_vec());
+    let delta = site.apply(vec![touch("n.md")], &mut mem);
+    assert!(html(&delta, "n").contains("aye"), "{}", html(&delta, "n"));
+    mem.0.insert("a.md".into(), b"new".to_vec());
+    let delta = site.apply(vec![touch("a.md")], &mut mem);
+    assert!(html(&delta, "n").contains("new"));
 }

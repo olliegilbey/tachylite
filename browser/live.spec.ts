@@ -219,3 +219,17 @@ test("a script in a note never runs", async ({ page }, info) => {
   await open(page, name, "Scripted");
   expect(await page.evaluate(() => (window as any).ran ?? 0)).toBe(0);
 });
+
+test("an svg opened as a page cannot run script on the origin", async ({ page }, info) => {
+  const name = `svg-${info.project.name}`;
+  writeFileSync(join(vault, `${name}-payload.html`), `document.title = "PWNED";`);
+  writeFileSync(
+    join(vault, `${name}.svg`),
+    `<svg xmlns="http://www.w3.org/2000/svg"><script href="/${name}-payload.html"/></svg>`,
+  );
+  await expect
+    .poll(async () => (await page.request.get(`/${name}.svg`)).status())
+    .toBe(200);
+  await page.goto(`/${name}.svg`, { waitUntil: "load" });
+  expect(await page.title()).not.toBe("PWNED");
+});

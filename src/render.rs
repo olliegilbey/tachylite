@@ -1,9 +1,10 @@
 use std::borrow::Cow;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
 use comrak::adapters::CodefenceRendererAdapter;
+use comrak::html::dangerous_url;
 use comrak::nodes::Sourcepos;
 use comrak::nodes::{AstNode, NodeValue};
 use comrak::options::Plugins;
@@ -62,6 +63,8 @@ pub struct Body {
     pub broken: Vec<Broken>,
     /// Every note its embeds read, at any depth.
     pub embeds: BTreeSet<Arc<str>>,
+    /// The notes it would have transcluded, had `Sources` held them.
+    pub missing: BTreeSet<Arc<str>>,
 }
 
 /// The notes an embed may read, by path.
@@ -168,12 +171,12 @@ enum Embed {
     Link(String),
 }
 
-/// `![[raw]]` from `from`, with `label` as its text. `chain` holds the notes being
-/// embedded, outermost first.
+/// `![[raw]]` from `from`, at `depth` levels of embedding, with `label` as its text.
+/// `seen` holds the notes already on the page; each is transcluded once.
 fn embed(
     body: &mut Body,
     (from, index, sources): (&str, &Index, &Sources),
-    chain: &mut Vec<String>,
+    (depth, seen): (usize, &mut HashSet<String>),
     raw: &str,
     label: &str,
 ) -> Embed {
@@ -207,14 +210,15 @@ fn embed(
             "<iframe class=\"embed-html\" sandbox=\"allow-scripts\" src=\"{src}\" \
              loading=\"lazy\"></iframe>\n"
         )),
-        Some(Kind::Note) if chain.len() <= EMBED_DEPTH && !chain.iter().any(|c| **c == *target) => {
+        Some(Kind::Note) if depth < EMBED_DEPTH && !seen.contains(&*target) => {
             let Some(bytes) = sources.get(&*target) else {
+                body.missing.insert(target);
                 return link(body);
             };
             let markdown = String::from_utf8_lossy(bytes);
-            chain.push(target.to_string());
-            let inner = render(&target, &markdown, index, sources, chain);
-            chain.pop();
+            seen.insert(target.to_string());
+            let inner = render(&target, &markdown, index, sources, (depth + 1, seen));
+            body.missing.extend(inner.missing);
             let title = front::meta(&markdown)
                 .title
                 .unwrap_or_else(|| note_title(&target).to_string());
@@ -314,7 +318,8 @@ fn properties(body: &mut Body, from: &str, yaml: &str, index: &Index) -> String 
 /// Renders a note's body. `sources` holds the notes its embeds may read; an embed of a note
 /// missing from it renders as a link.
 pub fn render_body(from: &str, markdown: &str, index: &Index, sources: &Sources) -> Body {
-    render(from, markdown, index, sources, &mut vec![from.to_string()])
+    let mut seen = HashSet::from([from.to_string()]);
+    render(from, markdown, index, sources, (0, &mut seen))
 }
 
 fn render(
@@ -322,14 +327,14 @@ fn render(
     markdown: &str,
     index: &Index,
     sources: &Sources,
-    chain: &mut Vec<String>,
+    (depth, seen): (usize, &mut HashSet<String>),
 ) -> Body {
     let (yaml, markdown) = front::split(markdown);
     let markdown = strip_comments(markdown);
     let mut body = Body::default();
     // An embedded note shows its body only.
     let props = match yaml {
-        Some(yaml) if chain.len() == 1 => properties(&mut body, from, yaml, index),
+        Some(yaml) if depth == 0 => properties(&mut body, from, yaml, index),
         _ => String::new(),
     };
     let arena = Arena::new();
@@ -351,6 +356,7 @@ fn render(
     let mut headings = Vec::new();
     let mut embeds = Vec::new();
     let mut images = Vec::new();
+    let mut scripted = Vec::new();
     let mut raw = Vec::new();
     for node in root.descendants() {
         match &node.data().value {
@@ -369,6 +375,15 @@ fn render(
             }
             NodeValue::Image(link) if local(&link.url) => {
                 images.push((node, link.url.clone()));
+                continue;
+            }
+            // Raw HTML on also turns off comrak's own check of link URLs.
+            NodeValue::Link(link) if dangerous_url(&link.url) => {
+                rewrites.push((node, "<a>".to_string()));
+                continue;
+            }
+            NodeValue::Image(link) if dangerous_url(&link.url) => {
+                scripted.push(node);
                 continue;
             }
             _ => {}
@@ -408,6 +423,11 @@ fn render(
         let tag = open(&mut body, from, index, &path, heading.as_deref());
         rewrites.push((node, tag));
     }
+    for node in scripted {
+        if let NodeValue::Image(link) = &mut node.data_mut().value {
+            link.url.clear();
+        }
+    }
     for node in raw {
         match &mut node.data_mut().value {
             NodeValue::HtmlInline(html) => *html = sanitize(html),
@@ -434,7 +454,13 @@ fn render(
     }
     for (node, raw) in embeds {
         let label = node.collect_text();
-        match embed(&mut body, (from, index, sources), chain, &raw, &label) {
+        match embed(
+            &mut body,
+            (from, index, sources),
+            (depth, &mut *seen),
+            &raw,
+            &label,
+        ) {
             Embed::Inline(html) => replace(&arena, node, html),
             Embed::Block(html) => {
                 let parent = node.parent().filter(|p| {

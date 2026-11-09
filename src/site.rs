@@ -510,9 +510,8 @@ impl Site {
                     Some((path.as_str(), bytes))
                 })
                 .collect();
-            let sources = self.embed_sources(&notes, fresh, source);
-            let rendered = render_all(&notes, &self.index, &sources);
-            drop((notes, sources));
+            let rendered = self.render_notes(&notes, fresh, source);
+            drop(notes);
             for (path, body) in rendered {
                 let links = Links {
                     targets: body.targets.into_iter().collect(),
@@ -536,48 +535,73 @@ impl Site {
             }
             if let Ok(bytes) = source.note(&path) {
                 let notes = [(path.as_str(), bytes)];
-                let sources = self.embed_sources(&notes, fresh, source);
-                let markdown = String::from_utf8_lossy(&notes[0].1);
-                let body = render_body(&path, &markdown, &self.index, &sources);
-                bodies.insert(path, body.html);
+                if let Some((_, body)) = self.render_notes(&notes, fresh, source).pop() {
+                    bodies.insert(path, body.html);
+                }
             }
         }
         bodies
     }
 
-    /// The notes the embeds in `notes` may read, to `EMBED_DEPTH` levels. A note that cannot
-    /// be read is left out, and its embed renders as a link.
-    fn embed_sources(
+    /// Renders `notes` with every note their embeds read. A scan of the text finds most
+    /// of them first; the render reports any it missed, which load before that note
+    /// renders again. So a note renders the same in any batch.
+    fn render_notes<'p>(
         &self,
-        notes: &[(&str, Vec<u8>)],
+        notes: &[(&'p str, Vec<u8>)],
         fresh: &HashMap<String, Vec<u8>>,
         source: &mut impl Source,
-    ) -> Sources {
+    ) -> Vec<(&'p str, Body)> {
+        let mut load = |target: &str| {
+            notes
+                .iter()
+                .find(|(p, _)| *p == target)
+                .map(|(_, b)| b.clone())
+                .or_else(|| fresh.get(target).cloned())
+                .or_else(|| source.note(target).ok())
+        };
         let targets = |from: &str, bytes: &[u8]| {
             embed_targets(from, &String::from_utf8_lossy(bytes), &self.index)
         };
         let mut sources = Sources::new();
+        let mut tried: HashSet<Arc<str>> = HashSet::new();
         let mut level: Vec<Arc<str>> = notes.iter().flat_map(|(p, b)| targets(p, b)).collect();
         for _ in 0..EMBED_DEPTH {
             let mut next = Vec::new();
             for target in level {
-                if sources.contains_key(&*target) {
+                if !tried.insert(Arc::clone(&target)) {
                     continue;
                 }
-                let bytes = notes
-                    .iter()
-                    .find(|(p, _)| **p == *target)
-                    .map(|(_, b)| b.clone())
-                    .or_else(|| fresh.get(&*target).cloned())
-                    .or_else(|| source.note(&target).ok());
-                if let Some(bytes) = bytes {
+                if let Some(bytes) = load(&target) {
                     next.extend(targets(&target, &bytes));
                     sources.insert(target.to_string(), bytes);
                 }
             }
             level = next;
         }
-        sources
+        let mut rendered = render_all(notes, &self.index, &sources);
+        loop {
+            let mut loaded = false;
+            for (_, body) in &rendered {
+                for target in &body.missing {
+                    if tried.insert(Arc::clone(target))
+                        && let Some(bytes) = load(target)
+                    {
+                        sources.insert(target.to_string(), bytes);
+                        loaded = true;
+                    }
+                }
+            }
+            if !loaded {
+                return rendered;
+            }
+            for ((path, body), (_, bytes)) in rendered.iter_mut().zip(notes) {
+                if !body.missing.is_empty() {
+                    let markdown = String::from_utf8_lossy(bytes);
+                    *body = render_body(path, &markdown, &self.index, &sources);
+                }
+            }
+        }
     }
 
     /// A note's frontmatter title, else its file stem.

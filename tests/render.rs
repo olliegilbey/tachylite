@@ -746,3 +746,54 @@ fn embed_targets_lists_the_notes_to_load() {
         ["b.md", "c.md"]
     );
 }
+
+#[test]
+fn script_urls_in_markdown_are_dropped() {
+    let html = plain(
+        "[x](javascript:alert(1)) <javascript:alert(2)> [y](&#106;avascript:alert(3)) \
+         [z](vbscript:x) ![i](javascript:alert(4)) [ok](https://example.com) <https://example.com/a>\n",
+    );
+    for bad in ["=\"javascript", "=\"vbscript", "=\"&#106;"] {
+        assert!(!html.contains(bad), "{bad} in {html}");
+    }
+    assert!(html.contains("<a>x</a>"), "{html}");
+    assert!(
+        html.contains("<a href=\"https://example.com\">ok</a>"),
+        "{html}"
+    );
+    assert!(
+        html.contains("<a href=\"https://example.com/a\">"),
+        "{html}"
+    );
+}
+
+#[test]
+fn a_note_transcludes_once_per_page() {
+    let body = embed(
+        "a.md",
+        "![[b]]\n\n![[b]]\n\n![[c]]",
+        &[
+            ("b.md", "bee ![[d]]"),
+            ("c.md", "sea ![[d]]"),
+            ("d.md", "dee"),
+        ],
+        &[],
+    );
+    assert_eq!(body.html.matches("bee").count(), 1, "{}", body.html);
+    assert_eq!(body.html.matches("dee").count(), 1, "{}", body.html);
+    assert!(body.html.contains("<a href=\"/b\">b</a>"), "{}", body.html);
+    assert!(body.html.contains("<a href=\"/d\">d</a>"), "{}", body.html);
+}
+
+#[test]
+fn render_reports_embeds_it_could_not_load() {
+    let index = Index::new(["a.md", "n.md"]);
+    let body = render_body(
+        "n.md",
+        "| t |\n|---|\n| ![[a\\|x]] |\n",
+        &index,
+        &Sources::new(),
+    );
+    assert_eq!(paths(&body.missing), ["a.md"]);
+    assert!(body.embeds.is_empty());
+}
