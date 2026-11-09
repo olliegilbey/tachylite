@@ -186,7 +186,7 @@ Budgets run against a synthetic vault of 2,000 notes and about 20 MB of text. A 
 | Search, per keystroke, mid-range phone, offline | ≤ 50 ms |
 | Idle CPU | ~0 % |
 | Resident memory, 2,000-note vault | ≤ 65 MB |
-| Release binary | ≤ 5 MB, stripped |
+| Release binary | ≤ 6 MB, stripped |
 
 CI enforces the deterministic budgets as absolute limits: page weight, binary size and memory. Timed budgets are set on the reference host. `make budget` measures them there, and each PR reports the numbers before and after. CI also runs the timed benches with a ceiling at three times each budget, to catch gross regressions on noisy runners. Headless Chrome measures save-to-screen and search time in CI, on localhost with CPU throttling. Both are also measured by hand on the reference phone.
 

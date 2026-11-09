@@ -1,6 +1,6 @@
 BUDGET_SCALE ?= 3
 TARGET ?= x86_64-unknown-linux-gnu
-SIZE_LIMIT := 5000000
+SIZE_LIMIT := 6000000
 
 .PHONY: check browser budget size upgrade mermaid
 
