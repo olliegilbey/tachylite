@@ -48,10 +48,11 @@ The smallest thing that works, made fast, beats the clever thing. Fight scope cr
 1. **Writing to a vault.** Tachylite opens vault files read-only. Tests run against the fixture vault or a vault generated in a temp directory. Output goes to a directory outside the vault.
 2. **Leaking content.** This repo is public. Code, fixtures, test names, snapshots, issues, commits, PR bodies and screenshots carry synthetic content only. Nothing from the reference vault, and no paths or names from the owner's machine. An excluded note reaches no output file in any form: page, search index, backlink, manifest or metadata.
 3. **Touching the network edge.** Tachylite binds `127.0.0.1` only. A port that carries a public Funnel route is public on every path, so a wrong `tailscale serve` command can publish the vault.
-   - An agent may add a tailnet-only `tailscale serve` route, on a port with no Funnel route.
-   - Never run `tailscale funnel`.
+   - An agent may add one tailnet-only route, to Tachylite's own port: `tailscale serve --bg --https=<port> http://127.0.0.1:<tachylite-port>`. Never serve a path on disk.
+   - Pick a port that `tailscale serve status` shows unused.
+   - Never run `tailscale funnel` or pass `--funnel`.
    - Never change or remove a route you did not add.
-   - Check `tailscale funnel status` before and after every change.
+   - Run `tailscale funnel status` after the change. If your port shows Funnel on, remove your route at once and tell the maintainer.
 4. **Killing by pattern.** The host runs many dev servers and agents at once. Never `pkill -f`, `pgrep | kill`, or kill a PID found by matching a name or path. Kill only a PID you captured at spawn, or the owner of your port from `ss -H -ltnp` after you confirm `/proc/<pid>/cwd` is your checkout.
 
 ## Principles
