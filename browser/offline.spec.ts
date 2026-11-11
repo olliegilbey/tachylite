@@ -155,7 +155,8 @@ test("an image opened once loads offline", async ({ page }) => {
 
 // The headless shell skips Chromium's install check (`Page.getInstallabilityErrors` is
 // always empty), so this asserts what the check reads: a parsed manifest with a name, a
-// start URL, a standalone display and an icon that loads, and a worker in control.
+// start URL, a standalone display, two icons that load, and a worker in control. The protocol
+// drops each icon's purpose, so `tests/serve.rs` checks the maskable entry.
 test("the app manifest meets the install criteria", async ({ page, browserName }) => {
   test.skip(browserName !== "chromium", "the manifest is read through Chromium's protocol");
   await visit(page, "/a");
@@ -166,12 +167,14 @@ test("the app manifest meets the install criteria", async ({ page, browserName }
   expect(manifest.name).toBe("Tachylite");
   expect(manifest.startUrl).toBe(base + "/");
   expect(manifest.display).toBe("kStandalone");
-  expect(manifest.icons).toHaveLength(1);
-  const icon = await page.evaluate(async (src) => {
-    const img = new Image();
-    img.src = src;
-    await img.decode();
-    return img.naturalWidth;
-  }, manifest.icons[0].url);
-  expect(icon).toBeGreaterThan(0);
+  expect(manifest.icons).toHaveLength(2);
+  for (const { url } of manifest.icons) {
+    const width = await page.evaluate(async (src) => {
+      const img = new Image();
+      img.src = src;
+      await img.decode();
+      return img.naturalWidth;
+    }, url);
+    expect(width).toBeGreaterThan(0);
+  }
 });

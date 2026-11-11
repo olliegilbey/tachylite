@@ -164,7 +164,7 @@ Only these file types reach the output: `.md` (rendered), `.html` (sandboxed), i
 - A page asks the worker to sync on load and each time its event stream reconnects. The worker fetches the manifest, downloads the pages whose version changed, six at a time, and drops the pages that are gone. A first sync is the whole set: a few MB compressed for a few thousand notes.
 - The worker serves every same-origin request stale-while-revalidate: the cached copy at once, and a fresh copy stored behind it. Images and PDFs load on demand and stay cached once opened.
 - A page's version hashes its head template too, so an upgrade that changes the template re-syncs every client.
-- The site is installable as a PWA. The web manifest and its SVG icon are built into the binary. The service worker script lives under `/.tachylite/`, so the server sends it with `Service-Worker-Allowed: /`, and the page registers it with `scope: '/'`. Both are needed for it to control the whole site.
+- The site is installable as a PWA. The web manifest and its two SVG icons are built into the binary. The second is maskable, so Android crops it to the launcher shape instead of drawing it on a white tile. The service worker script lives under `/.tachylite/`, so the server sends it with `Service-Worker-Allowed: /`, and the page registers it with `scope: '/'`. Both are needed for it to control the whole site.
 
 ### Configuration
 
