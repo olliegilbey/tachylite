@@ -155,7 +155,8 @@ test("an image opened once loads offline", async ({ page }) => {
 
 // The headless shell skips Chromium's install check (`Page.getInstallabilityErrors` is
 // always empty), so this asserts what the check reads: a parsed manifest with a name, a
-// start URL, a standalone display, an icon and a maskable icon that load, and a worker in control.
+// start URL, a standalone display, two icons that load, and a worker in control. The protocol
+// drops each icon's purpose, so `tests/serve.rs` checks the maskable entry.
 test("the app manifest meets the install criteria", async ({ page, browserName }) => {
   test.skip(browserName !== "chromium", "the manifest is read through Chromium's protocol");
   await visit(page, "/a");

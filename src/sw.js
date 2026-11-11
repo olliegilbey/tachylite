@@ -6,6 +6,7 @@ const SHELL = [
   "/.tachylite/style.css",
   "/.tachylite/app.webmanifest",
   "/.tachylite/icon.svg",
+  "/.tachylite/icon-maskable.svg",
 ];
 const PASS = new Set(["/.tachylite/events", "/.tachylite/sw.js", MANIFEST]);
 
