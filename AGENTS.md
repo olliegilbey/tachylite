@@ -101,15 +101,16 @@ The stack: Rust stable, edition 2024, one crate until a second earns its place. 
 
 Look at a visual change before you call it done. A purely visual change, such as colour, spacing or alignment, takes before and after captures as its proof, and no test. Behaviour, such as ordering, navigation or offline, takes a test.
 
-1. Build with `cargo build --release`.
-2. Copy `tests/fixtures/vault` to `/tmp/tachylite-<task>/vault`, and add the synthetic notes the change needs.
-3. Start a server on a free port and keep its PID: `target/release/tachylite serve <vault> <out> --port <port> & echo $! > /tmp/tachylite-<task>/pid`.
+1. Build with `cargo build --release`. For the before captures, build `main` in a `git worktree` first.
+2. Copy `tests/fixtures/vault` to `/tmp/tachylite-<task>/vault`, and add the synthetic notes the change needs. Never capture the reference deployment.
+3. Start a server on a free port, keep its PID, and wait for its `serving http://` line:
+   `target/release/tachylite serve /tmp/tachylite-<task>/vault /tmp/tachylite-<task>/out --port <port> 2>/tmp/tachylite-<task>/log & echo $! > /tmp/tachylite-<task>/pid`, then `until grep -q "serving http://" /tmp/tachylite-<task>/log; do :; done`.
 4. Capture at phone width, dark first, from `browser/`: `npx playwright screenshot --device="Pixel 7" --color-scheme=dark --block-service-workers http://127.0.0.1:<port>/<path> /tmp/tachylite-<task>/<name>.png`. Add `--full-page` for a long page, and `--color-scheme=light` for the light theme.
-5. Read each PNG and look at it. Capture before the change and after it, and iterate until the after reads well.
+5. Read each PNG and look at it. Iterate until the after capture reads well.
 6. Stop the server by its PID.
 
-- In T3 Code, the Browser panel's `preview_*` tools drive the same server interactively. Close any tab you opened.
-- Page weight and the timed budgets are tests: `make check` and `make budget`. To feel a slow phone, write a throwaway Playwright script that sets CDP `Network.emulateNetworkConditions` and `Emulation.setCPUThrottlingRate`, and read its trace with `npx playwright show-trace`.
+- A harness with a built-in browser can drive the same server interactively. Close any tab you opened.
+- Page weight and the timed budgets are tests: `make check` and `make budget`. To feel a slow phone, write a throwaway Playwright test under `browser/` that sets CDP `Network.emulateNetworkConditions` and `Emulation.setCPUThrottlingRate`, and prints timings from `performance.getEntriesByType("navigation")`. Delete it when done.
 - Never commit captures or traces. Show them to the maintainer in chat, and describe them in the PR.
 
 ## Style

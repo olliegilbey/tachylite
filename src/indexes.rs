@@ -95,9 +95,9 @@ fn recent_list(items: &[&Item]) -> String {
 }
 
 /// `/`: the newest notes, then the root folder. The header names the site, so the
-/// page has no heading of its own.
+/// page's heading is for screen readers only.
 pub fn home(site: &str, recent: &[&Item], root: &Folder) -> Page {
-    let mut main = String::new();
+    let mut main = format!("<h1 class=\"sr\">{}</h1>\n", escape(site));
     if !recent.is_empty() {
         main.push_str("<h2>Recent</h2>\n");
         main.push_str(&recent_list(&recent[..recent.len().min(HOME_RECENT)]));
