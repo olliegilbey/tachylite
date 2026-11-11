@@ -1,17 +1,18 @@
 :root {
   color-scheme: dark light;
-  --bg: #16181d;
-  --fg: #dcdfe4;
-  --dim: #8b919c;
-  --line: #2c3038;
-  --raise: #1f2228;
-  --link: #7cb4ff;
-  --broken: #e8846b;
-  --accent: #b39cf0;
-  --note: #7cb4ff;
-  --tip: #5fcf9a;
-  --warn: #e8b45f;
-  --bad: #e8846b;
+  /* Pure black for OLED, and warm tones throughout, as under a blue-light filter. */
+  --bg: #000000;
+  --fg: #d3cdc3;
+  --dim: #948b7e;
+  --line: #2a2621;
+  --raise: #12100d;
+  --link: #f5dc9c;
+  --broken: #e39a7c;
+  --accent: #d9b27c;
+  --note: #d9bf8c;
+  --tip: #a9c08c;
+  --warn: #e8ad62;
+  --bad: #e3866c;
   font: 17px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 @media (prefers-color-scheme: light) {
@@ -35,8 +36,16 @@ body { margin: 0; background: var(--bg); color: var(--fg); overflow-wrap: break-
 main { max-width: 44rem; margin: 0 auto; padding: 0.5rem 1rem 4rem; }
 a { color: var(--link); text-decoration: none; }
 a:hover { text-decoration: underline; }
+/* Links in note text are underlined: on a phone there is no hover, and colour alone is too faint a cue. */
+main :is(p, li, td, th, dd, blockquote) a:not(.tag) {
+  text-decoration: underline 1px; text-underline-offset: 0.2em;
+  text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
+}
+main ul:is(.folders, .notes, .recent) a { text-decoration: none; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 h1, h2, h3, h4 { line-height: 1.25; margin: 1.4em 0 0.5em; }
 h1 { font-size: 1.7rem; margin-top: 0.6em; }
+main > .sr + h2 { margin-top: 0.6em; }
 h2 { font-size: 1.35rem; }
 h3 { font-size: 1.15rem; }
 img, video, iframe { max-width: 100%; height: auto; }
@@ -51,6 +60,7 @@ header {
 header a, header button {
   padding: 0.5rem 0.6rem; color: var(--fg); font: inherit; font-size: 0.95rem;
 }
+header .site { font-weight: 600; }
 header button {
   margin-left: auto; background: none; border: 1px solid var(--line); border-radius: 6px; cursor: pointer;
 }

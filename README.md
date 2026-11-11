@@ -24,7 +24,7 @@ Tachylite renders the vault into `<out>`, watches it, and serves the site on `ht
 ## Find your way
 
 - The app opens on a home page: the newest notes, then the vault's top folders.
-- Each folder has an index page, and each note links to its folders at the top.
+- Each folder has an index page, and each note links to its folders at the top. Notes whose title starts with an ISO date, such as daily notes, list newest first.
 - Recent lists the 50 newest notes.
 - Find, or Ctrl-K, Cmd-K or `/`, opens a fuzzy switcher over titles, aliases and paths. It works offline.
 

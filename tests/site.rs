@@ -961,6 +961,24 @@ fn a_folder_index_lists_its_children_by_title() {
 }
 
 #[test]
+fn dated_names_list_newest_first_above_the_rest() {
+    let (_, delta) = full(&Mem::with(&[
+        ("d/2026-11-08.md", "a"),
+        ("d/2026-11-10 call.md", "b"),
+        ("d/2026-11-09.md", "c"),
+        ("d/Apple.md", "d"),
+        ("d/2025-01-01/x.md", "e"),
+        ("d/notes/y.md", "f"),
+    ]));
+    let page = html(&delta, ".tachylite/folders/d");
+    let at = |text: &str| page.find(&format!(">{text}</a>")).expect(text);
+    assert!(at("2026-11-10 call") < at("2026-11-09"), "{page}");
+    assert!(at("2026-11-09") < at("2026-11-08"), "{page}");
+    assert!(at("2026-11-08") < at("Apple"), "{page}");
+    assert!(at("2025-01-01") < at("notes"), "{page}");
+}
+
+#[test]
 fn subfolders_sort_ignoring_case() {
     let (_, delta) = full(&Mem::with(&[("Zeta/a.md", "a"), ("alpha/b.md", "b")]));
     let page = html(&delta, "");

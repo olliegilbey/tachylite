@@ -10,12 +10,12 @@ expression: "built(\"people/Jane Doe\")"
 <meta name="color-scheme" content="dark light">
 <link rel="manifest" href="/.tachylite/app.webmanifest">
 <link rel="stylesheet" href="/.tachylite/style.css">
-<meta name="tachylite-version" content="ddf5048d67d8e2f0">
+<meta name="tachylite-version" content="14e551dc0c78db7c">
 <title>Jane Doe</title>
 <script src="/.tachylite/live.js" defer></script>
 </head>
 <body>
-<header><a href="/">Home</a><a href="/.tachylite/recent">Recent</a><button type="button" class="find" title="Find a note (Ctrl-K)">Find</button></header>
+<header><a class="site" href="/">Tachylite</a><a href="/.tachylite/recent">Recent</a><button type="button" class="find" title="Find a note (Ctrl-K)">Find</button></header>
 <main>
 <nav class="crumbs"><a href="/.tachylite/folders/people">people</a></nav>
 <h1 id="jane-doe">Jane Doe</h1>

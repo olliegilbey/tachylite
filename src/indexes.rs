@@ -1,5 +1,7 @@
 //! Index pages: pure builders from lists the site gathers.
 
+use std::cmp::Reverse;
+
 use crate::render::{Page, crumbs, escape, folder_url, shell};
 
 /// A note or html page as an index lists it.
@@ -16,10 +18,30 @@ pub struct Item<'a> {
 pub struct Folder<'a> {
     /// The folder's path; `""` for the root.
     pub path: &'a str,
-    /// The subfolders' paths, sorted.
+    /// The subfolders' paths, in listing order.
     pub folders: Vec<&'a str>,
-    /// The notes and html pages, sorted by title.
+    /// The notes and html pages, in listing order.
     pub items: Vec<Item<'a>>,
+}
+
+/// How a folder listing orders a name: names that start with an ISO date
+/// (`YYYY-MM-DD`) come first, newest first; the rest follow by name, ignoring case.
+pub fn order(name: &str) -> (bool, Reverse<String>, String) {
+    let lower = name.to_lowercase();
+    if dated(name) {
+        (false, Reverse(lower), String::new())
+    } else {
+        (true, Reverse(String::new()), lower)
+    }
+}
+
+fn dated(name: &str) -> bool {
+    let b = name.as_bytes();
+    b.len() >= 10
+        && b[..10].iter().enumerate().all(|(i, c)| match i {
+            4 | 7 => *c == b'-',
+            _ => c.is_ascii_digit(),
+        })
 }
 
 pub const HOME_RECENT: usize = 10;
@@ -72,9 +94,10 @@ fn recent_list(items: &[&Item]) -> String {
     html
 }
 
-/// `/`: the newest notes, then the root folder.
+/// `/`: the newest notes, then the root folder. The header names the site, so the
+/// page's heading is for screen readers only.
 pub fn home(site: &str, recent: &[&Item], root: &Folder) -> Page {
-    let mut main = format!("<h1>{}</h1>\n", escape(site));
+    let mut main = format!("<h1 class=\"sr\">{}</h1>\n", escape(site));
     if !recent.is_empty() {
         main.push_str("<h2>Recent</h2>\n");
         main.push_str(&recent_list(&recent[..recent.len().min(HOME_RECENT)]));

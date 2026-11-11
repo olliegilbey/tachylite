@@ -530,12 +530,14 @@ impl Site {
                 .collect();
             let recent: Vec<&Item> = recent.iter().collect();
             for (path, (subs, mut items)) in tree {
-                items.sort_by_cached_key(|i| (i.title.to_lowercase(), i.url.clone()));
+                items.sort_by_cached_key(|i| (indexes::order(i.title), i.url.clone()));
                 let folder = Folder {
                     path,
                     folders: {
                         let mut folders: Vec<&str> = subs.into_iter().collect();
-                        folders.sort_by_cached_key(|f| (f.to_lowercase(), *f));
+                        folders.sort_by_cached_key(|f| {
+                            (indexes::order(f.rsplit('/').next().unwrap_or(f)), *f)
+                        });
                         folders
                     },
                     items,

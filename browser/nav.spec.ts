@@ -91,7 +91,7 @@ test("the home page opens offline", async ({ page }) => {
   await synced(page, "/a", "/");
   await stop(server!);
   await page.goto(base + "/");
-  await expect(page.locator("main h1")).toHaveText("Tachylite");
+  await expect(page.locator("header a.site")).toHaveText("Tachylite");
   await expect(page.locator("main")).toContainText("Fern care");
 });
 
@@ -103,7 +103,7 @@ test("the header's links and a folder index work", async ({ page }) => {
   await page.locator("header a", { hasText: "Recent" }).click();
   await expect(page).toHaveURL(base + "/.tachylite/recent");
   await expect(page.locator("main ul.recent li")).toHaveCount(3);
-  await page.locator("header a", { hasText: "Home" }).click();
+  await page.locator("header a.site").click();
   await expect(page).toHaveURL(base + "/");
   await expect(page.locator("main ul.folders")).toContainText("garden");
 });
