@@ -6,5 +6,8 @@
   "display": "standalone",
   "background_color": "#000000",
   "theme_color": "#000000",
-  "icons": [{ "src": "/.tachylite/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+  "icons": [
+    { "src": "/.tachylite/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/.tachylite/icon-maskable.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
 }

@@ -329,9 +329,17 @@ fn serves_the_app_manifest_and_icon() {
     assert_eq!(m.status, 200);
     assert_eq!(m.header("content-type"), Some("application/manifest+json"));
     assert!(m.text().contains("\"start_url\": \"/\""), "{}", m.text());
-    let icon = server.get("/.tachylite/icon.svg");
-    assert_eq!(icon.status, 200);
-    assert_eq!(icon.header("content-type"), Some("image/svg+xml"));
+    // Android draws an icon without a maskable entry on a white tile.
+    assert!(
+        m.text().contains("\"purpose\": \"maskable\""),
+        "{}",
+        m.text()
+    );
+    for path in ["/.tachylite/icon.svg", "/.tachylite/icon-maskable.svg"] {
+        let icon = server.get(path);
+        assert_eq!(icon.status, 200, "{path}");
+        assert_eq!(icon.header("content-type"), Some("image/svg+xml"), "{path}");
+    }
 }
 
 #[test]
