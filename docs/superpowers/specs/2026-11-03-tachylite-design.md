@@ -121,9 +121,9 @@ Notes are trusted content, but agents write them, and a prompt-injected agent co
 
 ### Navigation
 
-- Every page shares one shell: a header with Home, Recent and a Find button, then `<main>`. A note page opens with breadcrumbs to its folders' index pages. A push swaps `<main>`, so the crumbs follow a rename.
+- Every page shares one shell: a header with the site name, which links home, Recent and a Find button, then `<main>`. The home page has no heading of its own, so the list starts near the top of a phone screen. A note page opens with breadcrumbs to its folders' index pages. A push swaps `<main>`, so the crumbs follow a rename.
 - `/` is the home page: the 10 most recent notes, a link to all recent notes, then the vault root's folders, notes and html pages.
-- `/.tachylite/folders/<folder>` mirrors one folder: its subfolders, then its notes and html pages, sorted by title, ignoring case.
+- `/.tachylite/folders/<folder>` mirrors one folder: its subfolders, then its notes and html pages. Names that start with an ISO date (`YYYY-MM-DD`) come first, newest first, as daily notes and meeting notes are read newest first. The rest follow by title, ignoring case.
 - `/.tachylite/recent` lists the 50 most recent notes by modified time, each with its folder and date (UTC). Equal times sort by path. `/.tachylite/recent/<folder>` scopes it to a folder, for example a meetings folder.
 - Index pages are derived, not tracked. Every apply rebuilds each index page from the site's state, and writes and pushes only those whose version changed. That is O(notes) per apply, about 4 ms for 2,000 notes on the reference host, and it runs after the changed note's push. It needs no dependency tracking, so a full build and an incremental one cannot disagree.
 - The quick switcher opens on Ctrl-K, Cmd-K, `/` outside a text field, or the Find button. It reads `/.tachylite/notes.json`, one `[title, url, path, alias…]` entry per note. That file is in the manifest, so the switcher works offline. A query matches as a subsequence of a title, an alias or the path. A title match ranks first, then fewer runs, then an earlier start. It shows the top 20, and Enter opens the first.
@@ -144,7 +144,7 @@ A vault already holds todo lists, so Tachylite shows them. It adds no format of 
 
 ### Look and feel
 
-Inspired by Obsidian's reading view and developer admin panels. Dark mode first, with a light theme from `prefers-color-scheme`. The system font stack, and a monospace stack for code. No web fonts, no decoration, no animation beyond instant state changes. Readable on a phone first, then on a desktop browser. Style is a means: the page should be functional and fast, and need little thought.
+Inspired by Obsidian's reading view and developer admin panels. Dark mode first, with a light theme from `prefers-color-scheme`. The dark theme is pure black for OLED screens, with warm text and cream links, as under a blue-light filter. The system font stack, and a monospace stack for code. No web fonts, no decoration, no animation beyond instant state changes. Readable on a phone first, then on a desktop browser. Style is a means: the page should be functional and fast, and need little thought.
 
 ### Search
 

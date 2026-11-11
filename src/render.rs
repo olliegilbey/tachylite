@@ -766,7 +766,7 @@ pub fn shell(title: &str, main: &str) -> Page {
     let after = format!(
         "\">\n<title>{title}</title>\n\
          <script src=\"/.tachylite/live.js\" defer></script>\n</head>\n<body>\n\
-         <header><a href=\"/\">Home</a><a href=\"/.tachylite/recent\">Recent</a>\
+         <header><a class=\"site\" href=\"/\">Tachylite</a><a href=\"/.tachylite/recent\">Recent</a>\
          <button type=\"button\" class=\"find\" title=\"Find a note (Ctrl-K)\">Find</button>\
          </header>\n<main>\n{main}</main>\n</body>\n</html>\n"
     );
