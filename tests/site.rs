@@ -1173,3 +1173,90 @@ fn an_excluded_note_is_on_no_index_page() {
         );
     }
 }
+
+/// A source where some paths cannot be read right now: their events are still to come.
+struct Flaky<'a> {
+    mem: &'a Mem,
+    failing: &'a BTreeMap<String, ReadError>,
+}
+
+impl Source for Flaky<'_> {
+    fn note(&mut self, path: &str) -> Result<Note, ReadError> {
+        match self.failing.get(path) {
+            Some(e) => Err(*e),
+            None => self.mem.clone().note(path),
+        }
+    }
+    fn file(&mut self, path: &str) -> Result<(), ReadError> {
+        match self.failing.get(path) {
+            Some(e) => Err(*e),
+            None => self.mem.clone().file(path),
+        }
+    }
+}
+
+/// `a` embeds `b`. `a` is saved while `b` cannot be read, then `b`'s save lands.
+fn embed_after_failed_read(fail: ReadError, touch_b: bool) -> Delta {
+    let mut mem = Mem::with(&[("a.md", "aye ![[b]]"), ("b.md", "bee one")]);
+    let (mut site, first) = synced(&mut mem, Exclude::default());
+    assert!(html(&first, "a").contains("bee one"));
+    mem.0.insert("a.md".into(), b"aye edited ![[b]]".to_vec());
+    let failing = BTreeMap::from([("b.md".to_string(), fail)]);
+    let mut changes = vec![touch("a.md")];
+    if touch_b {
+        changes.push(touch("b.md"));
+    }
+    site.apply(changes, &mut Flaky { mem: &mem, failing: &failing });
+    mem.0.insert("b.md".into(), b"bee two".to_vec());
+    site.apply(vec![touch("b.md")], &mut mem)
+}
+
+#[test]
+fn an_embed_mid_save_while_its_embedder_renders_still_reaches_it() {
+    let delta = embed_after_failed_read(ReadError::MidSave, true);
+    assert!(html(&delta, "a").contains("bee two"));
+}
+
+#[test]
+fn an_embed_missing_while_its_embedder_renders_still_reaches_it() {
+    let delta = embed_after_failed_read(ReadError::Missing, false);
+    assert!(html(&delta, "a").contains("bee two"));
+}
+
+proptest! {
+    #[test]
+    fn failed_reads_converge_to_the_full_build(
+        ops in prop::collection::vec(
+            (op(), prop::collection::vec((0..PATHS.len(), any::<bool>()), 0..3)),
+            1..20,
+        ),
+    ) {
+        let mut mem = Mem::default();
+        let mut site = Site::new(Exclude::default());
+        let mut out = Out::new();
+        for (op, flux) in &ops {
+            let mut changes = apply_op(&mut mem, op);
+            // A mid-save path has an event in this batch; a missing one does not.
+            let mut failing = BTreeMap::new();
+            for &(p, mid_save) in flux {
+                let path = PATHS[p].to_string();
+                if mid_save {
+                    changes.push(touch(&path));
+                    failing.insert(path, ReadError::MidSave);
+                } else if !changes.contains(&touch(&path)) {
+                    failing.insert(path, ReadError::Missing);
+                }
+            }
+            let delta = site.apply(changes, &mut Flaky { mem: &mem, failing: &failing });
+            fold(&mut out, &delta, &mem);
+            // Each path in flux is then saved, and its event arrives.
+            let follow: Vec<Change> = failing.keys().map(|p| touch(p)).collect();
+            if !follow.is_empty() {
+                let delta = site.apply(follow, &mut mem.clone());
+                fold(&mut out, &delta, &mem);
+            }
+        }
+        let (expected, _) = full(&mem);
+        prop_assert_eq!(&out, &expected);
+    }
+}

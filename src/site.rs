@@ -742,7 +742,8 @@ impl Site {
                 let links = Links {
                     targets: body.targets.into_iter().collect(),
                     unresolved: body.broken.iter().map(|b| key(&b.target)).collect(),
-                    embeds: body.embeds.into_iter().collect(),
+                    // An embed that could not be read is still one: its save re-renders this.
+                    embeds: body.embeds.union(&body.missing).cloned().collect(),
                 };
                 broken.extend(body.broken);
                 if let Some(note) = self.index.get(path) {
