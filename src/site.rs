@@ -681,7 +681,8 @@ impl Site {
         self.tagged.contains_key(tag) || self.nested(tag).next().is_some()
     }
 
-    /// The notes tagged `tag` or a tag under it, each once, in no order.
+    /// The notes tagged `tag` or a tag under it, in no order. A note with two of the tags
+    /// comes twice.
     fn listed(&self, tag: &str) -> impl Iterator<Item = &str> {
         self.tagged
             .get(tag)

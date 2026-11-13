@@ -572,6 +572,19 @@ fn a_fence_line_in_a_comment_never_hides_a_comment_in_code() {
 }
 
 #[test]
+fn a_byte_order_mark_never_hides_a_comment_in_code() {
+    // The parser skips the mark, so it reads indented code and an HTML block the stripper
+    // does not.
+    for md in [
+        "\u{FEFF}    %%d\n\n%%zebra%%\n",
+        "\u{FEFF}<pre>\n```\n</pre>\n```\n%%d\n\n%%zebra%%\n",
+    ] {
+        let html = plain(md);
+        assert!(!html.contains("zebra"), "{md:?}: {html}");
+    }
+}
+
+#[test]
 fn an_html_block_that_ends_at_a_blank_line_keeps_the_note() {
     let html = plain(
         "<details><summary>More</summary>\n\nHidden.\n\n</details>\n\n```\n%%d\n```\n\nx %%zebra%% y",

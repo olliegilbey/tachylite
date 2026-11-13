@@ -700,17 +700,19 @@ fn parsed_in_code(md: &str, openers: &[usize]) -> bool {
 
 /// True when the only code in `md` is fences at column 0, which the stripper reads exactly
 /// as the parser does: no other backtick or tilde, no tab, no four-space run in a line's
-/// indent and container markers, no lone carriage return, and no HTML block that could hold
-/// a fence line. An HTML block that opens with `<!`, `<?`, `<pre`,
+/// indent and container markers, no lone carriage return, no byte-order mark, and no HTML
+/// block that could hold a fence line. An HTML block that opens with `<!`, `<?`, `<pre`,
 /// `<script`, `<style` or `<textarea` may run past a blank line, so it rules the note out.
 /// Any other ends at a blank line, so it holds no fence line when its lines hold no
 /// backtick or tilde.
 fn plain_fences(md: &str) -> bool {
     const RAW: [&str; 6] = ["<!", "<?", "<pre", "<script", "<style", "<textarea"];
-    // A lone `\r` ends a line for the parser but not for this scan.
-    if md
-        .match_indices('\r')
-        .any(|(at, _)| md.as_bytes().get(at + 1) != Some(&b'\n'))
+    // A lone `\r` ends a line for the parser but not for this scan, and the parser skips
+    // a byte-order mark that this scan would read as text.
+    if md.starts_with('\u{FEFF}')
+        || md
+            .match_indices('\r')
+            .any(|(at, _)| md.as_bytes().get(at + 1) != Some(&b'\n'))
     {
         return false;
     }
@@ -1320,6 +1322,8 @@ mod tests {
         "%%",
         "%%",
         "%%d",
+        "\u{FEFF}",
+        "[^1]: ",
         "\n",
         "\n",
         "\n\n",
