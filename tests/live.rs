@@ -605,6 +605,67 @@ fn a_config_save_during_a_config_reload_is_kept() {
     }
 }
 
+/// Saves the config whole, then truncates it and holds it half-written, while the server is
+/// stopped. The server's reload of the first save then reads the half-written file. With
+/// `filler` other files saved between the two, the truncate's events fall past the server's
+/// first read of its queue, so only a check after the config read can see them.
+fn config_read_mid_save_publishes_nothing(filler: usize) {
+    use rustix::fs::inotify::{self, CreateFlags, WatchFlags};
+    let (d, server) = with_notes(&[
+        ("tachylite.toml", "exclude = [\"d\"]\n"),
+        ("d/n.md", "# n"),
+        ("bar.md", "# b0"),
+    ]);
+    let toml = d.vault().join("tachylite.toml");
+    // A leaked page reaches the output folder before any push or manifest names it.
+    let written = inotify::init(CreateFlags::CLOEXEC | CreateFlags::NONBLOCK).unwrap();
+    let mask = WatchFlags::CREATE | WatchFlags::MOVED_TO;
+    inotify::add_watch(&written, d.out().join("pages"), mask).unwrap();
+    let mut hidden = server.subscribe("/d/n", "", None);
+    let mut barrier = server.subscribe("/bar", &version(&server, "/bar"), None);
+    stop(&server);
+    fs::write(&toml, "exclude = [\"d\"]\n").unwrap();
+    for i in 0..filler {
+        fs::write(d.vault().join(format!("f{i:04}.txt")), "x").unwrap();
+    }
+    // A complete TOML file with no keys: read now, it excludes nothing.
+    let half = open_half(&toml, "# exclusions follow\n");
+    resume(&server);
+    fs::write(d.vault().join("bar.md"), "# b1").unwrap();
+    barrier.expect("page");
+    assert_eq!(server.get("/d/n").status, 404, "published mid-save");
+    finish(half, "exclude = [\"d\"]\n");
+    fs::write(d.vault().join("bar.md"), "# b2").unwrap();
+    barrier.expect("page");
+    assert_eq!(server.get("/d/n").status, 404);
+    let mut buf = vec![std::mem::MaybeUninit::<u8>::uninit(); 4096];
+    let mut reader = inotify::Reader::new(&written, &mut buf);
+    loop {
+        match reader.next() {
+            Ok(e) => assert!(
+                e.file_name().is_none_or(|n| n.to_bytes() != b"d"),
+                "wrote the excluded folder to the output mid-save"
+            ),
+            Err(rustix::io::Errno::AGAIN) => break,
+            Err(e) => panic!("{e}"),
+        }
+    }
+    assert!(hidden.next(Duration::ZERO).is_none(), "pushed mid-save");
+    let manifest = fs::read_to_string(d.out().join("files/.tachylite/manifest.json")).unwrap();
+    assert!(!manifest.contains("/d/n"), "{manifest}");
+}
+
+#[test]
+fn a_config_saved_then_truncated_in_one_batch_publishes_nothing() {
+    config_read_mid_save_publishes_nothing(0);
+}
+
+#[test]
+fn a_config_truncated_after_its_reload_was_queued_publishes_nothing() {
+    // Each filler save queues three events of 32 bytes: more than the server reads at once.
+    config_read_mid_save_publishes_nothing(2_000);
+}
+
 #[test]
 fn a_save_earlier_in_the_batch_does_not_publish_a_new_half_note() {
     let (d, server) = with_notes_env(&[("w.md", "# w"), ("bar.md", "# b0")], LONG_HOLD);

@@ -40,6 +40,10 @@ const MASK: WatchFlags = WatchFlags::CLOSE_WRITE
     .union(WatchFlags::DONT_FOLLOW)
     .union(WatchFlags::EXCL_UNLINK);
 
+/// The root also reports each write, so a config read mid-save can be told apart. No other
+/// folder can hold the config, so no other folder pays for the events.
+const ROOT_MASK: WatchFlags = MASK.union(WatchFlags::MODIFY);
+
 /// How long a path stays held as mid-save with no save event. A save by `link()` sends
 /// none, and neither does a note closed before its new folder's watch existed.
 const HOLD: Duration = Duration::from_secs(1);
@@ -56,6 +60,18 @@ struct Event {
     name: Option<OsString>,
 }
 
+/// What a config reload did.
+#[derive(Debug, PartialEq, Eq)]
+enum Reload {
+    /// A new config is in force.
+    Loaded,
+    /// The file is missing or broken, so the previous config stays.
+    Kept,
+    /// The file was written during the read, so the previous config stays until that
+    /// save's own close.
+    MidSave,
+}
+
 pub struct Watcher {
     inotify: OwnedFd,
     /// Watch descriptor to vault-relative folder (`""` is the root).
@@ -69,6 +85,8 @@ pub struct Watcher {
     hold: Duration,
     /// When the first pass since the last derive began.
     since: Option<Instant>,
+    /// Events a config reload read from the queue, still to be applied.
+    pending: Vec<Event>,
 }
 
 fn join(dir: &str, name: &str) -> String {
@@ -139,11 +157,21 @@ impl Watcher {
                 .and_then(|ms| ms.parse().ok())
                 .map_or(HOLD, Duration::from_millis),
             since: None,
+            pending: Vec::new(),
         };
         watcher.watch_tree("")?;
-        // A config saved before the root watch existed sent no event.
-        if watcher.reload_config() {
-            watcher.rewatch(&[""])?;
+        // A config saved before the root watch existed sent no event. One still being saved
+        // may have been read half-written before the watch, so the first sync waits for it.
+        loop {
+            let from = watcher.pending.len();
+            match watcher.reload_config()? {
+                Reload::Loaded => {
+                    watcher.rewatch(&[""])?;
+                    break;
+                }
+                Reload::Kept => break,
+                Reload::MidSave => watcher.await_config_close(from)?,
+            }
         }
         let sync = watcher.sync("")?;
         watcher.apply(vec![sync], HashSet::new())?;
@@ -155,8 +183,15 @@ impl Watcher {
     pub fn run(mut self) -> Error {
         let mut buf = vec![MaybeUninit::<u8>::uninit(); 64 * 1024];
         loop {
-            let result = self.read_batch(&mut buf).and_then(|(events, drained)| {
+            let next = if self.pending.is_empty() {
+                self.read_batch(&mut buf)
+            } else {
+                Ok((std::mem::take(&mut self.pending), false))
+            };
+            let result = next.and_then(|(events, drained)| {
                 let (changes, removed) = self.changes(events)?;
+                // A config reload may have read more events, and they come next.
+                let drained = drained && self.pending.is_empty();
                 let unpublished = self.apply(changes, removed)?;
                 // Index pages wait until no event is queued, so a burst derives them once.
                 // An unpublished page leaves them at once, and a long burst still derives
@@ -233,7 +268,7 @@ impl Watcher {
             if event.flags.contains(ReadFlags::QUEUE_OVERFLOW) {
                 eprintln!("inotify queue overflowed; rescanning the vault");
                 // The lost events may include a save of the config.
-                self.reload_config();
+                self.reload_config()?;
                 return self.resync(removed);
             }
             if event.flags.contains(ReadFlags::IGNORED) {
@@ -259,11 +294,24 @@ impl Watcher {
             let Some(name) = name.to_str() else { continue };
             let path = join(&dir, name);
             if path == config::FILE {
-                // Only a save reloads: mid-save, the file can be missing, and a missing
-                // config would publish what it excludes.
-                reload |= event
+                // Only a save reloads: mid-save, the file can be missing, empty or half
+                // written, and each would publish what it excludes. A write after the save
+                // cancels it, and that write's own close reloads.
+                if event
                     .flags
-                    .intersects(ReadFlags::CLOSE_WRITE | ReadFlags::MOVED_TO);
+                    .intersects(ReadFlags::CLOSE_WRITE | ReadFlags::MOVED_TO)
+                {
+                    reload = true;
+                } else if event
+                    .flags
+                    .intersects(ReadFlags::MODIFY | ReadFlags::CREATE)
+                {
+                    reload = false;
+                }
+                continue;
+            }
+            // Only the config's writes matter; a note's save sends its close.
+            if event.flags.contains(ReadFlags::MODIFY) {
                 continue;
             }
             if event.flags.contains(ReadFlags::ISDIR) {
@@ -298,7 +346,7 @@ impl Watcher {
             }
             paths.insert(path);
         }
-        if reload && self.reload_config() {
+        if reload && self.reload_config()? == Reload::Loaded {
             let resync = self.resync(removed);
             report::unmatched(&self.site.exclude().unmatched());
             return resync;
@@ -346,19 +394,77 @@ impl Watcher {
         Ok((changes, removed))
     }
 
-    /// Rereads `tachylite.toml`. Returns true when a config was read and is now in force. A
-    /// missing, mid-save or broken file keeps the previous config.
-    fn reload_config(&mut self) -> bool {
-        match config::reload(&self.vault) {
+    /// Rereads `tachylite.toml`. A missing, broken or mid-save file keeps the previous config.
+    fn reload_config(&mut self) -> Result<Reload, Error> {
+        let read = config::reload(&self.vault);
+        // The kernel queues IN_MODIFY for each truncate and write as it lands. One queued
+        // after the read means the read may have seen the file empty or half written.
+        if self.config_written()? {
+            return Ok(Reload::MidSave);
+        }
+        match read {
             Ok(Some(config)) => {
                 self.site.set_exclude(config.exclude);
-                true
+                Ok(Reload::Loaded)
             }
-            Ok(None) => false,
+            Ok(None) => Ok(Reload::Kept),
             Err(e) => {
                 eprintln!("{e}; keeping the previous config");
-                false
+                Ok(Reload::Kept)
             }
+        }
+    }
+
+    /// Moves every queued event to `pending`, and says whether one is a write to the config,
+    /// or a lost event that could be one.
+    fn config_written(&mut self) -> Result<bool, Error> {
+        let from = self.pending.len();
+        let mut buf = vec![MaybeUninit::<u8>::uninit(); 4096];
+        loop {
+            let (events, drained) = self.read_batch(&mut buf)?;
+            self.pending.extend(events);
+            if drained {
+                break;
+            }
+        }
+        let written =
+            ReadFlags::MODIFY | ReadFlags::CREATE | ReadFlags::CLOSE_WRITE | ReadFlags::MOVED_TO;
+        Ok(self.pending[from..].iter().any(|e| {
+            e.flags.contains(ReadFlags::QUEUE_OVERFLOW)
+                || (e.flags.intersects(written) && self.names_config(e))
+        }))
+    }
+
+    fn names_config(&self, event: &Event) -> bool {
+        event.name.as_deref() == Some(config::FILE.as_ref())
+            && self.dirs.get(&event.wd).is_some_and(String::is_empty)
+    }
+
+    /// Waits until the config's last event since `pending[from]` closes or removes it, or the
+    /// queue overflows. Only start-up waits: with no config yet in force, it has none to keep.
+    fn await_config_close(&mut self, from: usize) -> Result<(), Error> {
+        eprintln!(
+            "{} is being saved; waiting for the save to finish",
+            config::FILE
+        );
+        let closed = ReadFlags::CLOSE_WRITE
+            | ReadFlags::MOVED_TO
+            | ReadFlags::DELETE
+            | ReadFlags::MOVED_FROM;
+        loop {
+            let since = &self.pending[from..];
+            let last = since.iter().rev().find(|e| self.names_config(e));
+            if last.is_some_and(|e| e.flags.intersects(closed))
+                || since
+                    .iter()
+                    .any(|e| e.flags.contains(ReadFlags::QUEUE_OVERFLOW))
+            {
+                return Ok(());
+            }
+            self.wait()?;
+            let mut buf = vec![MaybeUninit::<u8>::uninit(); 4096];
+            let (events, _) = self.read_batch(&mut buf)?;
+            self.pending.extend(events);
         }
     }
 
@@ -423,7 +529,8 @@ impl Watcher {
     /// or cannot be read is left to the scan to report.
     fn watch_tree(&mut self, rel: &str) -> Result<(), Error> {
         let path = self.vault.root().join(rel);
-        match inotify::add_watch(&self.inotify, &path, MASK) {
+        let mask = if rel.is_empty() { ROOT_MASK } else { MASK };
+        match inotify::add_watch(&self.inotify, &path, mask) {
             Ok(wd) => {
                 self.dirs.insert(wd, rel.to_string());
             }
@@ -553,6 +660,17 @@ mod tests {
     }
 
     #[test]
+    fn a_write_to_a_root_note_waits_for_its_close() {
+        let (_tmp, vault) = vault();
+        let mut watcher = watcher(&vault);
+        let root = wd(&watcher, "");
+        let (changes, _) = watcher
+            .changes(vec![event(root, ReadFlags::MODIFY, "n.md")])
+            .unwrap();
+        assert_eq!(changes, []);
+    }
+
+    #[test]
     fn new_times_on_a_watched_folder_change_nothing() {
         let (_tmp, vault) = vault();
         fs::create_dir(vault.join("d")).unwrap();
@@ -581,6 +699,25 @@ mod tests {
         watcher.changes(events).unwrap();
         assert!(watcher.held.contains_key("a/new/n.md"));
         assert!(!watcher.held.contains_key("a/x.md"));
+    }
+
+    #[test]
+    fn a_config_written_during_its_read_is_kept_until_its_save_closes() {
+        use std::io::Write;
+        let (_tmp, vault) = vault();
+        fs::write(vault.join(config::FILE), "exclude = [\"d\"]\n").unwrap();
+        let mut watcher = watcher(&vault);
+        let mut file = fs::File::create(vault.join(config::FILE)).unwrap();
+        file.write_all(b"# half\n").unwrap();
+        let from = watcher.pending.len();
+        assert_eq!(watcher.reload_config().unwrap(), Reload::MidSave);
+        assert!(watcher.site.exclude().path("d/n.md"));
+        file.write_all(b"exclude = [\"e\"]\n").unwrap();
+        drop(file);
+        // Returns at once: the save's close is queued.
+        watcher.await_config_close(from).unwrap();
+        assert_eq!(watcher.reload_config().unwrap(), Reload::Loaded);
+        assert!(watcher.site.exclude().path("e/n.md"));
     }
 
     #[test]
