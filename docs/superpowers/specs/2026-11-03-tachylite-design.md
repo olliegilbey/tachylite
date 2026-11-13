@@ -69,7 +69,7 @@ One binary, `tachylite`. It runs as a long-lived process:
 4. Push the new HTML of each changed page to subscribed clients over SSE.
 5. Serve the output directory and the SSE endpoint over HTTP on `127.0.0.1`.
 
-The binary serves the files itself, so it controls compression, `ETag` and `Cache-Control`. It gzips each text response as it sends it, up to 256 KB for a vault file; a larger one streams as stored. The service worker fetches a page once per change, so precompressing would save no CPU. Brotli is left out: it adds 1.1 MB to the binary and saves about 120 B on a typical page. Every response is `no-cache` with an `ETag`, so a revalidation is a 304. A page's tag hashes its content. A vault file's tag comes from its size, mtime and inode, so its 304 reads no bytes, and its body streams in chunks off the thread that sends pushes. Tailscale proxies one local port.
+The binary serves the files itself, so it controls compression, `ETag` and `Cache-Control`. It gzips each text response as it sends it, up to 256 KB for a vault file; a larger one streams as stored. The service worker fetches a page once per change, so precompressing would save no CPU. Brotli is left out: it adds 1.1 MB to the binary and saves about 120 B on a typical page. Every response is `no-cache` with an `ETag`, so a revalidation is a 304. A page's tag hashes its content. A vault file's tag comes from its size and mtime, which the copy keeps from its source, so the tag holds across restarts and its 304 reads no bytes, and its body streams in chunks off the thread that sends pushes. Tailscale proxies one local port.
 
 `tachylite build <vault> <out>` runs a single build and exits, for tests and CI.
 

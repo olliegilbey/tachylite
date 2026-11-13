@@ -79,7 +79,10 @@ impl<'a, F: FnMut(Push)> Writer<'a, F> {
         match self.vault.open_file(from) {
             Ok(mut file) => write_via_tmp(&self.out.join(rel), |tmp| {
                 let mut to = fs::File::create(tmp)?;
-                io::copy(&mut file, &mut to).map(|_| ())
+                io::copy(&mut file, &mut to)?;
+                // The asset's ETag is built from size and mtime, so the copy keeps the
+                // source's mtime and its tag holds across restarts.
+                to.set_modified(file.metadata()?.modified()?)
             }),
             // The source vanished; the watcher reports the removal next.
             Err(ReadError::Missing | ReadError::MidSave) => Ok(()),

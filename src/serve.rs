@@ -213,7 +213,7 @@ async fn file(
             Err(e) => io_status(&e),
         };
     }
-    let mut response = vault_file(&path, &headers);
+    let mut response = vault_file(&path, &headers).await;
     if content_type(&path) != "application/pdf" {
         response.headers_mut().insert(
             header::CONTENT_SECURITY_POLICY,
@@ -234,29 +234,32 @@ fn io_status(e: &io::Error) -> Response {
 const GZIP_MAX: u64 = 256 * 1024;
 const CHUNK: usize = 128 * 1024;
 
-/// An html page or an asset, copied from the vault. Its tag comes from the file's metadata,
-/// so a 304 reads no bytes, and its body streams. A copy is renamed into place, so each one
-/// has a new inode, even within one mtime tick.
-fn vault_file(path: &Path, headers: &HeaderMap) -> Response {
+/// An html page or an asset, copied from the vault. Its tag comes from the file's size and
+/// mtime, which the copy takes from its source, so a 304 reads no bytes and the tag holds
+/// across restarts. The body is read off the runtime thread.
+async fn vault_file(path: &Path, headers: &HeaderMap) -> Response {
     let opened = fs::File::open(path).and_then(|f| f.metadata().map(|m| (f, m)));
     let (mut file, meta) = match opened {
         Ok(opened) => opened,
         Err(e) => return io_status(&e),
     };
     let tag = format!(
-        "W/\"{:x}-{:x}.{:x}-{:x}\"",
+        "W/\"{:x}-{:x}.{:x}\"",
         meta.len(),
         meta.mtime(),
-        meta.mtime_nsec(),
-        meta.ino()
+        meta.mtime_nsec()
     );
     let kind = content_type(path);
     let text = compressible(kind);
     let response = if matches(headers, &tag) {
         not_modified()
     } else if text && meta.len() <= GZIP_MAX && accepts_gzip(headers) {
-        let mut bytes = Vec::new();
-        match file.read_to_end(&mut bytes).and_then(|_| gzip(&bytes)) {
+        let zipped = blocking(move || {
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes)?;
+            gzip(&bytes)
+        });
+        match zipped.await {
             Ok(zipped) => gzipped(Body::from(zipped)),
             Err(e) => return io_status(&e),
         }
@@ -269,11 +272,20 @@ fn vault_file(path: &Path, headers: &HeaderMap) -> Response {
     tagged(response, kind, &tag)
 }
 
+/// Runs `work` on the blocking pool, so it never delays a push.
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> io::Result<T> + Send + 'static,
+) -> io::Result<T> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(io::Error::other)?
+}
+
 /// The file's bytes, read off the runtime thread a chunk at a time, so a large asset holds
 /// no more than a chunk and never stalls a push.
 fn chunks(file: fs::File) -> Body {
     Body::from_stream(stream::try_unfold(file, |mut file| async move {
-        let (file, chunk) = tokio::task::spawn_blocking(move || {
+        let (file, chunk) = blocking(move || {
             let mut chunk = vec![0; CHUNK];
             let n = loop {
                 match file.read(&mut chunk) {
@@ -282,10 +294,9 @@ fn chunks(file: fs::File) -> Body {
                 }
             };
             chunk.truncate(n);
-            Ok::<_, io::Error>((file, chunk))
+            Ok((file, chunk))
         })
-        .await
-        .map_err(io::Error::other)??;
+        .await?;
         Ok::<_, io::Error>((!chunk.is_empty()).then(|| (Bytes::from(chunk), file)))
     }))
 }
@@ -420,9 +431,13 @@ async fn mermaid_js(headers: HeaderMap) -> Response {
         gzipped(Body::from(MERMAID_JS_GZ))
     } else {
         // Every browser takes gzip; this serves a client that refuses it.
-        let mut plain = Vec::new();
-        match flate2::read::GzDecoder::new(MERMAID_JS_GZ).read_to_end(&mut plain) {
-            Ok(_) => Response::new(Body::from(plain)),
+        let plain = blocking(|| {
+            let mut plain = Vec::new();
+            flate2::read::GzDecoder::new(MERMAID_JS_GZ).read_to_end(&mut plain)?;
+            Ok(plain)
+        });
+        match plain.await {
+            Ok(plain) => Response::new(Body::from(plain)),
             Err(e) => return io_status(&e),
         }
     };

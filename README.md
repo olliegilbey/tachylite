@@ -93,7 +93,7 @@ exclude = ["private", "journal/*.md", "**/draft-*.md"]
 - Dot names, `target/` and `node_modules/` are always hidden.
 - An excluded note is gone from every output. A link to it shows as a broken link, the same as a link to a note that does not exist.
 - `exclude` goes above any `[table]` header. An unknown key, or `exclude` inside a table, is an error, so a typo stops the build rather than publish the notes.
-- Each pattern that matches no path is logged at start, since it is likely a typo.
+- A pattern that starts or ends with a space is an error. Each pattern that matches no published path is logged at start and on each save, since it is likely a typo.
 - A saved edit to `tachylite.toml` takes effect at once. If the edit does not parse, Tachylite logs the error and keeps the previous config. Deleting the file keeps its exclusions until the next start.
 
 ## Who it is for

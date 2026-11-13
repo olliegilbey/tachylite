@@ -28,7 +28,7 @@ pub fn reason(reason: SkipReason) -> String {
 pub fn unmatched<S: AsRef<str>>(patterns: &[S]) {
     for pattern in patterns {
         let pattern = pattern.as_ref();
-        eprintln!("exclude {pattern:?} matched no path; check it for a typo");
+        eprintln!("exclude {pattern:?} matched no published path; check it for a typo");
     }
 }
 

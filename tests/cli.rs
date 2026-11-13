@@ -105,6 +105,7 @@ fn a_misplaced_or_mistyped_exclude_stops_the_build_with_one_line() {
         "excludes = [\"private\"]\n",
         "[daily]\nfolder = \"journal\"\n\nexclude = [\"private\"]\n",
         "exclude = [\"../vault/private\"]\n",
+        "exclude = [\" private\"]\n",
     ] {
         let (run, dir) = build_with_config(config);
         assert_eq!(run.status.code(), Some(1), "{config}");
@@ -117,11 +118,11 @@ fn a_misplaced_or_mistyped_exclude_stops_the_build_with_one_line() {
 
 #[test]
 fn an_exclude_pattern_that_matches_nothing_is_named() {
-    let (run, dir) = build_with_config("exclude = [\"private\", \" private\", \"*.md\"]\n");
+    let (run, dir) = build_with_config("exclude = [\"private\", \"privte\", \"*.md\"]\n");
     assert_eq!(run.status.code(), Some(0));
     let stderr = String::from_utf8_lossy(&run.stderr);
     assert!(
-        stderr.contains("exclude \" private\" matched no path"),
+        stderr.contains("exclude \"privte\" matched no published path"),
         "{stderr}"
     );
     assert!(!stderr.contains("exclude \"private\" matched"), "{stderr}");

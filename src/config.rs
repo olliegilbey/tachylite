@@ -44,6 +44,8 @@ pub enum ConfigError {
     EmptyGlob(String),
     /// A pattern with a `..` segment, which no vault path has.
     ParentGlob(String),
+    /// A pattern that starts or ends with whitespace, almost always a typo.
+    SpacedGlob(String),
 }
 
 impl fmt::Display for ConfigError {
@@ -64,6 +66,9 @@ impl fmt::Display for ConfigError {
             ConfigError::BadGlob { glob, message } => write!(f, "exclude {glob:?}: {message}"),
             ConfigError::EmptyGlob(glob) => {
                 write!(f, "exclude {glob:?}: names no file or folder")
+            }
+            ConfigError::SpacedGlob(glob) => {
+                write!(f, "exclude {glob:?}: starts or ends with a space")
             }
             ConfigError::ParentGlob(glob) => {
                 write!(
@@ -94,6 +99,9 @@ impl Exclude {
         let globs = globs
             .iter()
             .map(|g| {
+                if g.trim() != g {
+                    return Err(ConfigError::SpacedGlob(g.clone()));
+                }
                 // Gitignore habits: `/private`, `./private` and `private/` all name the folder.
                 let bare = g
                     .strip_prefix("./")
@@ -131,19 +139,23 @@ impl Exclude {
             return true;
         }
         let prefixes = rel.match_indices('/').map(|(i, _)| &rel[..i]);
-        prefixes.chain([rel]).any(|p| {
-            self.globs.iter().any(|g| {
-                let hit = g.pattern.matches_with(p, MATCH);
-                if hit {
+        let mut excluded = false;
+        // Every glob is tried on every prefix, with no early exit, so a correct pattern
+        // that overlaps another is not reported as unmatched.
+        for p in prefixes.chain([rel]) {
+            for g in &self.globs {
+                if g.pattern.matches_with(p, MATCH) {
                     g.hit.store(true, Ordering::Relaxed);
+                    excluded = true;
                 }
-                hit
-            })
-        })
+            }
+        }
+        excluded
     }
 
     /// The patterns, as written, that have matched no path so far. After a full scan, each one
-    /// is likely a typo.
+    /// is likely a typo. The scan enters no excluded folder, so a pattern inside one counts
+    /// as unmatched too.
     pub fn unmatched(&self) -> Vec<&str> {
         self.globs
             .iter()

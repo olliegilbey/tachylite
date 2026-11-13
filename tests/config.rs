@@ -132,8 +132,22 @@ fn a_pattern_with_a_parent_segment_is_an_error() {
 
 #[test]
 fn a_pattern_that_matched_nothing_is_named() {
-    let e = with(&["private", " private"]);
+    let e = with(&["private", "privte", "private/a.md"]);
     assert!(e.path("private/a.md"));
     assert!(!e.path("public/a.md"));
-    assert_eq!(e.unmatched(), vec![" private"]);
+    // An overlapping pattern still counts as matched.
+    assert_eq!(e.unmatched(), vec!["privte"]);
+}
+
+#[test]
+fn a_pattern_with_outer_space_is_an_error() {
+    for glob in [" private", "private ", "\tprivate"] {
+        assert!(
+            matches!(
+                Exclude::new(&[glob.to_string()]),
+                Err(ConfigError::SpacedGlob(_))
+            ),
+            "{glob:?}"
+        );
+    }
 }

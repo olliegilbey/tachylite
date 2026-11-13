@@ -669,3 +669,36 @@ fn a_deleted_output_stops_the_server_with_a_clear_error() {
         "the server recreated a bare output"
     );
 }
+
+#[test]
+fn an_asset_keeps_its_tag_across_a_restart() {
+    let d = Dirs::fixture();
+    let first = Server::start(&d.vault(), &d.out());
+    let etag = first
+        .get("/img/dot.png")
+        .header("etag")
+        .unwrap()
+        .to_string();
+    drop(first);
+    let second = Server::start(&d.vault(), &d.out());
+    let again = get(second.addr, "/img/dot.png", &[("If-None-Match", &etag)]);
+    assert_eq!(
+        again.status, 304,
+        "a restart made every phone fetch the asset again"
+    );
+}
+
+#[test]
+fn a_live_config_save_names_an_unmatched_pattern() {
+    let d = Dirs::fixture();
+    let server = Server::start(&d.vault(), &d.out());
+    fs::write(d.vault().join("tachylite.toml"), "exclude = [\"peple\"]\n").unwrap();
+    let line = server.wait_line(
+        |l| l.contains("matched no published path"),
+        std::time::Duration::from_secs(10),
+    );
+    assert_eq!(
+        line.as_deref(),
+        Some("exclude \"peple\" matched no published path; check it for a typo")
+    );
+}
