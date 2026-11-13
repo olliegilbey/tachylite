@@ -223,6 +223,8 @@ fn embed(
             };
             let markdown = String::from_utf8_lossy(bytes);
             seen.insert(target.to_string());
+            // `seen` grows by one per embed, so its size numbers the embeds on the page.
+            let prefix = format!("e{}.", seen.len() - 1);
             let inner = render(&target, &markdown, index, sources, (depth + 1, seen));
             body.missing.extend(inner.missing);
             let title = front::meta(&markdown)
@@ -233,13 +235,21 @@ fn embed(
             Embed::Block(format!(
                 "<div class=\"embed\"><a class=\"embed-link\" href=\"{src}\">{}</a>\n{}</div>\n",
                 escape(&title),
-                inner.html
+                scope_ids(&inner.html, &prefix)
             ))
         }
         _ => return link(body),
     };
     body.targets.insert(target);
     html
+}
+
+/// An embedded body with `prefix` on every id and on every link within the page, so its
+/// heading and footnote ids cannot collide with the host's. Heading slugs never hold a `.`.
+/// Text and code escape their quotes, so only a tag holds `id="` or `href="#`.
+fn scope_ids(html: &str, prefix: &str) -> String {
+    html.replace(" id=\"", &format!(" id=\"{prefix}"))
+        .replace(" href=\"#", &format!(" href=\"#{prefix}"))
 }
 
 /// The notes `markdown`'s embeds may read, without parsing it. It over-matches, in code
@@ -277,12 +287,17 @@ fn tag_link(tag: &str) -> String {
     )
 }
 
-/// One property value: a tag, a lone `[[link]]`, or text.
+/// One property value: tags, a lone `[[link]]`, or text. `tags: a, b` holds two tags.
 fn property(body: &mut Body, from: &str, index: &Index, key: &str, value: &str) -> String {
     if key == "tags" {
-        let tag = value.trim().trim_start_matches('#');
-        if !tag.is_empty() {
-            return tag_link(tag);
+        let tags: Vec<String> = value
+            .split(',')
+            .map(|t| t.trim().trim_start_matches('#'))
+            .filter(|t| !t.is_empty())
+            .map(tag_link)
+            .collect();
+        if !tags.is_empty() {
+            return tags.join(", ");
         }
     }
     if front::one_link(value) {
@@ -309,6 +324,7 @@ fn properties(body: &mut Body, from: &str, yaml: &str, index: &Index) -> String 
             Value::List(items) => {
                 let items: Vec<String> = items
                     .iter()
+                    .filter(|item| !item.trim().is_empty())
                     .map(|item| property(body, from, index, &key, item))
                     .collect();
                 html.push_str(&items.join(", "));
@@ -320,9 +336,9 @@ fn properties(body: &mut Body, from: &str, yaml: &str, index: &Index) -> String 
     html
 }
 
-/// Renders a note's Markdown and resolves its links against the published paths.
-/// Renders a note's body. `sources` holds the notes its embeds may read; an embed of a note
-/// missing from it renders as a link.
+/// Renders a note's body and resolves its links against the published paths. `sources`
+/// holds the notes its embeds may read; an embed of a note missing from it renders as a
+/// link.
 pub fn render_body(from: &str, markdown: &str, index: &Index, sources: &Sources) -> Body {
     let mut seen = HashSet::from([from.to_string()]);
     render(from, markdown, index, sources, (0, &mut seen))
@@ -335,8 +351,12 @@ fn render(
     sources: &Sources,
     (depth, seen): (usize, &mut HashSet<String>),
 ) -> Body {
-    let (yaml, markdown) = front::split(markdown);
-    let markdown = strip_comments(markdown);
+    let (yaml, raw) = front::split(markdown);
+    let Stripped {
+        text: markdown,
+        unclosed,
+        openers,
+    } = strip_comments(raw);
     let mut body = Body::default();
     // An embedded note shows its body only.
     let props = match yaml {
@@ -345,10 +365,12 @@ fn render(
     };
     let arena = Arena::new();
     let options = options();
+    // Before the main parse, so the two trees are never in memory at once.
+    let shifted = opened_in_code(raw, &openers);
     let root = parse_document(&arena, &markdown, &options);
     // The stripper and the parser disagree on what is code. Withhold the text rather than
     // risk a comment.
-    if markdown.contains("%%") && unstripped(root) {
+    if shifted || (markdown.contains("%%") && unstripped(root)) {
         body.html = "<p class=\"comment-error\">This note has a comment Tachylite could not \
                      place, so its text is withheld.</p>\n"
             .to_string();
@@ -421,6 +443,9 @@ fn render(
                 let (path, heading) = split(&link.url);
                 decode(path).map(|path| (path, heading.and_then(decode)))
             }
+            NodeValue::Link(link) if link.url.starts_with('#') && link.url.len() > 1 => {
+                decode(&link.url[1..]).map(|heading| (String::new(), Some(heading)))
+            }
             _ => None,
         };
         let Some((path, heading)) = link else {
@@ -469,15 +494,20 @@ fn render(
         ) {
             Embed::Inline(html) => replace(&arena, node, html),
             Embed::Block(html) => {
-                let parent = node.parent().filter(|p| {
-                    matches!(p.data().value, NodeValue::Paragraph)
-                        && p.first_child().is_some_and(|c| c.same_node(node))
-                        && p.last_child().is_some_and(|c| c.same_node(node))
-                });
-                replace(&arena, parent.unwrap_or(node), html);
+                match node
+                    .parent()
+                    .filter(|p| matches!(p.data().value, NodeValue::Paragraph))
+                {
+                    Some(paragraph) => split_paragraph(&arena, paragraph, node, html),
+                    None => replace(&arena, node, html),
+                }
             }
             Embed::Link(open) => wrap(&arena, node, open, "</a>".to_string()),
         }
+    }
+    // Before the heading wrap, which gives a heading's first text a sibling.
+    for node in texts {
+        link_tags(&arena, node);
     }
     for (node, level, id) in headings {
         wrap(
@@ -487,9 +517,6 @@ fn render(
             format!("</h{level}>\n"),
         );
     }
-    for node in texts {
-        link_tags(&arena, node);
-    }
     let mut html = props;
     let mut plugins = Plugins::default();
     plugins
@@ -498,6 +525,12 @@ fn render(
         .insert("mermaid".to_string(), &Mermaid);
     // Writing into a String cannot fail.
     let _ = format_html_with_plugins(root, &options, &mut html, &plugins);
+    if unclosed {
+        html.push_str(
+            "<p class=\"comment-error\">A comment in this note is not closed, so the text \
+             after it is hidden.</p>\n",
+        );
+    }
     body.html = html;
     body
 }
@@ -507,11 +540,10 @@ fn render(
 fn tags(text: &str, at_start: bool) -> Vec<(usize, usize)> {
     let mut found = Vec::new();
     let mut prev: Option<char> = None;
-    let mut skip_to = 0;
     for (i, c) in text.char_indices() {
         let boundary = prev.map_or(at_start, char::is_whitespace);
         prev = Some(c);
-        if c != '#' || i < skip_to || !boundary {
+        if c != '#' || !boundary {
             continue;
         }
         let rest = &text[i + 1..];
@@ -521,7 +553,6 @@ fn tags(text: &str, at_start: bool) -> Vec<(usize, usize)> {
         let tag = rest[..len].trim_end_matches('/');
         if tag.chars().any(|c| !c.is_ascii_digit()) {
             found.push((i, i + 1 + tag.len()));
-            skip_to = i + 1 + tag.len();
         }
     }
     found
@@ -555,14 +586,180 @@ fn link_tags<'a>(arena: &'a Arena<'a>, node: &'a AstNode<'a>) {
     node.detach();
 }
 
-/// True when parsed text outside code still holds `%%`.
+/// True when any node outside code still holds `%%`: text, raw HTML, a link's URL or title,
+/// a footnote name, a fence's info string or a callout's type.
 fn unstripped<'a>(root: &'a AstNode<'a>) -> bool {
-    root.descendants()
-        .any(|n| matches!(&n.data().value, NodeValue::Text(t) if t.contains("%%")))
+    let has = |s: &str| s.contains("%%");
+    root.descendants().any(|n| match &n.data().value {
+        NodeValue::Text(t) => has(t),
+        // `\\%%` parses as an escaped `%` before a text that starts with `%`.
+        NodeValue::Escaped => {
+            n.collect_text() == "%"
+                && n.next_sibling().is_some_and(
+                    |s| matches!(&s.data().value, NodeValue::Text(t) if t.starts_with('%')),
+                )
+        }
+        NodeValue::HtmlInline(s) | NodeValue::Raw(s) => has(s),
+        NodeValue::HtmlBlock(b) => has(&b.literal),
+        NodeValue::Link(l) | NodeValue::Image(l) => has(&l.url) || has(&l.title),
+        NodeValue::WikiLink(l) => has(&l.url),
+        NodeValue::FootnoteDefinition(f) => has(&f.name),
+        NodeValue::FootnoteReference(f) => has(&f.name),
+        NodeValue::CodeBlock(c) => has(&c.info),
+        NodeValue::Callout(c) => has(&c.callout_type) || c.metadata.as_deref().is_some_and(has),
+        _ => false,
+    })
 }
 
-/// The fence a line opens, after container markers: its character and length.
-fn fence_open(line: &str) -> Option<(u8, usize)> {
+/// True when the parser reads any of `openers`, the byte offsets where the stripper opened
+/// a comment, as code. The stripper then took code for text, and its `%%` pairs may have
+/// shifted, which would publish a comment's text with no `%%` left to find. Each opener
+/// becomes a mark the parser treats as plain text, as it does `%%`, so code ends where it
+/// did. comrak's inline source positions drift after a link title that spans lines, so
+/// the mark, not a position, says where each opener landed.
+fn opened_in_code(md: &str, openers: &[usize]) -> bool {
+    const MARK: &str = "\u{E000}\u{E000}";
+    let Some(&last) = openers.last() else {
+        return false;
+    };
+    if plain_fences(&md[..last]) {
+        return false;
+    }
+    let mut marked = String::with_capacity(md.len() + openers.len() * 4);
+    let mut last = 0;
+    for &at in openers {
+        marked.push_str(&md[last..at]);
+        marked.push_str(MARK);
+        last = at + 2;
+    }
+    marked.push_str(&md[last..]);
+    let arena = Arena::new();
+    let root = parse_document(&arena, &marked, &options());
+    root.descendants().any(|n| match &n.data().value {
+        NodeValue::Code(code) => code.literal.contains(MARK),
+        NodeValue::CodeBlock(block) => block.literal.contains(MARK) || block.info.contains(MARK),
+        _ => false,
+    })
+}
+
+/// True when the only code in `md` is fences at column 0, which the stripper reads exactly
+/// as the parser does: no other backtick or tilde, no tab, no four-space run, and no HTML
+/// block.
+fn plain_fences(md: &str) -> bool {
+    let mut fence = None;
+    for line in md.split_inclusive('\n') {
+        let bytes = line.as_bytes();
+        let run = |c: u8| bytes.iter().take_while(|&&b| b == c).count();
+        if let Some((c, n)) = fence {
+            if run(c) >= n && line[run(c)..].trim().is_empty() {
+                fence = None;
+            }
+            continue;
+        }
+        if let Some(&c @ (b'`' | b'~')) = bytes.first()
+            && run(c) >= 3
+            && !(c == b'`' && line[run(c)..].contains('`'))
+        {
+            fence = Some((c, run(c)));
+            continue;
+        }
+        if line.contains(['`', '~', '\t'])
+            || line.contains("    ")
+            || line.trim_start_matches(' ').starts_with('<')
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// The column after `prefix`, with tab stops every 4 columns.
+fn columns(prefix: &str) -> usize {
+    prefix.bytes().fold(0, |col, b| match b {
+        b'\t' => col + 4 - col % 4,
+        _ => col + 1,
+    })
+}
+
+/// A line's quote depth, the column its quote content starts at, and the byte offset and
+/// column of its first character after the quote markers and indentation.
+fn quotes(line: &str) -> (usize, usize, usize, usize) {
+    let bytes = line.as_bytes();
+    let (mut depth, mut base, mut i) = (0, 0, 0);
+    loop {
+        while matches!(bytes.get(i), Some(b' ' | b'\t')) {
+            i += 1;
+        }
+        // Four columns of indent make code, not a quote marker.
+        if bytes.get(i) != Some(&b'>') || columns(&line[..i]) - base > 3 {
+            return (depth, base, i, columns(&line[..i]));
+        }
+        depth += 1;
+        i += 1;
+        if bytes.get(i) == Some(&b' ') {
+            i += 1;
+        }
+        base = columns(&line[..i]);
+    }
+}
+
+/// The column where a list item's content starts, when `line[at..]` opens one, and whether
+/// it holds text. A list marker followed by 5 or more spaces holds indented code; its content
+/// column is then one past the marker.
+fn list_item(line: &str, at: usize) -> Option<(usize, bool, bool)> {
+    let rest = &line[at..];
+    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+    let marker = if digits > 0 {
+        (digits <= 9 && rest[digits..].starts_with(['.', ')'])).then_some(digits + 1)?
+    } else {
+        rest.starts_with(['-', '*', '+']).then_some(1)?
+    };
+    let after = &rest[marker..];
+    if !(after.is_empty() || after.starts_with([' ', '\t', '\n', '\r'])) {
+        return None;
+    }
+    let end = at + marker;
+    let spaces = after.len() - after.trim_start_matches([' ', '\t']).len();
+    let text = !after.trim().is_empty();
+    let pad = columns(&line[..end + spaces]) - columns(&line[..end]);
+    let content = if (1..=4).contains(&pad) && text {
+        columns(&line[..end + spaces])
+    } else {
+        columns(&line[..end]) + 1
+    };
+    let one = digits == 0 || rest[..digits].trim_start_matches('0') == "1";
+    Some((content, text, one))
+}
+
+/// `---`, `***` or `___`, three or more, spaces allowed between.
+fn thematic(rest: &str) -> bool {
+    let rest = rest.trim();
+    let Some(c) = rest.chars().next().filter(|c| matches!(c, '-' | '*' | '_')) else {
+        return false;
+    };
+    rest.chars().all(|x| x == c || x == ' ' || x == '\t') && rest.matches(c).count() >= 3
+}
+
+/// True when a line of output continues a paragraph, so that an indented line after it is
+/// text, not code. It errs to false, which reads more as code.
+fn paragraph_line(line: &str) -> bool {
+    let rest = strip_containers(line).trim_end();
+    !rest.is_empty()
+        && !atx(rest)
+        && !rest.starts_with('<')
+        && !rest.contains('|')
+        && !thematic(rest)
+        && !rest
+            .bytes()
+            .all(|b| matches!(b, b'=' | b'-' | b' ' | b'\t'))
+}
+
+/// A fence: its character, its length and the column it opens at.
+#[derive(Clone, Copy)]
+struct Fence(u8, usize, usize);
+
+/// The fence a line opens, after container markers.
+fn fence_open(line: &str) -> Option<Fence> {
     let rest = strip_containers(line);
     let c = *rest.as_bytes().first()?;
     if c != b'`' && c != b'~' {
@@ -570,19 +767,22 @@ fn fence_open(line: &str) -> Option<(u8, usize)> {
     }
     let n = rest.bytes().take_while(|&b| b == c).count();
     let info = &rest[n..];
-    (n >= 3 && !(c == b'`' && info.contains('`'))).then_some((c, n))
+    let col = columns(&line[..line.len() - rest.len()]);
+    (n >= 3 && !(c == b'`' && info.contains('`'))).then_some(Fence(c, n, col))
 }
 
-fn fence_close(line: &str, (c, n): (u8, usize)) -> bool {
+/// A closing fence is no more indented than its opening one. A deeper run of the fence
+/// character is the fence's content, as CommonMark allows a closer at most 3 columns in.
+fn fence_close(line: &str, Fence(c, n, col): Fence) -> bool {
     let rest = strip_containers(line);
     let run = rest.bytes().take_while(|&b| b == c).count();
-    run >= n && rest[run..].trim().is_empty()
+    run >= n && rest[run..].trim().is_empty() && columns(&line[..line.len() - rest.len()]) <= col
 }
 
 /// A line without its leading whitespace, quote markers and list markers.
 fn strip_containers(mut line: &str) -> &str {
     loop {
-        let trimmed = line.trim_start();
+        let trimmed = line.trim_start_matches([' ', '\t']);
         let marker = trimmed.strip_prefix('>').or_else(|| {
             let digits = trimmed.bytes().take_while(u8::is_ascii_digit).count();
             let rest = &trimmed[digits..];
@@ -600,78 +800,184 @@ fn strip_containers(mut line: &str) -> &str {
     }
 }
 
-/// Removes `%%comments%%` from a note's Markdown, in note order, before it is parsed. A
-/// comment runs to the next `%%`, or to the end of the note. Fenced code and code spans keep
-/// their `%%`, unless a comment holds them. Newlines in a comment stay, so lines keep their
-/// places.
-pub fn strip_comments(md: &str) -> Cow<'_, str> {
-    if !md.contains("%%") {
-        return Cow::Borrowed(md);
-    }
-    let mut out = String::with_capacity(md.len());
-    let mut comment = false;
-    let mut fence = None;
-    for line in md.split_inclusive('\n') {
-        if !comment && let Some(open) = fence {
-            if fence_close(line, open) {
-                fence = None;
-            }
-            out.push_str(line);
-            continue;
-        }
-        if !comment && let Some(open) = fence_open(line) {
-            fence = Some(open);
-            out.push_str(line);
-            continue;
-        }
-        let bytes = line.as_bytes();
-        let mut i = 0;
-        let mut kept = 0;
-        while i < bytes.len() {
-            if comment {
-                match line[i..].find("%%") {
-                    Some(at) => {
-                        comment = false;
-                        i += at + 2;
-                        kept = i;
-                    }
-                    None => {
-                        i = bytes.len();
-                        kept = i;
-                        if line.ends_with('\n') {
-                            out.push('\n');
-                        }
-                    }
+/// Where a run of `n` backticks from `from` closes a code span: the next run of exactly `n`
+/// on this line, or on a later line of the same paragraph. A blank line, a fence or a heading
+/// ends a paragraph, and a heading is one line.
+fn span_close(md: &str, line_start: usize, from: usize, n: usize) -> Option<usize> {
+    let bytes = md.as_bytes();
+    let mut heading = atx(&md[line_start..]);
+    let mut i = from;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'`' => {
+                let run = bytes[i..].iter().take_while(|&&b| b == b'`').count();
+                if run == n {
+                    return Some(i + n);
                 }
+                i += run;
+            }
+            b'\n' => {
+                let next = &md[i + 1..];
+                let line = &next[..next.find('\n').map_or(next.len(), |e| e + 1)];
+                let (_, _, at, _) = quotes(line);
+                if heading || line[at..].trim().is_empty() || fence_open(line).is_some() {
+                    return None;
+                }
+                heading = atx(line);
+                if heading {
+                    return None;
+                }
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// True when a line, after container markers, is an ATX heading.
+fn atx(line: &str) -> bool {
+    let rest = strip_containers(line);
+    let hashes = rest.len() - rest.trim_start_matches('#').len();
+    (1..=6).contains(&hashes)
+        && matches!(
+            rest.as_bytes().get(hashes),
+            None | Some(b' ' | b'\t' | b'\n' | b'\r')
+        )
+}
+
+/// What the stripper knows about the block structure at a line start.
+#[derive(Default)]
+struct Blocks {
+    fence: Option<Fence>,
+    /// The line before continues a paragraph.
+    paragraph: bool,
+    /// Open list items: quote depth and content column.
+    lists: Vec<(usize, usize)>,
+}
+
+impl Blocks {
+    /// True when `line` is code: in a fence, opening one, or indented code.
+    fn code(&mut self, line: &str) -> bool {
+        if let Some(fence) = self.fence {
+            if fence_close(line, fence) {
+                self.fence = None;
+            }
+            return true;
+        }
+        let (depth, quote, at, col) = quotes(line);
+        if line[at..].trim().is_empty() {
+            return false;
+        }
+        // Dropping an item too soon only reads more lines as code.
+        self.lists.retain(|&(d, c)| d <= depth && c <= col);
+        let base = self.lists.last().map_or(quote, |&(_, c)| c.max(quote));
+        if !self.paragraph && col >= base + 4 {
+            return true;
+        }
+        if !thematic(&line[at..]) {
+            let mut at = at;
+            while let Some((content, text, one)) = list_item(line, at) {
+                // Only a bullet or `1.` with text can interrupt a paragraph.
+                if self.paragraph && !(text && one) {
+                    break;
+                }
+                self.lists.push((depth, content));
+                let token = line[at..]
+                    .find(char::is_whitespace)
+                    .map_or(line.len(), |e| at + e);
+                at = line.len() - line[token..].trim_start_matches([' ', '\t']).len();
+            }
+        }
+        if let Some(fence) = fence_open(line) {
+            self.fence = Some(fence);
+            return true;
+        }
+        false
+    }
+}
+
+/// A note's Markdown without its comments.
+pub struct Stripped<'a> {
+    pub text: Cow<'a, str>,
+    /// The last comment runs to the end of the note.
+    pub unclosed: bool,
+    /// The byte offset of each `%%` that opened a comment.
+    pub openers: Vec<usize>,
+}
+
+/// Removes `%%comments%%` from a note's Markdown, in note order, before it is parsed. A
+/// comment runs to the next `%%`, or to the end of the note. Fenced code, indented code and
+/// code spans keep their `%%`, unless a comment holds them. Newlines in a comment stay, so
+/// lines keep their places.
+pub fn strip_comments(md: &str) -> Stripped<'_> {
+    let mut stripped = Stripped {
+        text: Cow::Borrowed(md),
+        unclosed: false,
+        openers: Vec::new(),
+    };
+    if !md.contains("%%") {
+        return stripped;
+    }
+    let bytes = md.as_bytes();
+    let mut out = String::with_capacity(md.len());
+    let mut blocks = Blocks::default();
+    let (mut i, mut kept, mut start, mut line) = (0, 0, true, 0);
+    while i < bytes.len() {
+        if start {
+            (start, line) = (false, i);
+            let end = md[i..].find('\n').map_or(md.len(), |e| i + e + 1);
+            if blocks.code(&md[i..end]) {
+                blocks.paragraph = false;
+                (i, start) = (end, true);
                 continue;
             }
-            match bytes[i] {
-                b'\\' => i += 2,
-                b'`' => {
-                    let n = bytes[i..].iter().take_while(|&&b| b == b'`').count();
-                    let close = "`".repeat(n);
-                    let after = i + n;
-                    // A span closes at the next run of exactly `n` backticks.
-                    let end = line[after..].match_indices(&close).find(|(at, _)| {
-                        let at = after + at;
-                        bytes.get(at + n) != Some(&b'`') && bytes[at - 1] != b'`'
-                    });
-                    i = end.map_or(after, |(at, _)| after + at + n);
-                }
-                b'%' if bytes.get(i + 1) == Some(&b'%') => {
-                    out.push_str(&line[kept..i]);
-                    comment = true;
-                    i += 2;
-                    kept = i;
-                }
-                _ => i += 1,
-            }
         }
-        if !comment {
-            out.push_str(&line[kept.min(line.len())..]);
+        match bytes[i] {
+            b'\n' => {
+                out.push_str(&md[kept..=i]);
+                (i, kept, start) = (i + 1, i + 1, true);
+                let line = &out[out[..out.len() - 1].rfind('\n').map_or(0, |n| n + 1)..];
+                blocks.paragraph = paragraph_line(line);
+            }
+            // An escape never hides a comment marker.
+            b'\\' => {
+                i += if matches!(bytes.get(i + 1), Some(b'\n' | b'%')) {
+                    1
+                } else {
+                    2
+                }
+            }
+            b'`' => {
+                let n = bytes[i..].iter().take_while(|&&b| b == b'`').count();
+                let end = span_close(md, line, i + n, n).unwrap_or(i + n);
+                if let Some(nl) = md[i..end].rfind('\n') {
+                    line = i + nl + 1;
+                }
+                i = end;
+            }
+            b'%' if bytes.get(i + 1) == Some(&b'%') => {
+                out.push_str(&md[kept..i]);
+                stripped.openers.push(i);
+                let body = i + 2;
+                let close = md[body..].find("%%").map(|at| body + at);
+                let inside = &md[body..close.unwrap_or(md.len())];
+                out.extend(inside.bytes().filter(|&b| b == b'\n').map(char::from));
+                match close {
+                    Some(at) => (i, kept) = (at + 2, at + 2),
+                    None => {
+                        stripped.unclosed = true;
+                        stripped.text = Cow::Owned(out);
+                        return stripped;
+                    }
+                }
+            }
+            _ => i += 1,
         }
     }
-    Cow::Owned(out)
+    out.push_str(&md[kept.min(md.len())..]);
+    stripped.text = Cow::Owned(out);
+    stripped
 }
 
 /// A Mermaid fence becomes `<pre class="mermaid">`, which the client draws.
@@ -700,6 +1006,47 @@ fn wrap<'a>(arena: &'a Arena<'a>, node: &'a AstNode<'a>, open: String, close: St
     }
     node.insert_before(raw(close));
     node.detach();
+}
+
+/// Puts a block embed's `html` in place of `node`, between the part of `paragraph` before it
+/// and the part after, so no block sits inside a `<p>`. An empty part is dropped.
+fn split_paragraph<'a>(
+    arena: &'a Arena<'a>,
+    paragraph: &'a AstNode<'a>,
+    node: &'a AstNode<'a>,
+    html: String,
+) {
+    let breaks =
+        |n: &'a AstNode<'a>| matches!(n.data().value, NodeValue::SoftBreak | NodeValue::LineBreak);
+    let after = arena.alloc(AstNode::from(NodeValue::Paragraph));
+    while let Some(next) = node.next_sibling() {
+        after.append(next);
+    }
+    let block = arena.alloc(AstNode::from(NodeValue::Raw(html)));
+    node.detach();
+    paragraph.insert_after(block);
+    while let Some(last) = paragraph.last_child().filter(|n| breaks(n)) {
+        last.detach();
+    }
+    while let Some(first) = after.first_child().filter(|n| breaks(n)) {
+        first.detach();
+    }
+    if let Some(last) = paragraph.last_child()
+        && let NodeValue::Text(text) = &mut last.data_mut().value
+    {
+        *text = Cow::Owned(text.trim_end().to_string());
+    }
+    if let Some(first) = after.first_child()
+        && let NodeValue::Text(text) = &mut first.data_mut().value
+    {
+        *text = Cow::Owned(text.trim_start().to_string());
+    }
+    if after.first_child().is_some() {
+        block.insert_after(after);
+    }
+    if paragraph.first_child().is_none() {
+        paragraph.detach();
+    }
 }
 
 fn replace<'a>(arena: &'a Arena<'a>, node: &'a AstNode<'a>, html: String) {

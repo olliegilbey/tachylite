@@ -1,0 +1,17 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 54f053298c3b61891007af26206bda4b4ede33670afb4fb50c8191d5ebde51f0 # shrinks to parts = ["%", "%", "%%zebra%%"]
+cc 7faca4710a53f1f9aa590912566b3d4429a068c8ab506c21faaa43ad49636c36 # shrinks to parts = ["\n", "\\", "%%", "```"]
+cc dfb9594e698876f4e6e771aea16dd0d860495fc98888a6a07f47a4c63f556401 # shrinks to parts = ["# ", "```md", "%%zebra%%", "```"]
+cc 453c16d16b7b835b4d457156d9ddc60e67979cd16127bccb593ce4d026a4e9c1 # shrinks to parts = ["# ", "```md", "\\", "%%", "\n", "# ", "```md", "```", "```", "```"]
+cc 11f4fd89dbb82b6455982bd870e07e0c2c1f8717177a635e402a10b6072a9db8 # shrinks to parts = ["%", "\\", "%", "```"]
+cc a6957bc014d59992fb0576824bd718c3785031f4e35a494d8b61e1a3d8538727 # shrinks to parts = ["%%", "%%", "%", "<!--", "```", "-->", "%"]
+cc 928224ee18cfaf40449712f39c31350dcbf501fb209d0daefe80333509d15612 # shrinks to parts = ["---", "\n", "\n", "[^1]: ", "%%", "\n", "---", "\n"]
+cc e4e3669be54359f04b49c432bb57fbd0eb48d7c1992726d7463c576951dbcbb3 # shrinks to parts = ["---", "\n", "\n", "%%zebra%%", "[^1]: ", "\n\n%%\nzebra\n%%\n\n", "---", "\n"]
+cc 7fb44a49dc05956b4bcbdf0854ee30b97fc7c911677391452f8d1840f69a6c40 # shrinks to parts = ["`%%d`", "`", "%%zebra%%", "```", "```"]
+cc 1af4647bf20cf6194cfc81257748254be14b5b2d5bb95b3544f1a75cf53c270b # shrinks to parts = ["```", "- ", "`", "\n\n%%\nzebra\n%%\n\n", "[^1]: ", "`", "`%%d`", "\n\n%%\nzebra\n%%\n\n"]
+cc 88466eeb3c2e367802bcf15f15a61455985b5f4f17dbafd784f30adc7d7e7780 # shrinks to parts = ["``", "[x](https://example.com/ \"", "\n", "`", "\")", "\n", "```md", "`%%d`", "%%zebra%%"]
