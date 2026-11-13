@@ -67,8 +67,8 @@ pub struct Watcher {
     /// Paths that may be mid-save, each with the time it is read as saved anyway.
     held: HashMap<String, Instant>,
     hold: Duration,
-    /// When index pages were last derived.
-    derived: Instant,
+    /// When the first pass since the last derive began.
+    since: Option<Instant>,
 }
 
 fn join(dir: &str, name: &str) -> String {
@@ -138,7 +138,7 @@ impl Watcher {
                 .ok()
                 .and_then(|ms| ms.parse().ok())
                 .map_or(HOLD, Duration::from_millis),
-            derived: Instant::now(),
+            since: None,
         };
         watcher.watch_tree("")?;
         // A config saved before the root watch existed sent no event.
@@ -161,7 +161,8 @@ impl Watcher {
                 // Index pages wait until no event is queued, so a burst derives them once.
                 // An unpublished page leaves them at once, and a long burst still derives
                 // them every `DERIVE_MAX`.
-                if drained || unpublished || self.derived.elapsed() >= DERIVE_MAX {
+                let burst = self.since.get_or_insert_with(Instant::now).elapsed();
+                if drained || unpublished || burst >= DERIVE_MAX {
                     self.derive()?;
                 }
                 if drained {
@@ -470,7 +471,7 @@ impl Watcher {
 
     /// Writes the index pages and the manifest that the applies since the last left due.
     fn derive(&mut self) -> Result<(), Error> {
-        self.derived = Instant::now();
+        self.since = None;
         let mut writer = writer(&self.out, &self.vault, &self.live);
         self.site.derive_to(&mut writer);
         // A derive copies no vault file, so it skips none.
