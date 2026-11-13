@@ -105,6 +105,16 @@ impl Sink for Delta {
     }
 }
 
+/// A note read this apply: what linking needs, and its bytes while they fit `FRESH_MAX`.
+struct Fresh {
+    meta: front::Meta,
+    bytes: Option<Vec<u8>>,
+}
+
+/// The note bytes an apply keeps from its first read. A save keeps its note, so its render
+/// reads it once; a full sync reads the rest again per batch, so it never holds every note.
+const FRESH_MAX: usize = 1024 * 1024;
+
 /// The site's name, until config names it.
 const SITE: &str = "Tachylite";
 
@@ -383,10 +393,11 @@ impl Site {
             }
         }
 
-        let mut fresh: HashMap<String, Vec<u8>> = HashMap::new();
+        let mut fresh: HashMap<String, Fresh> = HashMap::new();
+        let mut kept = 0;
         let mut mid_save = Vec::new();
         for path in &touched {
-            if self.probe(path, source, &mut fresh, &mut report.skipped) {
+            if self.probe(path, source, &mut fresh, &mut kept, &mut report.skipped) {
                 mid_save.push(path.clone());
             }
         }
@@ -416,7 +427,7 @@ impl Site {
                 break (Arc::new(won), lost);
             }
             for path in &unread {
-                self.probe(path, source, &mut fresh, &mut report.skipped);
+                self.probe(path, source, &mut fresh, &mut kept, &mut report.skipped);
             }
             self.relist = true;
         };
@@ -431,7 +442,7 @@ impl Site {
         }
         self.lost = lost;
 
-        let (own, deps) = self.link(&won, &fresh);
+        let (own, deps) = self.link(&won, &mut fresh);
 
         // A new note always pushes, so its key stays live and gets no gone. No other
         // winner can hold a key a removed winner held.
@@ -872,7 +883,7 @@ impl Site {
     fn link(
         &mut self,
         won: &BTreeSet<String>,
-        fresh: &HashMap<String, Vec<u8>>,
+        fresh: &mut HashMap<String, Fresh>,
     ) -> (Vec<String>, BTreeSet<String>) {
         let removed: Vec<String> = self.winners.difference(won).cloned().collect();
         let added: Vec<String> = won.difference(&self.winners).cloned().collect();
@@ -888,8 +899,8 @@ impl Site {
         // A retitled note changes the backlink text on every page it links to.
         let mut deps = BTreeSet::new();
         let mut aliased = Vec::new();
-        for (path, bytes) in fresh.iter().filter(|(p, _)| won.contains(*p)) {
-            let meta = front::meta(&String::from_utf8_lossy(bytes));
+        for (path, note) in fresh.iter_mut().filter(|(p, _)| won.contains(*p)) {
+            let meta = std::mem::take(&mut note.meta);
             if self.index.aliases(path) != meta.aliases.as_slice() {
                 let old: HashSet<String> =
                     self.index.aliases(path).iter().map(|a| key(a)).collect();
@@ -976,7 +987,7 @@ impl Site {
     fn render(
         &mut self,
         paths: &[String],
-        fresh: &mut HashMap<String, Vec<u8>>,
+        fresh: &mut HashMap<String, Fresh>,
         source: &mut impl Source,
         bodies: &mut HashMap<String, String>,
         changed: &mut BTreeSet<Arc<str>>,
@@ -990,6 +1001,7 @@ impl Site {
                 .filter_map(|path| {
                     let bytes = fresh
                         .remove(path)
+                        .and_then(|f| f.bytes)
                         .or_else(|| source.note(path).ok().map(|n| n.bytes))?;
                     Some((path.as_str(), bytes))
                 })
@@ -1019,7 +1031,7 @@ impl Site {
     fn render_notes<'p>(
         &self,
         notes: &[(&'p str, Vec<u8>)],
-        fresh: &HashMap<String, Vec<u8>>,
+        fresh: &HashMap<String, Fresh>,
         source: &mut impl Source,
     ) -> Vec<(&'p str, Body)> {
         let mut load = |target: &str| {
@@ -1027,7 +1039,7 @@ impl Site {
                 .iter()
                 .find(|(p, _)| *p == target)
                 .map(|(_, b)| b.clone())
-                .or_else(|| fresh.get(target).cloned())
+                .or_else(|| fresh.get(target).and_then(|f| f.bytes.clone()))
                 .or_else(|| source.note(target).ok().map(|n| n.bytes))
         };
         let targets = |from: &str, bytes: &[u8]| {
@@ -1143,13 +1155,15 @@ impl Site {
         self.links.insert(Arc::clone(note), links);
     }
 
-    /// Reads a path's current state into `entries`, and a note's bytes into `fresh`.
-    /// Returns true for a published path that is mid-save, which keeps its page as it is.
+    /// Reads a path's current state into `entries`, and a note into `fresh`: its metadata,
+    /// and its bytes while `kept` stays within `FRESH_MAX`. Returns true for a published
+    /// path that is mid-save, which keeps its page as it is.
     fn probe(
         &mut self,
         path: &str,
         source: &mut impl Source,
-        fresh: &mut HashMap<String, Vec<u8>>,
+        fresh: &mut HashMap<String, Fresh>,
+        kept: &mut usize,
         skipped: &mut Vec<Skipped>,
     ) -> bool {
         let Some(kind) = classify(path, &self.exclude) else {
@@ -1160,7 +1174,10 @@ impl Site {
         let result = match kind {
             Kind::Note => source.note(path).map(|note| {
                 self.modified.insert(path.to_string(), note.modified);
-                fresh.insert(path.to_string(), note.bytes);
+                let meta = front::meta(&String::from_utf8_lossy(&note.bytes));
+                *kept += note.bytes.len();
+                let bytes = (*kept <= FRESH_MAX).then_some(note.bytes);
+                fresh.insert(path.to_string(), Fresh { meta, bytes });
             }),
             Kind::Html | Kind::Asset => source.file(path),
         };

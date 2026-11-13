@@ -323,6 +323,37 @@ fn a_folder_named_like_a_folder_index_builds() {
 }
 
 #[test]
+fn a_note_over_the_size_limit_is_skipped_and_leaves_no_trace() {
+    let max = usize::try_from(tachylite::vault::NOTE_MAX).unwrap();
+    let mut big = String::from("---\ntitle: oversize-marker\ntags: [oversize]\n---\n[[a]] ");
+    big.push_str(&"*_".repeat(max / 2));
+    let mut fits = String::from("# fits ");
+    fits.push_str(&"x".repeat(max - fits.len()));
+    let dir = bare(&[
+        ("big.md", &big),
+        ("fits.md", &fits),
+        ("a.md", "[[big]] # a"),
+    ]);
+    let (vault, out) = (dir.path().join("vault"), dir.path().join("out"));
+    let summary = build(&vault, &out).unwrap();
+    assert_eq!(
+        summary.skipped,
+        [tachylite::vault::Skipped {
+            path: PathBuf::from("big.md"),
+            reason: tachylite::vault::SkipReason::TooLarge,
+        }]
+    );
+    assert!(
+        out.join("pages/fits.html").is_file(),
+        "a note at the limit renders"
+    );
+    assert_eq!(summary.broken.len(), 1, "the link to it is broken");
+    let text = all_output_text(&out);
+    assert!(!text.contains("oversize"));
+    assert!(!text.contains("/big"));
+}
+
+#[test]
 fn a_name_too_long_for_its_page_is_skipped() {
     // 254 bytes: its page name, `<stem>.html`, would be 256.
     let long = format!("{}.md", "n".repeat(251));

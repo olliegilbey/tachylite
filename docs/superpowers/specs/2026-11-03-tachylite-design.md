@@ -155,7 +155,7 @@ Inspired by Obsidian's reading view and developer admin panels. Dark mode first,
 
 ### What gets published
 
-Only these file types reach the output: `.md` (rendered), `.html` (sandboxed), images (`png`, `jpg`, `jpeg`, `gif`, `svg`, `webp`, `avif`), and `pdf`. Every other file stays out, whatever its folder: code, `.json`, `.env`, `.sql`, scripts. Exclusion globs apply on top. An `.svg` is served as an image, never inline, so its scripts cannot run on the main origin.
+Only these file types reach the output: `.md` (rendered), `.html` (sandboxed), images (`png`, `jpg`, `jpeg`, `gif`, `svg`, `webp`, `avif`), and `pdf`. Every other file stays out, whatever its folder: code, `.json`, `.env`, `.sql`, scripts. Exclusion globs apply on top. An `.svg` is served as an image, never inline, so its scripts cannot run on the main origin. A note over 1 MB is skipped and logged: a render peaks at about 12 times a note's size, and near 280 times for a pathological one, so a larger note could exhaust a small host.
 
 ### Offline sync
 

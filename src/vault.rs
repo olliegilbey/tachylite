@@ -32,8 +32,15 @@ pub enum SkipReason {
     NonUtf8Name,
     UrlClash,
     NameTooLong,
+    /// Larger than `NOTE_MAX`.
+    TooLarge,
     Unreadable(io::ErrorKind),
 }
+
+/// The largest note read. A render peaks at about 12 times a note's size, and at about
+/// 280 times for a note of nothing but `*_`, so a bigger note is skipped rather than risk
+/// the process on a small host.
+pub const NOTE_MAX: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Skipped {
@@ -313,9 +320,22 @@ impl VaultDir {
     pub fn read_note(&self, rel: &str, saved: bool) -> Result<crate::site::Note, ReadError> {
         let mut file = self.open_after(rel, saved)?;
         let unreadable = |e: io::Error| ReadError::Skip(SkipReason::Unreadable(e.kind()));
-        let modified = file.metadata().map_err(unreadable)?.mtime();
+        let meta = file.metadata().map_err(unreadable)?;
+        if meta.len() > NOTE_MAX {
+            return Err(ReadError::Skip(SkipReason::TooLarge));
+        }
         let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes).map_err(unreadable)?;
-        Ok(crate::site::Note { bytes, modified })
+        // The file can grow after the check.
+        (&mut file)
+            .take(NOTE_MAX + 1)
+            .read_to_end(&mut bytes)
+            .map_err(unreadable)?;
+        if bytes.len() as u64 > NOTE_MAX {
+            return Err(ReadError::Skip(SkipReason::TooLarge));
+        }
+        Ok(crate::site::Note {
+            bytes,
+            modified: meta.mtime(),
+        })
     }
 }
