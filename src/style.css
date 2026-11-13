@@ -32,6 +32,7 @@
   }
 }
 * { box-sizing: border-box; }
+html { scroll-padding-top: 3.5rem; }
 body { margin: 0; background: var(--bg); color: var(--fg); overflow-wrap: break-word; }
 main { max-width: 44rem; margin: 0 auto; padding: 0.5rem 1rem 4rem; }
 a { color: var(--link); text-decoration: none; }
@@ -48,7 +49,7 @@ h1 { font-size: 1.7rem; margin-top: 0.6em; }
 main > .sr + h2 { margin-top: 0.6em; }
 h2 { font-size: 1.35rem; }
 h3 { font-size: 1.15rem; }
-img, video, iframe { max-width: 100%; height: auto; }
+img, iframe { max-width: 100%; height: auto; }
 hr { border: 0; border-top: 1px solid var(--line); }
 blockquote { margin: 1em 0; padding-left: 1em; border-left: 3px solid var(--line); color: var(--dim); }
 mark { background: #e8b45f55; color: inherit; }
@@ -78,12 +79,13 @@ th { background: var(--raise); }
 
 li:has(> input[type="checkbox"]) { list-style: none; margin-left: -1.4em; }
 input[type="checkbox"] { margin-right: 0.4em; }
+li > input[type="checkbox"] + p { display: inline; }
 
 .properties {
-  display: grid; grid-template-columns: max-content 1fr; gap: 0.15rem 1rem; margin: 0 0 1rem;
+  display: grid; grid-template-columns: fit-content(40%) minmax(0, 1fr); gap: 0.15rem 1rem; margin: 0 0 1rem;
   padding: 0.5rem 0.75rem; background: var(--raise); border-radius: 6px; font-size: 0.9rem;
 }
-.properties dt { color: var(--dim); }
+.properties dt { color: var(--dim); overflow-wrap: anywhere; }
 .properties dd { margin: 0; }
 .tag { color: var(--accent); }
 .broken-link { color: var(--broken); text-decoration: underline dotted; }
@@ -94,8 +96,7 @@ input[type="checkbox"] { margin-right: 0.4em; }
   border-left: 4px solid var(--c); background: var(--raise); border-radius: 4px;
 }
 .callout-title { font-weight: 600; color: var(--c); }
-.callout:not([data-callout-fold="none"]) > .callout-title { cursor: pointer; }
-.callout[data-callout-fold="collapsed"] .callout-content { display: none; }
+summary.callout-title { cursor: pointer; }
 .callout-content > :last-child { margin-bottom: 0.25rem; }
 .callout:is([data-callout="tip"], [data-callout="success"], [data-callout="check"], [data-callout="done"]) { --c: var(--tip); }
 .callout:is([data-callout="warning"], [data-callout="caution"], [data-callout="attention"], [data-callout="question"], [data-callout="help"], [data-callout="faq"]) { --c: var(--warn); }
@@ -104,11 +105,15 @@ input[type="checkbox"] { margin-right: 0.4em; }
 
 .embed { margin: 1em 0; padding: 0.25rem 1rem; border-left: 3px solid var(--line); }
 .embed-html { width: 100%; min-height: 20rem; border: 1px solid var(--line); }
+.embed-open { margin-top: 0.25rem; font-size: 0.9rem; }
 .footnotes, .backlinks { margin-top: 3rem; padding-top: 0.5rem; border-top: 1px solid var(--line); font-size: 0.92rem; }
 .backlinks h2 { font-size: 1rem; color: var(--dim); }
 
 ul.folders, ul.notes, ul.recent { padding-left: 0; list-style: none; }
-ul.folders li, ul.notes li, ul.recent li { padding: 0.3rem 0; border-bottom: 1px solid var(--line); }
+ul.folders li, ul.notes li, ul.recent li { border-bottom: 1px solid var(--line); }
+ul:is(.folders, .notes, .recent) a { display: block; padding: 0.3rem 0; }
+ul.recent a { padding-bottom: 0; }
+ul.recent .meta { padding-bottom: 0.3rem; }
 ul.folders a::before { content: "▸ "; color: var(--dim); }
 .meta { display: block; color: var(--dim); font-size: 0.85rem; }
 
@@ -119,9 +124,9 @@ dialog.switcher {
 dialog.switcher::backdrop { background: #0008; }
 dialog.switcher input {
   width: 100%; padding: 0.75rem 1rem; font: inherit; color: inherit;
-  background: var(--raise); border: 0; border-bottom: 1px solid var(--line); outline: none;
+  background: var(--raise); border: 0; border-bottom: 1px solid var(--line); outline-offset: -2px;
 }
 dialog.switcher ul { margin: 0; padding: 0; list-style: none; max-height: 60vh; overflow-y: auto; }
 dialog.switcher li a { display: block; padding: 0.5rem 1rem; color: var(--fg); }
-dialog.switcher li:first-child a, dialog.switcher li a:focus { background: var(--raise); }
+dialog.switcher input:focus + ul li:first-child a, dialog.switcher li a:focus { background: var(--raise); }
 dialog.switcher .meta { display: inline; margin-left: 0.5rem; }

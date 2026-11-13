@@ -359,7 +359,7 @@ test("an html page or asset excluded while away leaves the cache", async ({ page
 
 // A sandboxed frame has an opaque origin, so the worker never sees the embed's request and
 // it stays network-only. The same page opened full screen is cached.
-test("offline, a note with an html embed renders, and its page opened once opens", async ({ page }) => {
+test("offline, a note with an html embed renders, and its link opens the page opened once", async ({ page }) => {
   writeFileSync(
     join(dir, "vault", "widget.html"),
     `<!doctype html><p id="out">waiting</p><script>document.getElementById("out").textContent = "ran";</script>`,
@@ -373,6 +373,7 @@ test("offline, a note with an html embed renders, and its page opened once opens
   await stop(server!);
   await page.goto(base + "/host");
   await expect(page.locator("main h1")).toHaveText("Host");
-  await page.goto(base + "/widget.html");
+  await page.locator("main a", { hasText: "Open widget.html full screen" }).click();
+  await expect(page).toHaveURL(base + "/widget.html");
   await expect(page.locator("#out")).toHaveText("ran");
 });
