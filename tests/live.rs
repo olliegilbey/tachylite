@@ -796,3 +796,24 @@ fn a_renamed_vault_parent_stops_the_server() {
     assert!(line.contains("vault"), "{line}");
     assert_eq!(server.child.wait().unwrap().code(), Some(1));
 }
+
+// Tag pages.
+
+#[test]
+fn a_tag_page_is_served_pushed_and_gone_with_its_last_note() {
+    let (d, server) = with_notes(&[("a.md", "#Plants here"), ("b.md", "plain")]);
+    let page = "/.tachylite/tags/plants";
+    let mut events = server.subscribe(page, &version(&server, page), None);
+    fs::write(d.vault().join("b.md"), "now #plants/fern").unwrap();
+    let event = events.expect("page");
+    assert!(event.data.contains("href=\"/b\""), "{}", event.data);
+    fs::remove_file(d.vault().join("a.md")).unwrap();
+    fs::remove_file(d.vault().join("b.md")).unwrap();
+    // Each delete may land in its own batch, so the gone follows zero or one page push.
+    loop {
+        if events.next(Duration::from_secs(10)).expect("gone").name == "gone" {
+            break;
+        }
+    }
+    assert_eq!(server.get(page).status, 404);
+}

@@ -43,6 +43,15 @@ impl Rng {
             .map(|_| SYLLABLES[self.below(SYLLABLES.len())])
             .collect()
     }
+
+    /// A tag from a vault-sized vocabulary: 24 tags, each with up to 24 nested under it. It
+    /// draws as `word` does, so the rest of the vault stays as it was.
+    fn tag(&mut self) -> String {
+        let levels: Vec<&str> = (0..1 + self.below(3))
+            .map(|_| SYLLABLES[self.below(SYLLABLES.len())])
+            .collect();
+        levels[..levels.len().min(2)].join("/")
+    }
 }
 
 /// Every note as a vault-relative path and its Markdown, sorted by path.
@@ -139,7 +148,7 @@ fn sentence(rng: &mut Rng, from: &str, paths: &[String], out: &mut String) {
                 out.push_str(&format!("${}", 1 + rng.below(500)));
             }
             5 => {
-                out.push_str(&format!("#{}", rng.word()));
+                out.push_str(&format!("#{}", rng.tag()));
             }
             6 => {
                 out.push_str(&format!("=={}==", rng.word()));
@@ -185,8 +194,8 @@ fn note(rng: &mut Rng, path: &str, paths: &[String]) -> String {
             "---\ntitle: {} {}\ntags: [{}, {}]\n",
             rng.word(),
             rng.word(),
-            rng.word(),
-            rng.word()
+            rng.tag(),
+            rng.tag()
         ));
         if rng.chance(30) {
             out.push_str(&format!("aliases: [{}]\n", rng.word()));

@@ -638,7 +638,7 @@ fn hush() -> Exclude {
 /// Text only an excluded note holds.
 const HUSHED: &str = "hush-marker";
 
-const CONTENTS: [&str; 15] = [
+const CONTENTS: [&str; 17] = [
     "[[e/m]] [down](e/m.md)",
     "# one",
     "two *b*",
@@ -654,6 +654,8 @@ const CONTENTS: [&str; 15] = [
     "![[n]] ![[d/e/m]] ![[p.png]] ![[x.html]]",
     "| t |\n|---|\n| ![[a\\|x]] ![[n\\|y]] |",
     "[[s|ess]] ![[k.secret|kay]] ![[private/s|pee]] [[z]]",
+    "#a #A/b x",
+    "---\ntags: [a/b, Über]\ntitle: T3\n---\n#c",
 ];
 
 /// A source where every file is mid-save.
@@ -746,7 +748,7 @@ fn apply_op(mem: &mut Mem, op: &Op) -> Vec<Change> {
             let path = PATHS[*p].to_string();
             let mut bytes = CONTENTS[*c].as_bytes().to_vec();
             if hush().path(&path) {
-                bytes.extend_from_slice(format!(" {HUSHED}").as_bytes());
+                bytes.extend_from_slice(format!(" #{HUSHED}").as_bytes());
             }
             let time = mem.1.values().max().map_or(1, |t| t + 1);
             mem.1.insert(path.clone(), time);
@@ -1456,4 +1458,211 @@ proptest! {
         let (expected, _) = full(&mem);
         prop_assert_eq!(&out, &expected);
     }
+}
+
+// Tag pages.
+
+const TAG_A: &str = ".tachylite/tags/a";
+
+/// Whether a delta deletes a tag page and pushes its gone.
+fn tag_gone(delta: &Delta, tag: &str) -> bool {
+    let key = format!(".tachylite/tags/{tag}");
+    delta.deletes.contains(&format!("pages/{key}.html"))
+        && delta.pushes.contains(&Push::Gone { key })
+}
+
+#[test]
+fn a_tag_page_lists_the_notes_with_the_tag_in_any_case_and_from_frontmatter() {
+    let (out, delta) = full(&Mem::with(&[
+        ("x.md", "body #A here"),
+        ("d/y.md", "---\ntitle: Why\ntags: [a]\n---\n"),
+        ("z.md", "no tags"),
+    ]));
+    let page = html(&delta, TAG_A);
+    assert!(page.contains("<h1>#a</h1>"), "{page}");
+    assert!(page.contains("<a href=\"/x\">x</a>"), "{page}");
+    assert!(page.contains("<a href=\"/d/y\">Why</a>"), "{page}");
+    assert!(!page.contains("/z\""), "{page}");
+    assert!(out.contains_key("pages/.tachylite/tags/a.html"));
+    let manifest = manifest(&delta).unwrap();
+    let version = version(&delta, TAG_A);
+    assert!(
+        manifest.contains(&format!("\"/{TAG_A}\":\"{version}\"")),
+        "{manifest}"
+    );
+}
+
+#[test]
+fn a_parent_tag_page_lists_its_nested_tags_notes() {
+    let (out, delta) = full(&Mem::with(&[
+        ("x.md", "#a/b"),
+        ("y.md", "#a"),
+        ("z.md", "#ab #a-b"),
+    ]));
+    let parent = html(&delta, TAG_A);
+    assert!(
+        parent.contains("\"/x\"") && parent.contains("\"/y\""),
+        "{parent}"
+    );
+    assert!(!parent.contains("\"/z\""), "{parent}");
+    let nested = html(&delta, ".tachylite/tags/a/b");
+    assert!(
+        nested.contains("\"/x\"") && !nested.contains("\"/y\""),
+        "{nested}"
+    );
+    assert!(out.contains_key("pages/.tachylite/tags/a.html"));
+    assert!(out.contains_key("pages/.tachylite/tags/a/b.html"));
+}
+
+#[test]
+fn a_non_ascii_tag_page_has_the_url_its_links_use() {
+    let (out, delta) = full(&Mem::with(&[("x.md", "#Über")]));
+    let note = html(&delta, "x");
+    assert!(
+        note.contains("href=\"/.tachylite/tags/%C3%BCber\""),
+        "{note}"
+    );
+    assert!(out.contains_key("pages/.tachylite/tags/über.html"));
+    assert!(
+        manifest(&delta)
+            .unwrap()
+            .contains("\"/.tachylite/tags/%C3%BCber\":")
+    );
+}
+
+#[test]
+fn adding_and_removing_a_tag_updates_its_page() {
+    let mut mem = Mem::with(&[("x.md", "#a"), ("y.md", "plain")]);
+    let (mut site, _) = synced(&mut mem, Exclude::default());
+    mem.0.insert("y.md".into(), b"now #a".to_vec());
+    let delta = site.apply(vec![touch("y.md")], &mut mem);
+    assert!(html(&delta, TAG_A).contains("\"/y\""));
+    mem.0.insert("y.md".into(), b"plain again".to_vec());
+    let delta = site.apply(vec![touch("y.md")], &mut mem);
+    let page = html(&delta, TAG_A);
+    assert!(
+        page.contains("\"/x\"") && !page.contains("\"/y\""),
+        "{page}"
+    );
+}
+
+#[test]
+fn removing_a_tags_last_note_deletes_its_page() {
+    let mut mem = Mem::with(&[("x.md", "#a/b"), ("y.md", "#c")]);
+    let (mut site, _) = synced(&mut mem, Exclude::default());
+    mem.0.remove("x.md");
+    let delta = site.apply(vec![touch("x.md")], &mut mem);
+    assert!(
+        tag_gone(&delta, "a") && tag_gone(&delta, "a/b"),
+        "{delta:?}"
+    );
+    assert!(!manifest(&delta).unwrap().contains("tags/a"));
+    mem.0.insert("y.md".into(), b"untagged".to_vec());
+    let delta = site.apply(vec![touch("y.md")], &mut mem);
+    assert!(tag_gone(&delta, "c"), "{delta:?}");
+}
+
+#[test]
+fn renaming_a_tagged_note_moves_it_on_its_tag_page() {
+    let mut mem = Mem::with(&[("x.md", "#a"), ("y.md", "#a")]);
+    let (mut site, _) = synced(&mut mem, Exclude::default());
+    let bytes = mem.0.remove("x.md").unwrap();
+    mem.0.insert("w.md".into(), bytes);
+    let delta = site.apply(vec![touch("x.md"), touch("w.md")], &mut mem);
+    let page = html(&delta, TAG_A);
+    assert!(
+        page.contains("\"/w\"") && !page.contains("\"/x\""),
+        "{page}"
+    );
+}
+
+#[test]
+fn a_retitled_note_rewrites_its_tag_pages_only() {
+    let mut mem = Mem::with(&[("x.md", "---\ntitle: Old\n---\n#a"), ("y.md", "#b")]);
+    let (mut site, _) = synced(&mut mem, Exclude::default());
+    mem.0
+        .insert("x.md".into(), b"---\ntitle: New\n---\n#a".to_vec());
+    let delta = site.apply(vec![touch("x.md")], &mut mem);
+    assert!(html(&delta, TAG_A).contains(">New</a>"));
+    let tags: Vec<&str> = indexed(&delta)
+        .into_iter()
+        .filter(|k| k.starts_with(".tachylite/tags/"))
+        .collect();
+    assert_eq!(tags, [TAG_A]);
+}
+
+#[test]
+fn an_edit_that_keeps_tags_and_title_writes_no_tag_page() {
+    let mut mem = Mem::with(&[("x.md", "#a one"), ("y.md", "#a")]);
+    let (mut site, _) = synced(&mut mem, Exclude::default());
+    mem.0.insert("x.md".into(), b"#a two".to_vec());
+    let delta = site.apply(vec![touch("x.md")], &mut mem);
+    assert_eq!(pushed(&delta), ["x"]);
+    assert!(indexed(&delta).is_empty(), "{:?}", indexed(&delta));
+}
+
+#[test]
+fn an_excluded_notes_tag_has_no_page_and_its_note_is_on_none() {
+    let mut mem = Mem::with(&[
+        ("a.md", "#shared"),
+        ("private/zebra.md", "#shared #secretive"),
+    ]);
+    let (_, delta) = synced(&mut mem, Exclude::new(&["private".to_string()]).unwrap());
+    assert!(!html(&delta, ".tachylite/tags/shared").contains("zebra"));
+    assert!(!leaks(&delta));
+    for w in &delta.writes {
+        let (out, text) = match w {
+            Write::Page { out, html } => (out.as_str(), html.to_string()),
+            Write::Manifest { json } => ("", json.clone()),
+            Write::Copy { .. } => continue,
+        };
+        assert!(
+            !out.contains("secretive") && !text.contains("secretive"),
+            "{out}"
+        );
+    }
+}
+
+#[test]
+fn excluding_a_tags_only_note_removes_its_page() {
+    let mut mem = Mem::with(&[("a.md", "x"), ("private/z.md", "#solo")]);
+    let (mut site, _) = synced(&mut mem, Exclude::default());
+    site.set_exclude(Exclude::new(&["private".to_string()]).unwrap());
+    let delta = site.apply(vec![sync_all(&mem)], &mut mem);
+    assert!(tag_gone(&delta, "solo"), "{delta:?}");
+}
+
+#[test]
+fn a_tag_too_long_for_its_page_is_text_and_the_build_goes_on() {
+    let long = "t".repeat(251);
+    let fits = "f".repeat(250);
+    let deep = ["d".repeat(100), "e".repeat(100), "g".repeat(100)].join("/");
+    let body = format!("#{long} #{fits} #{deep} #ok");
+    let (out, delta) = full(&Mem::with(&[("x.md", &body)]));
+    let note = html(&delta, "x");
+    assert!(
+        !note.contains(&format!("tags/{long}")),
+        "a link to a page with no file"
+    );
+    assert!(note.contains(&format!("#{long}")));
+    assert!(
+        !note.contains("tags/ddd"),
+        "a nested tag too long for its page's path"
+    );
+    assert!(out.contains_key(&format!("pages/.tachylite/tags/{fits}.html")));
+    assert!(out.contains_key("pages/.tachylite/tags/ok.html"));
+}
+
+#[test]
+fn an_embedded_notes_tags_are_not_its_embedders() {
+    let (_, delta) = full(&Mem::with(&[("a.md", "![[b]]"), ("b.md", "#t")]));
+    assert!(
+        html(&delta, "a").contains("tags/t"),
+        "the embed shows the tag"
+    );
+    let page = html(&delta, ".tachylite/tags/t");
+    assert!(
+        page.contains("\"/b\"") && !page.contains("\"/a\""),
+        "{page}"
+    );
 }

@@ -623,3 +623,75 @@ fn the_manifest_lists_no_excluded_note() {
     assert!(manifest.contains("\"/a\""), "{manifest}");
     assert!(!manifest.contains("zebra"), "{manifest}");
 }
+
+// Every link Tachylite writes resolves.
+
+/// The client files the server serves from the binary, not from the output.
+const BUILT_IN: [&str; 7] = [
+    "/.tachylite/live.js",
+    "/.tachylite/sw.js",
+    "/.tachylite/app.webmanifest",
+    "/.tachylite/icon.svg",
+    "/.tachylite/icon-maskable.svg",
+    "/.tachylite/style.css",
+    "/.tachylite/mermaid.js",
+];
+
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            out.push(u8::from_str_radix(&text[i + 1..i + 3], 16).unwrap());
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).unwrap()
+}
+
+/// The output file a site-relative URL path serves, as the server routes it.
+fn served(out: &Path, path: &str) -> Option<PathBuf> {
+    let key = percent_decode(path.trim_start_matches('/'));
+    let candidates = if key.is_empty() {
+        vec![out.join("pages/.tachylite/home.html")]
+    } else if key.starts_with(".tachylite/folders/") {
+        vec![out.join("pages").join(&key).join(".index.html")]
+    } else {
+        vec![
+            out.join("pages").join(format!("{key}.html")),
+            out.join("files").join(&key),
+        ]
+    };
+    candidates.into_iter().find(|p| p.is_file())
+}
+
+#[test]
+fn every_local_link_in_the_output_resolves() {
+    let s = Dirs::fixture();
+    build(&s.vault(), &s.out()).unwrap();
+    let mut checked = 0;
+    let mut dead = Vec::new();
+    for rel in files_under(&s.out().join("pages")) {
+        let html = fs::read_to_string(s.out().join("pages").join(&rel)).unwrap();
+        for attr in ["href=\"", "src=\""] {
+            for (at, _) in html.match_indices(attr) {
+                let rest = &html[at + attr.len()..];
+                let value = &rest[..rest.find('"').unwrap()];
+                let path = value.split(['#', '?']).next().unwrap();
+                if !path.starts_with('/') || path.starts_with("//") || BUILT_IN.contains(&path) {
+                    continue;
+                }
+                checked += 1;
+                if served(&s.out(), path).is_none() {
+                    dead.push(format!("{} -> {value}", rel.display()));
+                }
+            }
+        }
+    }
+    assert!(checked > 20, "only {checked} links checked");
+    assert!(dead.is_empty(), "dead links:\n{}", dead.join("\n"));
+}

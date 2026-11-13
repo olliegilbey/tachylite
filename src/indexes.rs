@@ -116,6 +116,17 @@ pub fn folder(folder: &Folder) -> Page {
     shell(name, &main)
 }
 
+/// `/.tachylite/tags/<tag>`: the notes with the tag or a tag nested under it.
+pub fn tag(tag: &str, items: Vec<Item>) -> Page {
+    let mut main = format!("<h1>#{}</h1>\n", escape(tag));
+    main.push_str(&listing(&Folder {
+        path: "",
+        folders: Vec::new(),
+        items,
+    }));
+    shell(&format!("#{tag}"), &main)
+}
+
 /// `/.tachylite/recent`.
 pub fn recent(recent: &[&Item]) -> Page {
     let mut main = String::from("<h1>Recent</h1>\n");

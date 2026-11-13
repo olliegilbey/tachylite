@@ -65,6 +65,8 @@ pub struct Body {
     pub embeds: BTreeSet<Arc<str>>,
     /// The notes it would have transcluded, had `Sources` held them.
     pub missing: BTreeSet<Arc<str>>,
+    /// The keys of the tags it links, from its own text and frontmatter, not its embeds.
+    pub tags: BTreeSet<String>,
 }
 
 /// The notes an embed may read, by path.
@@ -278,13 +280,37 @@ pub fn embed_targets(from: &str, markdown: &str, index: &Index) -> Vec<Arc<str>>
     targets
 }
 
-/// A tag link. Tag pages are keyed by the lowercased tag.
-fn tag_link(tag: &str) -> String {
-    format!(
+/// The longest file name the output filesystem takes, in bytes.
+pub const NAME_MAX: usize = 255;
+
+/// A tag's page key: the tag lowercased, as Obsidian matches tags in any case. A tag holds
+/// letters, digits, `_`, `-` and `/`, with at least one non-digit and no empty level. A tag
+/// longer than a page name may be is no tag, so no link points at a page that cannot be
+/// written, and no nesting runs a page's path past the filesystem's limit.
+pub fn tag_key(tag: &str) -> Option<String> {
+    let chars = tag
+        .chars()
+        .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '/'));
+    if !chars || tag.chars().all(|c| c.is_ascii_digit() || c == '/') {
+        return None;
+    }
+    let key = tag.to_lowercase();
+    let fits = key.len() + ".html".len() <= NAME_MAX;
+    (fits && key.split('/').all(|level| !level.is_empty())).then_some(key)
+}
+
+/// A tag link to its tag page, or the text alone for no tag.
+fn tag_link(tags: &mut BTreeSet<String>, tag: &str) -> String {
+    let Some(key) = tag_key(tag) else {
+        return escape(tag);
+    };
+    let html = format!(
         "<a class=\"tag\" href=\"/.tachylite/tags/{}\">#{}</a>",
-        encode(&tag.to_lowercase()),
+        encode(&key),
         escape(tag)
-    )
+    );
+    tags.insert(key);
+    html
 }
 
 /// One property value: tags, a lone `[[link]]`, or text. `tags: a, b` holds two tags.
@@ -294,7 +320,7 @@ fn property(body: &mut Body, from: &str, index: &Index, key: &str, value: &str) 
             .split(',')
             .map(|t| t.trim().trim_start_matches('#'))
             .filter(|t| !t.is_empty())
-            .map(tag_link)
+            .map(|t| tag_link(&mut body.tags, t))
             .collect();
         if !tags.is_empty() {
             return tags.join(", ");
@@ -376,6 +402,7 @@ fn render(
             .to_string();
         body.targets.clear();
         body.broken.clear();
+        body.tags.clear();
         return body;
     }
     let mut rewrites = Vec::new();
@@ -507,7 +534,7 @@ fn render(
     }
     // Before the heading wrap, which gives a heading's first text a sibling.
     for node in texts {
-        link_tags(&arena, node);
+        link_tags(&arena, node, &mut body.tags);
     }
     for (node, level, id) in headings {
         wrap(
@@ -536,7 +563,7 @@ fn render(
 }
 
 /// The byte ranges of the `#tags` in `text`, `#` included. A tag starts the text or follows
-/// whitespace, and holds letters, digits, `_`, `-` and `/`, with at least one non-digit.
+/// whitespace, and `tag_key` takes it.
 fn tags(text: &str, at_start: bool) -> Vec<(usize, usize)> {
     let mut found = Vec::new();
     let mut prev: Option<char> = None;
@@ -551,7 +578,7 @@ fn tags(text: &str, at_start: bool) -> Vec<(usize, usize)> {
             .find(|c: char| !(c.is_alphanumeric() || matches!(c, '_' | '-' | '/')))
             .unwrap_or(rest.len());
         let tag = rest[..len].trim_end_matches('/');
-        if tag.chars().any(|c| !c.is_ascii_digit()) {
+        if tag_key(tag).is_some() {
             found.push((i, i + 1 + tag.len()));
         }
     }
@@ -559,7 +586,7 @@ fn tags(text: &str, at_start: bool) -> Vec<(usize, usize)> {
 }
 
 /// Splits a text node around its tags, which become tag links.
-fn link_tags<'a>(arena: &'a Arena<'a>, node: &'a AstNode<'a>) {
+fn link_tags<'a>(arena: &'a Arena<'a>, node: &'a AstNode<'a>, tags_found: &mut BTreeSet<String>) {
     let at_start = node
         .previous_sibling()
         .is_none_or(|p| matches!(p.data().value, NodeValue::SoftBreak | NodeValue::LineBreak));
@@ -577,7 +604,8 @@ fn link_tags<'a>(arena: &'a Arena<'a>, node: &'a AstNode<'a>) {
         if start > last {
             node.insert_before(alloc(NodeValue::Text(Cow::Owned(text[last..start].into()))));
         }
-        node.insert_before(alloc(NodeValue::Raw(tag_link(&text[start + 1..end]))));
+        let link = tag_link(tags_found, &text[start + 1..end]);
+        node.insert_before(alloc(NodeValue::Raw(link)));
         last = end;
     }
     if last < text.len() {
