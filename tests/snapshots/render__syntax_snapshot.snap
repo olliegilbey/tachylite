@@ -10,7 +10,7 @@ expression: "built(\"notes/syntax\")"
 <meta name="color-scheme" content="dark light">
 <link rel="manifest" href="/.tachylite/app.webmanifest">
 <link rel="stylesheet" href="/.tachylite/style.css">
-<meta name="tachylite-version" content="41d481c65f38d3c8">
+<meta name="tachylite-version" content="cba9ddc1ce66c664">
 <title>Syntax tour</title>
 <script src="/.tachylite/live.js" defer></script>
 </head>
@@ -28,14 +28,12 @@ Mind the <em>step</em>
 <p>A callout with a title.</p>
 </div>
 </div>
-<div class="callout" data-callout="tip" data-callout-fold="collapsed">
-<div class="callout-title">
-Folded
-</div>
+<details class="callout" data-callout="tip">
+<summary class="callout-title">Folded</summary>
 <div class="callout-content">
 <p>Hidden until opened.</p>
 </div>
-</div>
+</details>
 <div class="callout" data-callout="custom-kind" data-callout-fold="none">
 <div class="callout-title">Custom kind</div>
 <div class="callout-content">

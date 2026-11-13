@@ -6,7 +6,7 @@ use std::sync::Arc;
 use comrak::adapters::CodefenceRendererAdapter;
 use comrak::html::dangerous_url;
 use comrak::nodes::Sourcepos;
-use comrak::nodes::{AstNode, NodeValue};
+use comrak::nodes::{AstNode, CalloutFold, NodeValue};
 use comrak::options::Plugins;
 use comrak::{Anchorizer, Arena, Options, format_html_with_plugins, parse_document};
 
@@ -386,8 +386,13 @@ fn render(
     let mut images = Vec::new();
     let mut scripted = Vec::new();
     let mut raw = Vec::new();
+    let mut callouts = Vec::new();
     for node in root.descendants() {
         match &node.data().value {
+            NodeValue::Callout(c) if c.fold != CalloutFold::None => {
+                callouts.push(node);
+                continue;
+            }
             NodeValue::Heading(heading) => {
                 let id = escape(&anchorizer.anchorize(&node.collect_text()));
                 headings.push((node, heading.level, id));
@@ -508,6 +513,9 @@ fn render(
     // Before the heading wrap, which gives a heading's first text a sibling.
     for node in texts {
         link_tags(&arena, node);
+    }
+    for node in callouts {
+        fold(&arena, node);
     }
     for (node, level, id) in headings {
         wrap(
@@ -994,6 +1002,50 @@ impl CodefenceRendererAdapter for Mermaid {
     ) -> std::fmt::Result {
         writeln!(output, "<pre class=\"mermaid\">{}</pre>", escape(code))
     }
+}
+
+/// Renders a foldable callout as `<details>`, so the keyboard and a screen reader can open it
+/// with no script. `[!type]+` starts open, `[!type]-` closed.
+fn fold<'a>(arena: &'a Arena<'a>, node: &'a AstNode<'a>) {
+    let NodeValue::Callout(c) = &node.data().value else {
+        return;
+    };
+    let meta = c
+        .metadata
+        .as_deref()
+        .map(|m| format!(" data-callout-metadata=\"{}\"", escape(m)))
+        .unwrap_or_default();
+    let open = if c.fold == CalloutFold::Expanded {
+        " open"
+    } else {
+        ""
+    };
+    let details = format!(
+        "<details class=\"callout\" data-callout=\"{}\"{meta}{open}>\n",
+        escape(&c.callout_type)
+    );
+    let title = escape(&c.default_title());
+    let content = "</summary>\n<div class=\"callout-content\">\n";
+    match node.first_child() {
+        Some(first) if matches!(first.data().value, NodeValue::CalloutTitle) => {
+            // The title's text sits in a paragraph, which comrak leaves untagged only there.
+            for p in first.children().collect::<Vec<_>>() {
+                if matches!(p.data().value, NodeValue::Paragraph) {
+                    wrap(arena, p, String::new(), String::new());
+                }
+            }
+            wrap(
+                arena,
+                first,
+                "<summary class=\"callout-title\">".to_string(),
+                content.to_string(),
+            )
+        }
+        _ => node.prepend(arena.alloc(AstNode::from(NodeValue::Raw(format!(
+            "<summary class=\"callout-title\">{title}{content}"
+        ))))),
+    }
+    wrap(arena, node, details, "</div>\n</details>\n".to_string());
 }
 
 /// Replaces a node with raw tags around its children. comrak's own link markup would

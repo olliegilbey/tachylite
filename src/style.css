@@ -32,7 +32,6 @@
   }
 }
 * { box-sizing: border-box; }
-/* A `#heading` link lands below the sticky header. */
 html { scroll-padding-top: 3.5rem; }
 body { margin: 0; background: var(--bg); color: var(--fg); overflow-wrap: break-word; }
 main { max-width: 44rem; margin: 0 auto; padding: 0.5rem 1rem 4rem; }
@@ -80,7 +79,6 @@ th { background: var(--raise); }
 
 li:has(> input[type="checkbox"]) { list-style: none; margin-left: -1.4em; }
 input[type="checkbox"] { margin-right: 0.4em; }
-/* A loose list wraps each task's text in a paragraph. */
 li > input[type="checkbox"] + p { display: inline; }
 
 .properties {
@@ -98,8 +96,7 @@ li > input[type="checkbox"] + p { display: inline; }
   border-left: 4px solid var(--c); background: var(--raise); border-radius: 4px;
 }
 .callout-title { font-weight: 600; color: var(--c); }
-.callout:not([data-callout-fold="none"]) > .callout-title { cursor: pointer; }
-.callout[data-callout-fold="collapsed"] .callout-content { display: none; }
+summary.callout-title { cursor: pointer; }
 .callout-content > :last-child { margin-bottom: 0.25rem; }
 .callout:is([data-callout="tip"], [data-callout="success"], [data-callout="check"], [data-callout="done"]) { --c: var(--tip); }
 .callout:is([data-callout="warning"], [data-callout="caution"], [data-callout="attention"], [data-callout="question"], [data-callout="help"], [data-callout="faq"]) { --c: var(--warn); }
@@ -113,7 +110,6 @@ li > input[type="checkbox"] + p { display: inline; }
 
 ul.folders, ul.notes, ul.recent { padding-left: 0; list-style: none; }
 ul.folders li, ul.notes li, ul.recent li { border-bottom: 1px solid var(--line); }
-/* The whole row is the tap target. */
 ul:is(.folders, .notes, .recent) a { display: block; padding: 0.3rem 0; }
 ul.recent a { padding-bottom: 0; }
 ul.recent .meta { padding-bottom: 0.3rem; }
@@ -127,9 +123,9 @@ dialog.switcher {
 dialog.switcher::backdrop { background: #0008; }
 dialog.switcher input {
   width: 100%; padding: 0.75rem 1rem; font: inherit; color: inherit;
-  background: var(--raise); border: 0; border-bottom: 1px solid var(--line); outline: none;
+  background: var(--raise); border: 0; border-bottom: 1px solid var(--line); outline-offset: -2px;
 }
 dialog.switcher ul { margin: 0; padding: 0; list-style: none; max-height: 60vh; overflow-y: auto; }
 dialog.switcher li a { display: block; padding: 0.5rem 1rem; color: var(--fg); }
-dialog.switcher li:first-child a, dialog.switcher li a:focus { background: var(--raise); }
+dialog.switcher input:focus + ul li:first-child a, dialog.switcher li a:focus { background: var(--raise); }
 dialog.switcher .meta { display: inline; margin-left: 0.5rem; }

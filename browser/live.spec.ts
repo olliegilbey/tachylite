@@ -46,6 +46,16 @@ test("push swaps main", async ({ page }, info) => {
   await expect(page.locator("main")).toContainText("second text");
 });
 
+test("a push keeps a callout the reader opened open", async ({ page }, info) => {
+  const name = `fold-${info.project.name}`;
+  note(name, "# Fold\n\n> [!tip]- Folded\n> hidden body\n\nfirst text\n");
+  await open(page, name, "first text");
+  await page.locator(".callout-title").click();
+  note(name, "# Fold\n\n> [!tip]- Folded\n> hidden body\n\nsecond text\n");
+  await expect(page.locator("main")).toContainText("second text");
+  await expect(page.locator(".callout-content")).toBeVisible();
+});
+
 test("a backlink appears on an open page", async ({ page }, info) => {
   const target = `target-${info.project.name}`;
   const linker = `linker-${info.project.name}`;

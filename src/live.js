@@ -23,14 +23,6 @@
   };
   diagrams();
 
-  // A folded callout opens and closes on a tap on its title.
-  document.addEventListener("click", (e) => {
-    const title = e.target.closest?.('.callout:not([data-callout-fold="none"]) > .callout-title');
-    if (!title) return;
-    const callout = title.parentElement;
-    callout.dataset.calloutFold = callout.dataset.calloutFold === "collapsed" ? "expanded" : "collapsed";
-  });
-
   // The quick switcher: a fuzzy match over every note's title, aliases and path.
   // How well `query` matches `text` as a subsequence: fewer runs first, then an earlier
   // start. Infinity when it does not.
@@ -87,16 +79,28 @@
       dialog = document.createElement("dialog");
       dialog.className = "switcher";
       dialog.input = document.createElement("input");
-      dialog.input.type = "search";
+      // A search field would take the first Escape to clear itself.
+      dialog.input.type = "text";
+      dialog.input.enterKeyHint = "go";
       dialog.input.placeholder = "Find a note";
       dialog.input.setAttribute("aria-label", "Find a note");
       dialog.list = document.createElement("ul");
+      dialog.list.setAttribute("aria-live", "polite");
       dialog.append(dialog.input, dialog.list);
       document.body.append(dialog);
       dialog.input.addEventListener("input", show);
       dialog.input.addEventListener("keydown", (e) => {
         const first = dialog.list.querySelector("a");
         if (e.key === "Enter" && first) location.href = first.href;
+      });
+      dialog.addEventListener("keydown", (e) => {
+        const step = { ArrowDown: 1, ArrowUp: -1 }[e.key];
+        const stops = [dialog.input, ...dialog.list.querySelectorAll("a")];
+        const next = step && stops[stops.indexOf(document.activeElement) + step];
+        if (next) {
+          e.preventDefault();
+          next.focus();
+        }
       });
       // A tap on the backdrop lands on the dialog itself.
       dialog.addEventListener("click", (e) => e.target === dialog && dialog.close());
@@ -158,6 +162,9 @@
       const main = next.querySelector("main");
       const current = document.querySelector("main");
       if (!main || !current) return;
+      // A callout stays as the reader left it.
+      const open = [...current.querySelectorAll("details")].map((d) => d.open);
+      main.querySelectorAll("details").forEach((d, i) => i in open && (d.open = open[i]));
       current.replaceWith(main);
       document.title = next.title;
       meta.content = e.lastEventId;

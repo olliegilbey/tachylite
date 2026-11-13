@@ -407,11 +407,28 @@ fn not_tags() {
 fn callouts_and_highlight() {
     let html = plain("> [!tip]- Folded\n> body\n\n==mark==");
     assert!(
-        html.contains(
-            "<div class=\"callout\" data-callout=\"tip\" data-callout-fold=\"collapsed\">"
-        )
+        html.contains("<details class=\"callout\" data-callout=\"tip\">"),
+        "{html}"
     );
     assert!(html.contains("<mark>mark</mark>"));
+}
+
+#[test]
+fn foldable_callouts_render_as_details() {
+    let html =
+        plain("> [!tip]- Folded *tip*\n> body\n\n> [!faq]+\n> shown\n\n> [!note]\n> fixed\n");
+    assert_eq!(
+        html,
+        "<details class=\"callout\" data-callout=\"tip\">\n\
+         <summary class=\"callout-title\">Folded <em>tip</em></summary>\n\
+         <div class=\"callout-content\">\n<p>body</p>\n</div>\n</details>\n\
+         <details class=\"callout\" data-callout=\"faq\" open>\n\
+         <summary class=\"callout-title\">Faq</summary>\n\
+         <div class=\"callout-content\">\n<p>shown</p>\n</div>\n</details>\n\
+         <div class=\"callout\" data-callout=\"note\" data-callout-fold=\"none\">\n\
+         <div class=\"callout-title\">Note</div>\n\
+         <div class=\"callout-content\">\n<p>fixed</p>\n</div>\n</div>\n"
+    );
 }
 
 #[test]

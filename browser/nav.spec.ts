@@ -140,12 +140,52 @@ test("a tap beside a title in an index list opens the note", async ({ page }) =>
   await expect(page).toHaveURL(base + "/garden/Fern%20care");
 });
 
-test("a folded callout opens on a tap", async ({ page }) => {
-  note("fold", "# Fold\n\n> [!tip]- Folded\n> hidden body\n");
+test("a folded callout opens on a tap and from the keyboard", async ({ page }) => {
+  note("fold", "# Fold\n\n> [!tip]- Folded\n> hidden body\n\n> [!note]+ Open\n> shown body\n");
   await expect.poll(async () => (await page.request.get(base + "/fold")).status()).toBe(200);
   await page.goto(base + "/fold");
-  const body = page.locator(".callout-content");
+  const body = page.locator(".callout-content").first();
   await expect(body).toBeHidden();
-  await page.locator(".callout-title").click();
+  await expect(page.locator(".callout-content").nth(1)).toBeVisible();
+  await page.locator(".callout-title").first().click();
   await expect(body).toBeVisible();
+  await page.locator(".callout-title").first().click();
+  await expect(body).toBeHidden();
+  await page.locator(".callout-title").first().focus();
+  await page.keyboard.press("Enter");
+  await expect(body).toBeVisible();
+});
+
+test("Escape closes the switcher with a query typed", async ({ page, isMobile }) => {
+  test.skip(isMobile, "a phone has no Escape key");
+  await page.goto(base + "/a");
+  await find(page, "rose");
+  await expect(page.locator("dialog.switcher li")).toHaveCount(1);
+  await page.keyboard.press("Escape");
+  await expect(page.locator("dialog.switcher")).toBeHidden();
+});
+
+test("the arrow keys move through the switcher's results", async ({ page, isMobile }) => {
+  test.skip(isMobile, "a phone has no arrow keys");
+  await page.goto(base + "/a");
+  await find(page, "e");
+  const input = page.locator("dialog.switcher input");
+  await expect(input).toHaveAttribute("enterkeyhint", "go");
+  await expect(page.locator("dialog.switcher ul")).toHaveAttribute("aria-live", "polite");
+  const links = page.locator("dialog.switcher li a");
+  await expect(links).toHaveCount(2);
+  await page.keyboard.press("ArrowDown");
+  await expect(links.nth(0)).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(links.nth(1)).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(links.nth(1)).toBeFocused();
+  await page.keyboard.press("ArrowUp");
+  await page.keyboard.press("ArrowUp");
+  await expect(input).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
+  const second = await links.nth(1).getAttribute("href");
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(base + second);
 });
