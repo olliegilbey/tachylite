@@ -140,6 +140,7 @@
   let retry = 0;
   let wait = 1500;
   let notice = 0;
+  let kept = false;
   // A network error retries on its own, but an HTTP error, as from a proxy while the
   // server is down, closes the stream for good: retry from 3 s, doubling to a minute. A
   // hidden tab holds no stream, since a browser allows six HTTP/1.1 connections per origin.
@@ -153,6 +154,8 @@
     events.onopen = () => {
       wait = 1500;
       sync();
+      // So the offline copy survives storage pressure. It never prompts on Chrome or Safari.
+      kept ||= !!navigator.storage?.persist?.().catch(() => {});
     };
     events.onerror = (e) =>
       e.target.readyState === 2 && (retry = setTimeout(connect, (wait = Math.min(wait * 2, 6e4))));

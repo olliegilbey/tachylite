@@ -1164,6 +1164,7 @@ pub fn shell(title: &str, main: &str) -> Page {
                   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
                   <meta name=\"color-scheme\" content=\"dark light\">\n\
                   <link rel=\"manifest\" href=\"/.tachylite/app.webmanifest\">\n\
+                  <link rel=\"icon\" href=\"/.tachylite/icon.svg\">\n\
                   <link rel=\"stylesheet\" href=\"/.tachylite/style.css\">\n\
                   <meta name=\"tachylite-version\" content=\"";
     let after = format!(

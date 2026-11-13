@@ -56,6 +56,24 @@ test("a push keeps a callout the reader opened open", async ({ page }, info) => 
   await expect(page.locator(".callout-content")).toBeVisible();
 });
 
+test("the page asks once to keep its storage, and shows an icon", async ({ page }, info) => {
+  await page.addInitScript(() => {
+    const w = window as any;
+    w.persists = 0;
+    navigator.storage.persist = () => (w.persists++, Promise.reject(new Error("refused")));
+  });
+  const name = `persist-${info.project.name}`;
+  note(name, "# Persist\n\npersist text\n");
+  await open(page, name, "persist text");
+  await expect.poll(() => page.evaluate(() => (window as any).persists)).toBe(1);
+  await page.evaluate(() => (window as any).streams.at(-1).dispatchEvent(new Event("open")));
+  expect(await page.evaluate(() => (window as any).persists)).toBe(1);
+  const icon = await page.locator('link[rel="icon"]').getAttribute("href");
+  const r = await page.request.get(icon!);
+  expect(r.status()).toBe(200);
+  expect(r.headers()["content-type"]).toContain("image/svg+xml");
+});
+
 test("a backlink appears on an open page", async ({ page }, info) => {
   const target = `target-${info.project.name}`;
   const linker = `linker-${info.project.name}`;
