@@ -686,8 +686,9 @@ fn parsed_in_code(md: &str, openers: &[usize]) -> bool {
 }
 
 /// True when the only code in `md` is fences at column 0, which the stripper reads exactly
-/// as the parser does: no other backtick or tilde, no tab, no four-space run, no lone
-/// carriage return, and no HTML block that could hold a fence line. An HTML block that opens with `<!`, `<?`, `<pre`,
+/// as the parser does: no other backtick or tilde, no tab, no four-space run in a line's
+/// indent and container markers, no lone carriage return, and no HTML block that could hold
+/// a fence line. An HTML block that opens with `<!`, `<?`, `<pre`,
 /// `<script`, `<style` or `<textarea` may run past a blank line, so it rules the note out.
 /// Any other ends at a blank line, so it holds no fence line when its lines hold no
 /// backtick or tilde.
@@ -702,7 +703,13 @@ fn plain_fences(md: &str) -> bool {
     }
     let mut fence = None;
     let mut html = false;
+    // Where the next of each is, found once for the note rather than once a line.
+    let next = |from: usize, c: char| md[from..].find(c).map_or(md.len(), |at| from + at);
+    let mut code = ['`', '~', '\t'].map(|c| (c, next(0, c)));
+    let mut end = 0;
     for line in md.split_inclusive('\n') {
+        let start = end;
+        end += line.len();
         let bytes = line.as_bytes();
         let run = |c: u8| bytes.iter().take_while(|&&b| b == c).count();
         if let Some((c, n)) = fence {
@@ -729,7 +736,20 @@ fn plain_fences(md: &str) -> bool {
             fence = Some((c, run(c)));
             continue;
         }
-        if line.contains(['`', '~', '\t']) || line.contains("    ") {
+        for (c, at) in &mut code {
+            if *at < start {
+                *at = next(start, *c);
+            }
+            if *at < end {
+                return false;
+            }
+        }
+        // Indented code starts after a line's indent and container markers, never after text.
+        let prefix = bytes
+            .iter()
+            .take_while(|b| b" >-*+0123456789.)".contains(b))
+            .count();
+        if line[..prefix].contains("    ") {
             return false;
         }
         let rest = line.trim_start_matches(' ');
