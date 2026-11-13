@@ -102,10 +102,11 @@ fn leaks(delta: &Delta) -> bool {
     writes || pushes
 }
 
-/// The URLs the written manifest lists.
+/// The page URLs the written manifest lists.
 fn manifest_urls(out: &Out) -> std::collections::BTreeSet<String> {
     let json = String::from_utf8_lossy(&out[tachylite::site::MANIFEST]).into_owned();
-    let inner = &json[r#"{"pages":{"#.len()..json.len() - 2];
+    let end = json.find(r#"},"files":["#).unwrap_or(json.len() - 2);
+    let inner = &json[r#"{"pages":{"#.len()..end];
     inner
         .split('"')
         .skip(1)

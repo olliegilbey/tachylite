@@ -101,11 +101,15 @@
       // A tap on the backdrop lands on the dialog itself.
       dialog.addEventListener("click", (e) => e.target === dialog && dialog.close());
     }
-    // The worker answers from its cache, so this costs nothing offline. While the stream is
-    // open, it asks the network first, so a new note shows.
-    notes = fetch("/.tachylite/notes.json", { cache: events?.readyState === 1 ? "no-cache" : "default" })
-      .then((r) => r.json())
-      .catch(() => []);
+    // The worker answers from its cache at once, so this costs nothing offline. While the
+    // stream is open, the network's list follows, so a new note shows.
+    const list = (cache) => fetch("/.tachylite/notes.json", { cache }).then((r) => r.json());
+    notes = list("default").catch(() => []);
+    if (events?.readyState === 1)
+      list("no-cache").then((fresh) => {
+        notes = Promise.resolve(fresh);
+        if (dialog.open) show();
+      }, () => {});
     dialog.input.value = "";
     dialog.list.replaceChildren();
     dialog.showModal();
@@ -130,10 +134,11 @@
   const meta = document.querySelector('meta[name="tachylite-version"]');
   if (!meta || !window.EventSource) return;
   let retry = 0;
+  let wait = 1500;
   let notice = 0;
   // A network error retries on its own, but an HTTP error, as from a proxy while the
-  // server is down, closes the stream for good. A hidden tab holds no stream, since a
-  // browser allows six HTTP/1.1 connections per origin.
+  // server is down, closes the stream for good: retry from 3 s, doubling to a minute. A
+  // hidden tab holds no stream, since a browser allows six HTTP/1.1 connections per origin.
   const connect = () => {
     clearTimeout(retry);
     events?.close();
@@ -141,8 +146,12 @@
     events = new EventSource(
       "/.tachylite/events?page=" + encodeURIComponent(location.pathname) + "&v=" + meta.content,
     );
-    events.onopen = sync;
-    events.onerror = (e) => e.target.readyState === 2 && (retry = setTimeout(connect, 3000));
+    events.onopen = () => {
+      wait = 1500;
+      sync();
+    };
+    events.onerror = (e) =>
+      e.target.readyState === 2 && (retry = setTimeout(connect, (wait = Math.min(wait * 2, 6e4))));
     events.addEventListener("page", (e) => {
       clearTimeout(notice);
       const next = new DOMParser().parseFromString(e.data, "text/html");

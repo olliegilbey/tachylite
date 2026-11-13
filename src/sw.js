@@ -96,7 +96,8 @@ async function sync() {
   const keys = (await cache.keys()).map((r) => new URL(r.url).pathname);
   const cached = new Set(keys);
   const keep = new Set([...KEEP, ...files]);
-  const have = {};
+  // A pending Mermaid entry outlives a sync cut short, so the script is fetched in the end.
+  const have = MERMAID in held ? { [MERMAID]: "" } : {};
   const stale = [];
   for (const [url, version] of Object.entries(want)) {
     have[url] = cached.has(url) ? (held[url] ?? "") : "";
@@ -109,7 +110,6 @@ async function sync() {
   const save = () => cache.put(MANIFEST, json(have));
   await save();
   let stored = 0;
-  let diagram = false;
   const workers = Array.from({ length: 6 }, async () => {
     for (let url; (url = stale.shift()); ) {
       try {
@@ -125,7 +125,7 @@ async function sync() {
           : want[url];
         await cache.put(url, r);
         have[url] = version;
-        diagram ||= text.includes('<pre class="mermaid">');
+        if (!cached.has(MERMAID) && text.includes('<pre class="mermaid">')) have[MERMAID] = "";
         if (++stored % 50 === 0) await save();
       } catch {
         // A dropped connection or a full disk: the next sync retries it.
@@ -135,5 +135,9 @@ async function sync() {
   await Promise.all(workers);
   await save();
   // A diagram draws offline only with the script. It is large, so it comes after the pages.
-  if (diagram && !cached.has(MERMAID)) await cache.add(MERMAID).catch(() => {});
+  if (MERMAID in have) {
+    if (!cached.has(MERMAID)) await cache.add(MERMAID);
+    delete have[MERMAID];
+    await save();
+  }
 }
