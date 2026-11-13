@@ -24,7 +24,7 @@ use crate::{Error, report};
 #[derive(Clone)]
 pub struct Live {
     pub pushes: broadcast::Sender<Arc<Push>>,
-    /// The current version of each published note page, by key.
+    /// The current version of each published page, by key.
     pub versions: Arc<Mutex<HashMap<String, String>>>,
 }
 

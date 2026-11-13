@@ -603,7 +603,8 @@ impl Site {
 
     /// Derives the index pages and the switcher list, and writes the manifest, if any apply
     /// since the last derive changed what they show. The watcher calls it once its queue is
-    /// empty, so a burst of saves pays it once; a full build calls it after its one apply.
+    /// empty, so a burst of saves pays it once, and sooner after an unpublish or a second of
+    /// burst. A full build calls it after its one apply.
     pub fn derive_to(&mut self, sink: &mut impl Sink) {
         if !self.due && self.listed {
             return;
