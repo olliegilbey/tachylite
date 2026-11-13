@@ -64,15 +64,16 @@ fn listing(folder: &Folder) -> String {
     if !folder.items.is_empty() {
         html.push_str("<ul class=\"notes\">");
         for item in &folder.items {
-            html.push_str(&format!(
-                "<li><a href=\"{}\">{}</a></li>",
-                item.url,
-                escape(item.title)
-            ));
+            html.push_str(&row(item.title, &item.url));
         }
         html.push_str("</ul>\n");
     }
     html
+}
+
+/// One page's line in a list of notes.
+pub fn row(title: &str, url: &str) -> String {
+    format!("<li><a href=\"{url}\">{}</a></li>", escape(title))
 }
 
 fn recent_list(items: &[&Item]) -> String {
@@ -116,14 +117,12 @@ pub fn folder(folder: &Folder) -> Page {
     shell(name, &main)
 }
 
-/// `/.tachylite/tags/<tag>`: the notes with the tag or a tag nested under it.
-pub fn tag(tag: &str, items: Vec<Item>) -> Page {
-    let mut main = format!("<h1>#{}</h1>\n", escape(tag));
-    main.push_str(&listing(&Folder {
-        path: "",
-        folders: Vec::new(),
-        items,
-    }));
+/// `/.tachylite/tags/<tag>`: the notes with the tag or a tag nested under it, as `row`s in
+/// listing order.
+pub fn tag<'a>(tag: &str, rows: impl IntoIterator<Item = &'a str>) -> Page {
+    let mut main = format!("<h1>#{}</h1>\n<ul class=\"notes\">", escape(tag));
+    main.extend(rows);
+    main.push_str("</ul>\n");
     shell(&format!("#{tag}"), &main)
 }
 

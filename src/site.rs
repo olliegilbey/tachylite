@@ -127,6 +127,14 @@ const FOLDERS: &str = ".tachylite/folders/";
 /// with the folder of a nested tag.
 const TAGS: &str = ".tachylite/tags/";
 
+/// The rows of the tag pages one apply builds.
+struct Rows {
+    /// Each listed note's place in listing order.
+    places: HashMap<String, usize>,
+    /// Each note's row, by place.
+    rows: Vec<String>,
+}
+
 /// Where the manifest lives in the output: `/.tachylite/manifest.json`.
 pub const MANIFEST: &str = "files/.tachylite/manifest.json";
 
@@ -614,8 +622,9 @@ impl Site {
         for (key, version, html) in built {
             changed |= self.emit(key, version, html, sink);
         }
+        let rows = self.rows(&tags);
         for tag in tags {
-            if let Some(page) = self.tag_page(&tag) {
+            if let Some(page) = self.tag_page(&tag, &rows) {
                 changed |= self.emit(format!("{TAGS}{tag}"), page.version, page.html, sink);
             }
         }
@@ -672,34 +681,54 @@ impl Site {
         self.tagged.contains_key(tag) || self.nested(tag).next().is_some()
     }
 
-    /// The page of tag `tag`: the notes tagged `tag` or a tag under it, or none if no
-    /// note is.
-    fn tag_page(&self, tag: &str) -> Option<Page> {
-        let mut notes: Vec<&str> = self
-            .tagged
+    /// The notes tagged `tag` or a tag under it, each once, in no order.
+    fn listed(&self, tag: &str) -> impl Iterator<Item = &str> {
+        self.tagged
             .get(tag)
             .into_iter()
             .chain(self.nested(tag))
             .flatten()
             .map(String::as_str)
-            .collect();
-        if notes.is_empty() {
-            return None;
-        }
-        // A note with two nested tags is listed once.
+    }
+
+    /// Each note the pages of `tags` list, with its place in listing order, and its row by
+    /// that place. A note is on several tag pages, so its row is made once.
+    fn rows(&self, tags: &BTreeSet<String>) -> Rows {
+        let mut notes: Vec<&str> = tags.iter().flat_map(|tag| self.listed(tag)).collect();
         notes.sort_unstable();
         notes.dedup();
+        // Stable, so equal titles stay in path order.
         notes.sort_by_cached_key(|path| indexes::order(self.title(path)));
-        let items: Vec<Item> = notes
-            .into_iter()
-            .map(|path| Item {
-                title: self.title(path),
-                url: url(path),
-                folder: "",
-                modified: 0,
-            })
+        let rows = notes
+            .iter()
+            .map(|path| indexes::row(self.title(path), &url(path)))
             .collect();
-        Some(indexes::tag(tag, items))
+        let places = notes
+            .into_iter()
+            .enumerate()
+            .map(|(place, path)| (path.to_string(), place))
+            .collect();
+        Rows { places, rows }
+    }
+
+    /// The page of tag `tag`: the notes tagged `tag` or a tag under it, or none if no
+    /// note is. `rows` holds every note it lists.
+    fn tag_page(&self, tag: &str, rows: &Rows) -> Option<Page> {
+        // Places, not titles, are sorted: a title compare reads scattered memory.
+        let mut places: Vec<usize> = self
+            .listed(tag)
+            .filter_map(|path| rows.places.get(path).copied())
+            .collect();
+        if places.is_empty() {
+            return None;
+        }
+        places.sort_unstable();
+        // A note with two nested tags is listed once.
+        places.dedup();
+        Some(indexes::tag(
+            tag,
+            places.into_iter().map(|place| rows.rows[place].as_str()),
+        ))
     }
 
     /// Replaces a note's tag keys, and marks each added or removed tag dirty.

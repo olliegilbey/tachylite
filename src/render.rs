@@ -944,14 +944,16 @@ pub fn strip_comments(md: &str) -> Stripped<'_> {
         unclosed: false,
         openers: Vec::new(),
     };
-    if !md.contains("%%") {
+    // No comment opens past the last `%%`, so the rest of the note is kept as it is.
+    let Some(last) = md.rfind("%%") else {
         return stripped;
-    }
+    };
     let bytes = md.as_bytes();
+    let mut next = Next::new(md);
     let mut out = String::with_capacity(md.len());
     let mut blocks = Blocks::default();
     let (mut i, mut kept, mut start, mut line) = (0, 0, true, 0);
-    while i < bytes.len() {
+    while i <= last {
         if start {
             (start, line) = (false, i);
             let end = md[i..].find('\n').map_or(md.len(), |e| i + e + 1);
@@ -1000,12 +1002,38 @@ pub fn strip_comments(md: &str) -> Stripped<'_> {
                     }
                 }
             }
-            _ => i += 1,
+            _ => i = next.at(md, i + 1),
         }
     }
     out.push_str(&md[kept.min(md.len())..]);
     stripped.text = Cow::Owned(out);
     stripped
+}
+
+/// The next byte the stripper acts on: a newline, `\\`, a backtick or `%`. Each is found by a
+/// fast search, rather than a test of every byte in between.
+struct Next([usize; 4]);
+
+impl Next {
+    const BYTES: [char; 4] = ['\n', '\\', '`', '%'];
+
+    fn new(md: &str) -> Next {
+        Next(Self::BYTES.map(|c| md.find(c).unwrap_or(md.len())))
+    }
+
+    /// The offset of the first such byte at or after `from`, or the end of `md`.
+    fn at(&mut self, md: &str, from: usize) -> usize {
+        // Each byte sought is ASCII, so none starts inside a character.
+        let from = (from..md.len())
+            .find(|&i| md.is_char_boundary(i))
+            .unwrap_or(md.len());
+        for (at, c) in self.0.iter_mut().zip(Self::BYTES) {
+            if *at < from {
+                *at = md[from..].find(c).map_or(md.len(), |i| from + i);
+            }
+        }
+        self.0.iter().copied().min().unwrap_or(md.len())
+    }
 }
 
 /// A Mermaid fence becomes `<pre class="mermaid">`, which the client draws.
@@ -1152,3 +1180,5 @@ pub fn shell(title: &str, main: &str) -> Page {
     let html = format!("{before}{version}{after}");
     Page { html, version }
 }
+
+
