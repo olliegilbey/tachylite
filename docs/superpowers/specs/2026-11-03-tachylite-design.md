@@ -87,7 +87,7 @@ The binary serves the files itself, so it controls compression, `ETag` and `Cach
   3. A bare name matches by basename. When several files share it (`README` in many folders), the nearest one wins: same folder, then the fewest folder steps away. A tie is a broken link.
   4. Then aliases, for a bare name only. The nearest note with the alias wins, and a tie is a broken link.
   Matching ignores case, and a note's `.md` is optional. Any other file needs its extension: `[[route.html]]`, `[[dot.png]]`. A link whose last segment names a folder (`[[people/..]]`) is missing.
-  A Markdown link with no URL scheme, such as `[Jane](people/Jane%20Doe.md)`, is percent-decoded and resolved the same way. A link with a scheme, or one that starts with `/` or `#`, stays as written.
+  A Markdown link with no URL scheme, such as `[Jane](people/Jane%20Doe.md)`, is percent-decoded and resolved the same way. A link with a scheme, or one that starts with `/`, stays as written. A link that starts with `#`, such as `[x](#Some%20Heading)`, is percent-decoded and links to that heading in the same note, as `[[#Some Heading]]` does.
   `[[note#Heading]]` links to the heading's id, a GitHub-style slug. Tachylite writes the ids itself, without comrak's anchor link per heading.
   An unresolved link renders as `<a class="broken-link">label</a>`, with no `href`. The build logs every broken and ambiguous link: `broken link in <note>: <target>`, or `ambiguous link in <note>: <target> matches <n> files`.
   An excluded note does not exist to the resolver. A link to it renders and logs exactly like a link to a missing note, so the output never reveals that it exists.

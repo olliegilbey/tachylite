@@ -160,6 +160,40 @@ fn heading_links_use_heading_ids() {
 }
 
 #[test]
+fn markdown_heading_links_use_heading_ids() {
+    let html = plain("# Some Heading\n\n[x](#Some%20Heading) [y](#some-heading)");
+    assert_eq!(
+        html.matches("<a href=\"#some-heading\">").count(),
+        2,
+        "{html}"
+    );
+}
+
+#[test]
+fn a_tag_can_start_a_heading() {
+    let html = plain("# #start of it\n\n## #only");
+    for want in [
+        "<h1 id=\"start-of-it\"><a class=\"tag\" href=\"/.tachylite/tags/start\">#start</a> of it</h1>",
+        "<h2 id=\"only\"><a class=\"tag\" href=\"/.tachylite/tags/only\">#only</a></h2>",
+    ] {
+        assert!(html.contains(want), "{want} not in {html}");
+    }
+}
+
+#[test]
+fn frontmatter_tabs_comma_tags_and_empty_items() {
+    let html = plain("---\ntitle:\tTabbed\ntags: a, b\nlist:\n  - x\n  -\n  - y\n---\n");
+    for want in [
+        "<dt>title</dt><dd>Tabbed</dd>",
+        "<dd><a class=\"tag\" href=\"/.tachylite/tags/a\">#a</a>, \
+         <a class=\"tag\" href=\"/.tachylite/tags/b\">#b</a></dd>",
+        "<dt>list</dt><dd>x, y</dd>",
+    ] {
+        assert!(html.contains(want), "{want} not in {html}");
+    }
+}
+
+#[test]
 fn backlinks_list_at_the_foot_of_main() {
     let page = render_page(
         "b.md",
@@ -607,6 +641,24 @@ fn paths(set: &std::collections::BTreeSet<std::sync::Arc<str>>) -> Vec<&str> {
 }
 
 #[test]
+fn a_note_embed_splits_its_paragraph() {
+    let body = embed(
+        "a.md",
+        "Before ![[b]] after.\n![[c]]\n![[d]]\n",
+        &[("b.md", "Bee"), ("c.md", "Cee"), ("d.md", "Dee")],
+        &[],
+    );
+    assert!(!body.html.contains("<p><div"), "{}", body.html);
+    assert!(!body.html.contains("</div>\n</p>"), "{}", body.html);
+    for want in [
+        "<p>Before</p>\n<div class=\"embed\"><a class=\"embed-link\" href=\"/b\">b</a>\n<p>Bee</p>\n</div>\n<p>after.</p>\n<div class=\"embed\">",
+        "<p>Dee</p>\n</div>\n",
+    ] {
+        assert!(body.html.contains(want), "{want} not in {}", body.html);
+    }
+}
+
+#[test]
 fn image_embed_renders_img() {
     let body = embed(
         "a.md",
@@ -996,7 +1048,11 @@ fn embedded_ids_stay_unique_and_their_links_stay_inside() {
     assert_eq!(ids.len(), 9, "{ids:?}");
     for href in attrs(&body.html, "href") {
         if let Some(fragment) = href.strip_prefix('#') {
-            assert!(ids.contains(&fragment), "{href} targets no id in {}", body.html);
+            assert!(
+                ids.contains(&fragment),
+                "{href} targets no id in {}",
+                body.html
+            );
         }
     }
     // The host's own ids keep their plain names.

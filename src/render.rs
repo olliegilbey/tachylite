@@ -287,12 +287,17 @@ fn tag_link(tag: &str) -> String {
     )
 }
 
-/// One property value: a tag, a lone `[[link]]`, or text.
+/// One property value: tags, a lone `[[link]]`, or text. `tags: a, b` holds two tags.
 fn property(body: &mut Body, from: &str, index: &Index, key: &str, value: &str) -> String {
     if key == "tags" {
-        let tag = value.trim().trim_start_matches('#');
-        if !tag.is_empty() {
-            return tag_link(tag);
+        let tags: Vec<String> = value
+            .split(',')
+            .map(|t| t.trim().trim_start_matches('#'))
+            .filter(|t| !t.is_empty())
+            .map(tag_link)
+            .collect();
+        if !tags.is_empty() {
+            return tags.join(", ");
         }
     }
     if front::one_link(value) {
@@ -319,6 +324,7 @@ fn properties(body: &mut Body, from: &str, yaml: &str, index: &Index) -> String 
             Value::List(items) => {
                 let items: Vec<String> = items
                     .iter()
+                    .filter(|item| !item.trim().is_empty())
                     .map(|item| property(body, from, index, &key, item))
                     .collect();
                 html.push_str(&items.join(", "));
@@ -330,9 +336,9 @@ fn properties(body: &mut Body, from: &str, yaml: &str, index: &Index) -> String 
     html
 }
 
-/// Renders a note's Markdown and resolves its links against the published paths.
-/// Renders a note's body. `sources` holds the notes its embeds may read; an embed of a note
-/// missing from it renders as a link.
+/// Renders a note's body and resolves its links against the published paths. `sources`
+/// holds the notes its embeds may read; an embed of a note missing from it renders as a
+/// link.
 pub fn render_body(from: &str, markdown: &str, index: &Index, sources: &Sources) -> Body {
     let mut seen = HashSet::from([from.to_string()]);
     render(from, markdown, index, sources, (0, &mut seen))
@@ -431,6 +437,9 @@ fn render(
                 let (path, heading) = split(&link.url);
                 decode(path).map(|path| (path, heading.and_then(decode)))
             }
+            NodeValue::Link(link) if link.url.starts_with('#') => {
+                decode(&link.url[1..]).map(|heading| (String::new(), Some(heading)))
+            }
             _ => None,
         };
         let Some((path, heading)) = link else {
@@ -479,15 +488,20 @@ fn render(
         ) {
             Embed::Inline(html) => replace(&arena, node, html),
             Embed::Block(html) => {
-                let parent = node.parent().filter(|p| {
-                    matches!(p.data().value, NodeValue::Paragraph)
-                        && p.first_child().is_some_and(|c| c.same_node(node))
-                        && p.last_child().is_some_and(|c| c.same_node(node))
-                });
-                replace(&arena, parent.unwrap_or(node), html);
+                match node
+                    .parent()
+                    .filter(|p| matches!(p.data().value, NodeValue::Paragraph))
+                {
+                    Some(paragraph) => split_paragraph(&arena, paragraph, node, html),
+                    None => replace(&arena, node, html),
+                }
             }
             Embed::Link(open) => wrap(&arena, node, open, "</a>".to_string()),
         }
+    }
+    // Before the heading wrap, which gives a heading's first text a sibling.
+    for node in texts {
+        link_tags(&arena, node);
     }
     for (node, level, id) in headings {
         wrap(
@@ -496,9 +510,6 @@ fn render(
             format!("<h{level} id=\"{id}\">"),
             format!("</h{level}>\n"),
         );
-    }
-    for node in texts {
-        link_tags(&arena, node);
     }
     let mut html = props;
     let mut plugins = Plugins::default();
@@ -523,11 +534,10 @@ fn render(
 fn tags(text: &str, at_start: bool) -> Vec<(usize, usize)> {
     let mut found = Vec::new();
     let mut prev: Option<char> = None;
-    let mut skip_to = 0;
     for (i, c) in text.char_indices() {
         let boundary = prev.map_or(at_start, char::is_whitespace);
         prev = Some(c);
-        if c != '#' || i < skip_to || !boundary {
+        if c != '#' || !boundary {
             continue;
         }
         let rest = &text[i + 1..];
@@ -537,7 +547,6 @@ fn tags(text: &str, at_start: bool) -> Vec<(usize, usize)> {
         let tag = rest[..len].trim_end_matches('/');
         if tag.chars().any(|c| !c.is_ascii_digit()) {
             found.push((i, i + 1 + tag.len()));
-            skip_to = i + 1 + tag.len();
         }
     }
     found
@@ -908,6 +917,47 @@ fn wrap<'a>(arena: &'a Arena<'a>, node: &'a AstNode<'a>, open: String, close: St
     }
     node.insert_before(raw(close));
     node.detach();
+}
+
+/// Puts a block embed's `html` in place of `node`, between the part of `paragraph` before it
+/// and the part after, so no block sits inside a `<p>`. An empty part is dropped.
+fn split_paragraph<'a>(
+    arena: &'a Arena<'a>,
+    paragraph: &'a AstNode<'a>,
+    node: &'a AstNode<'a>,
+    html: String,
+) {
+    let breaks =
+        |n: &'a AstNode<'a>| matches!(n.data().value, NodeValue::SoftBreak | NodeValue::LineBreak);
+    let after = arena.alloc(AstNode::from(NodeValue::Paragraph));
+    while let Some(next) = node.next_sibling() {
+        after.append(next);
+    }
+    let block = arena.alloc(AstNode::from(NodeValue::Raw(html)));
+    node.detach();
+    paragraph.insert_after(block);
+    while let Some(last) = paragraph.last_child().filter(|n| breaks(n)) {
+        last.detach();
+    }
+    while let Some(first) = after.first_child().filter(|n| breaks(n)) {
+        first.detach();
+    }
+    if let Some(last) = paragraph.last_child()
+        && let NodeValue::Text(text) = &mut last.data_mut().value
+    {
+        *text = Cow::Owned(text.trim_end().to_string());
+    }
+    if let Some(first) = after.first_child()
+        && let NodeValue::Text(text) = &mut first.data_mut().value
+    {
+        *text = Cow::Owned(text.trim_start().to_string());
+    }
+    if after.first_child().is_some() {
+        block.insert_after(after);
+    }
+    if paragraph.first_child().is_none() {
+        paragraph.detach();
+    }
 }
 
 fn replace<'a>(arena: &'a Arena<'a>, node: &'a AstNode<'a>, html: String) {

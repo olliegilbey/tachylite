@@ -107,11 +107,12 @@ pub fn one_link(s: &str) -> bool {
         .is_some_and(|inner| !inner.contains("]]") && !inner.contains("[["))
 }
 
-/// `key: rest`, split at the first colon followed by a space or the line end.
+/// `key: rest`, split at the first colon followed by a space, a tab or the line end.
 fn key_value(line: &str) -> Option<(String, &str)> {
     let bytes = line.as_bytes();
-    let colon = (0..bytes.len())
-        .find(|&j| bytes[j] == b':' && bytes.get(j + 1).is_none_or(|b| *b == b' '))?;
+    let colon = (0..bytes.len()).find(|&j| {
+        bytes[j] == b':' && bytes.get(j + 1).is_none_or(|b| matches!(b, b' ' | b'\t'))
+    })?;
     let key = scalar(line[..colon].trim());
     (!key.is_empty()).then(|| (key, line[colon + 1..].trim()))
 }

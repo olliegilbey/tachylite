@@ -10,7 +10,7 @@ expression: "built(\"notes/links\")"
 <meta name="color-scheme" content="dark light">
 <link rel="manifest" href="/.tachylite/app.webmanifest">
 <link rel="stylesheet" href="/.tachylite/style.css">
-<meta name="tachylite-version" content="164fa4cf359f383b">
+<meta name="tachylite-version" content="97f3a238f26b3303">
 <title>links</title>
 <script src="/.tachylite/live.js" defer></script>
 </head>
@@ -31,7 +31,7 @@ expression: "built(\"notes/links\")"
 <li>Image: <a href="/img/dot.png">dot.png</a></li>
 <li>Markdown: <a href="/people/Jane%20Doe">Jane</a>, <a href="/welcome#a-table">table</a> and <a href="https://example.com">example</a></li>
 <li>Broken: <a class="broken-link">nobody</a> and <a class="broken-link">gone</a></li>
-<li>Embed: <div class="embed"><a class="embed-link" href="/welcome">Welcome</a>
+<li>Embed:<div class="embed"><a class="embed-link" href="/welcome">Welcome</a>
 <h1 id="e1.welcome-to-the-sample-vault">Welcome to the sample vault</h1>
 <p>This vault is synthetic. It exists to test rendering.</p>
 <h2 id="e1.a-table">A table</h2>
