@@ -694,11 +694,14 @@ impl Site {
     /// Each note the pages of `tags` list, with its place in listing order, and its row by
     /// that place. A note is on several tag pages, so its row is made once.
     fn rows(&self, tags: &BTreeSet<String>) -> Rows {
-        let mut notes: Vec<&str> = tags.iter().flat_map(|tag| self.listed(tag)).collect();
-        notes.sort_unstable();
-        notes.dedup();
-        // Stable, so equal titles stay in path order.
-        notes.sort_by_cached_key(|path| indexes::order(self.title(path)));
+        // A set, not a sort, takes out the notes on several pages: paths compare slowly.
+        let mut seen = HashSet::new();
+        let mut notes: Vec<&str> = tags
+            .iter()
+            .flat_map(|tag| self.listed(tag))
+            .filter(|path| seen.insert(*path))
+            .collect();
+        notes.sort_by_cached_key(|path| (indexes::order(self.title(path)), *path));
         let rows = notes
             .iter()
             .map(|path| indexes::row(self.title(path), &url(path)))

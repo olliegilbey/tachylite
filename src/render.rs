@@ -1033,9 +1033,14 @@ pub fn strip_comments(md: &str) -> Stripped<'_> {
         match bytes[i] {
             b'\n' => {
                 out.push_str(&md[kept..=i]);
+                // With no comment since the line began, the output line is the note's.
+                let text = if kept <= line {
+                    &md[line..=i]
+                } else {
+                    &out[out[..out.len() - 1].rfind('\n').map_or(0, |n| n + 1)..]
+                };
+                blocks.paragraph = paragraph_line(text);
                 (i, kept, start) = (i + 1, i + 1, true);
-                let line = &out[out[..out.len() - 1].rfind('\n').map_or(0, |n| n + 1)..];
-                blocks.paragraph = paragraph_line(line);
             }
             // An escape never hides a comment marker.
             b'\\' => {
