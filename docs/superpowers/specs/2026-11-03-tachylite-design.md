@@ -165,7 +165,7 @@ Only these file types reach the output: `.md` (rendered), `.html` (sandboxed), i
 - A page pushed to an open tab is posted to the worker, which stores it with the headers of the copy it replaces and records its version. So a tab that stays connected keeps its own page fresh offline.
 - The worker serves every same-origin request stale-while-revalidate: the cached copy at once, and a fresh copy stored behind it. The switcher shows its cached list at once and, while its stream is open, the network's list after it, so a new note shows. Images, PDFs and html pages load on demand and stay cached once opened, until the manifest stops listing them.
 - A page's version hashes its head template too, so an upgrade that changes the template re-syncs every client.
-- The site is installable as a PWA. The web manifest and its two SVG icons are built into the binary. The second is maskable, so Android crops it to the launcher shape instead of drawing it on a white tile. The service worker script lives under `/.tachylite/`, so the server sends it with `Service-Worker-Allowed: /`, and the page registers it with `scope: '/'`. Both are needed for it to control the whole site.
+- The site is installable as a PWA. The web manifest and its two SVG icons are built into the binary. The second is maskable, so Android crops it to the launcher shape instead of drawing it on a white tile. Both draw the same five-facet gem in the theme's warm greys on black. The service worker script lives under `/.tachylite/`, so the server sends it with `Service-Worker-Allowed: /`, and the page registers it with `scope: '/'`. Both are needed for it to control the whole site.
 
 ### Configuration
 
