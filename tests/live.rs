@@ -11,15 +11,22 @@ use common::{Dirs, Server, version_of};
 use rustix::process::{Pid, Signal, WaitId, WaitIdOptions, kill_process, waitid};
 
 fn with_notes(notes: &[(&str, &str)]) -> (Dirs, Server) {
+    with_notes_env(notes, &[])
+}
+
+fn with_notes_env(notes: &[(&str, &str)], envs: &[(&str, &str)]) -> (Dirs, Server) {
     let d = Dirs::empty();
     for (path, body) in notes {
         let path = d.vault().join(path);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, body).unwrap();
     }
-    let server = Server::start(&d.vault(), &d.out());
+    let server = Server::start_with(&d.vault(), &d.out(), envs);
     (d, server)
 }
+
+/// A hold no test outlasts, for tests that keep a note open across a barrier.
+const LONG_HOLD: &[(&str, &str)] = &[("TACHYLITE_HOLD_MS", "600000")];
 
 fn version(server: &Server, url: &str) -> String {
     let r = server.get(url);
@@ -250,7 +257,7 @@ fn vault_root_removed_exits_with_error() {
 #[test]
 fn half_written_new_note_is_not_pushed() {
     use std::io::Write;
-    let (d, server) = with_notes(&[("w.md", "# w"), ("bar.md", "# b0")]);
+    let (d, server) = with_notes_env(&[("w.md", "# w"), ("bar.md", "# b0")], LONG_HOLD);
     let mut events = server.subscribe("/w", &version(&server, "/w"), None);
     let mut barrier = server.subscribe("/bar", &version(&server, "/bar"), None);
     // Vim's default save: rename to a backup, then create, write and close.
@@ -279,7 +286,7 @@ fn hard_link_is_published() {
 #[test]
 fn delete_then_create_saves_never_push_half_a_note() {
     use std::io::Write;
-    let (d, server) = with_notes(&[("w.md", "# w"), ("bar.md", "# b")]);
+    let (d, server) = with_notes_env(&[("w.md", "# w"), ("bar.md", "# b")], LONG_HOLD);
     let mut events = server.subscribe("/w", &version(&server, "/w"), None);
     let mut barrier = server.subscribe("/bar", &version(&server, "/bar"), None);
     // Each round is one save in the style of vim (rename) or git (unlink). Without a pause,
@@ -532,11 +539,23 @@ fn a_config_save_during_a_config_reload_is_kept() {
     inotify::add_watch(&opens, &toml, WatchFlags::OPEN).unwrap();
     let mut buf = vec![MaybeUninit::<u8>::uninit(); 4096];
     // Awaits one open of the config: ours, then the server's reload.
+    // One read can return several opens, so count them all.
+    let mut seen = 0;
     let mut await_open = || {
-        let timeout = Timespec::try_from(Duration::from_secs(10)).unwrap();
-        let mut fds = [PollFd::new(&opens, PollFlags::IN)];
-        assert_eq!(poll(&mut fds, Some(&timeout)).unwrap(), 1, "no open");
-        inotify::Reader::new(&opens, &mut buf).next().unwrap();
+        while seen == 0 {
+            let timeout = Timespec::try_from(Duration::from_secs(10)).unwrap();
+            let mut fds = [PollFd::new(&opens, PollFlags::IN)];
+            assert_eq!(poll(&mut fds, Some(&timeout)).unwrap(), 1, "no open");
+            let mut reader = inotify::Reader::new(&opens, &mut buf);
+            loop {
+                reader.next().unwrap();
+                seen += 1;
+                if reader.is_buffer_empty() {
+                    break;
+                }
+            }
+        }
+        seen -= 1;
     };
     for round in 0..20 {
         let (first, last) = if round % 2 == 0 {
@@ -562,7 +581,7 @@ fn a_config_save_during_a_config_reload_is_kept() {
 
 #[test]
 fn a_save_earlier_in_the_batch_does_not_publish_a_new_half_note() {
-    let (d, server) = with_notes(&[("w.md", "# w"), ("bar.md", "# b0")]);
+    let (d, server) = with_notes_env(&[("w.md", "# w"), ("bar.md", "# b0")], LONG_HOLD);
     let mut events = server.subscribe("/w", &version(&server, "/w"), None);
     let mut barrier = server.subscribe("/bar", &version(&server, "/bar"), None);
     let note = d.vault().join("w.md");
@@ -581,14 +600,20 @@ fn a_save_earlier_in_the_batch_does_not_publish_a_new_half_note() {
 
 #[test]
 fn a_dependent_rerender_waits_for_an_open_note() {
-    let (d, server) = with_notes(&[("a.md", "# a"), ("b.md", "# b"), ("bar.md", "# b0")]);
+    let (d, server) = with_notes_env(
+        &[("a.md", "# a"), ("b.md", "# b"), ("bar.md", "# b0")],
+        LONG_HOLD,
+    );
     let mut events = server.subscribe("/b", &version(&server, "/b"), None);
     let mut barrier = server.subscribe("/bar", &version(&server, "/bar"), None);
     let mut a = server.subscribe("/a", &version(&server, "/a"), None);
     let note = d.vault().join("b.md");
+    stop(&server);
+    // One batch removes and recreates `b.md`, so it keeps its page while held.
     fs::remove_file(&note).unwrap();
     let file = open_half(&note, "# b\n\nhalf");
     fs::write(d.vault().join("bar.md"), "# b1").unwrap();
+    resume(&server);
     barrier.expect("page");
     // A new link to `b` re-renders its page in a later batch, while `b.md` is still open.
     fs::write(d.vault().join("a.md"), "see [[b]]").unwrap();
@@ -601,7 +626,10 @@ fn a_dependent_rerender_waits_for_an_open_note() {
 
 #[test]
 fn an_embedder_renders_again_when_an_open_note_is_saved() {
-    let (d, server) = with_notes(&[("x.md", "![[b]]"), ("b.md", "# b"), ("bar.md", "# b0")]);
+    let (d, server) = with_notes_env(
+        &[("x.md", "![[b]]"), ("b.md", "# b"), ("bar.md", "# b0")],
+        LONG_HOLD,
+    );
     let mut x = server.subscribe("/x", &version(&server, "/x"), None);
     let mut barrier = server.subscribe("/bar", &version(&server, "/bar"), None);
     let note = d.vault().join("b.md");
@@ -622,7 +650,7 @@ fn an_embedder_renders_again_when_an_open_note_is_saved() {
 
 #[test]
 fn a_new_folder_scan_waits_for_an_open_note() {
-    let (d, server) = with_notes(&[("bar.md", "# b0")]);
+    let (d, server) = with_notes_env(&[("bar.md", "# b0")], LONG_HOLD);
     let mut events = server.subscribe("/d/n", "", None);
     let mut barrier = server.subscribe("/bar", &version(&server, "/bar"), None);
     stop(&server);

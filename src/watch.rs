@@ -217,7 +217,7 @@ impl Watcher {
                 eprintln!("inotify queue overflowed; rescanning the vault");
                 // The lost events may include a save of the config.
                 self.reload_config();
-                return self.resync();
+                return self.resync(removed);
             }
             if event.flags.contains(ReadFlags::IGNORED) {
                 self.dirs.remove(&event.wd);
@@ -250,7 +250,10 @@ impl Watcher {
                 continue;
             }
             if event.flags.contains(ReadFlags::ISDIR) {
-                if !self.site.exclude().path(&path) {
+                // `rsync -t` sets every folder's times, so an attribute change rescans a
+                // folder only when it became readable or unreadable.
+                let attrib = event.flags.contains(ReadFlags::ATTRIB);
+                if !self.site.exclude().path(&path) && !(attrib && self.settled(&path)) {
                     *folders.entry(path).or_default() |= event.flags.contains(ReadFlags::CREATE);
                 }
                 continue;
@@ -279,25 +282,31 @@ impl Watcher {
             paths.insert(path);
         }
         if reload && self.reload_config() {
-            return self.resync();
+            return self.resync(removed);
         }
 
         // The folders as they stand now, each once: a parent's sync covers its children.
-        let mut tops: Vec<(&str, bool)> = Vec::new();
-        for (folder, created) in &folders {
-            if !tops.iter().any(|(top, _)| within(folder, top)) {
-                tops.push((folder, *created));
+        let mut tops: Vec<&str> = Vec::new();
+        for folder in folders.keys() {
+            if !tops.iter().any(|top| within(folder, top)) {
+                tops.push(folder);
             }
         }
-        let names: Vec<&str> = tops.iter().map(|(folder, _)| *folder).collect();
-        self.rewatch(&names)?;
+        let created: Vec<&str> = folders
+            .iter()
+            .filter(|(_, created)| **created)
+            .map(|(folder, _)| folder.as_str())
+            .collect();
+        self.rewatch(&tops)?;
         let mut changes = Vec::new();
-        for (folder, created) in tops {
+        for folder in tops {
             let sync = self.sync(folder)?;
             // A file in a new folder may be mid-save, and its CREATE came before the watch.
-            if created && let Change::Sync { entries, .. } = &sync {
+            if let Change::Sync { entries, .. } = &sync {
                 for entry in entries {
-                    self.held.insert(entry.path.clone(), now + self.hold);
+                    if created.iter().any(|new| within(&entry.path, new)) {
+                        self.held.insert(entry.path.clone(), now + self.hold);
+                    }
                 }
             }
             changes.push(sync);
@@ -335,9 +344,12 @@ impl Watcher {
     }
 
     /// Rewatches the tree under the current exclusions and resyncs the root.
-    fn resync(&mut self) -> Result<(Vec<Change>, HashSet<String>), Error> {
+    fn resync(
+        &mut self,
+        removed: HashSet<String>,
+    ) -> Result<(Vec<Change>, HashSet<String>), Error> {
         self.rewatch(&[""])?;
-        Ok((vec![self.sync("")?], HashSet::new()))
+        Ok((vec![self.sync("")?], removed))
     }
 
     /// Watches `folders` and every published folder below them, as they stand now. A
@@ -345,6 +357,11 @@ impl Watcher {
     fn rewatch(&mut self, folders: &[&str]) -> Result<(), Error> {
         if folders.is_empty() {
             return Ok(());
+        }
+        // Watches and scans go by path, so a renamed parent would point them at nothing, or
+        // at another folder.
+        if self.vault.moved() {
+            return Err(Error::VaultGone(self.vault.root().to_path_buf()));
         }
         let old: Vec<i32> = self
             .dirs
@@ -367,11 +384,14 @@ impl Watcher {
         Ok(())
     }
 
+    /// Whether a folder's watch matches whether it can be read: watched and readable, or
+    /// neither. Only a change between the two needs a rescan.
+    fn settled(&self, rel: &str) -> bool {
+        let watched = self.dirs.values().any(|dir| dir == rel);
+        watched == fs::read_dir(self.vault.root().join(rel)).is_ok()
+    }
+
     fn sync(&self, under: &str) -> Result<Change, Error> {
-        // Scans go by path, so a renamed parent would make them read nothing, or another folder.
-        if self.vault.moved() {
-            return Err(Error::VaultGone(self.vault.root().to_path_buf()));
-        }
         let scan = scan_under(self.vault.root(), under, self.site.exclude())?;
         report::skipped(&scan.skipped);
         Ok(Change::Sync {
@@ -449,28 +469,94 @@ impl Watcher {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
-    #[test]
-    fn a_file_the_site_would_not_publish_changes_nothing() {
-        let tmp = tempfile::tempdir().unwrap();
-        let vault = tmp.path().join("vault");
-        fs::create_dir(&vault).unwrap();
-        let (vault, out) = crate::build::open(&vault, &tmp.path().join("out")).unwrap();
+    /// A watcher on `vault`, with its output beside it.
+    fn watcher(vault: &Path) -> Watcher {
+        let out = vault.with_file_name("out");
+        let (vault, out) = crate::build::open(vault, &out).unwrap();
         crate::output::prepare(&out).unwrap();
         let live = Live {
             pushes: broadcast::channel(4).0,
             versions: Arc::default(),
         };
-        let mut watcher = Watcher::start(vault, out, live, Config::default()).unwrap();
-        let root = *watcher.dirs.keys().next().unwrap();
-        let save = |name: &str| Event {
-            wd: root,
-            flags: ReadFlags::CLOSE_WRITE,
+        Watcher::start(vault, out, live, Config::default()).unwrap()
+    }
+
+    fn wd(watcher: &Watcher, dir: &str) -> i32 {
+        *watcher.dirs.iter().find(|(_, d)| *d == dir).unwrap().0
+    }
+
+    fn event(wd: i32, flags: ReadFlags, name: &str) -> Event {
+        Event {
+            wd,
+            flags,
             name: Some(name.into()),
-        };
-        let (changes, _) = watcher
-            .changes(vec![save("scratch.txt"), save("n.md")])
-            .unwrap();
+        }
+    }
+
+    fn vault() -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let vault = tmp.path().join("vault");
+        fs::create_dir(&vault).unwrap();
+        (tmp, vault)
+    }
+
+    #[test]
+    fn a_file_the_site_would_not_publish_changes_nothing() {
+        let (_tmp, vault) = vault();
+        let mut watcher = watcher(&vault);
+        let root = wd(&watcher, "");
+        let saves = vec![
+            event(root, ReadFlags::CLOSE_WRITE, "scratch.txt"),
+            event(root, ReadFlags::CLOSE_WRITE, "n.md"),
+        ];
+        let (changes, _) = watcher.changes(saves).unwrap();
         assert_eq!(changes, [Change::Touch("n.md".into())]);
+    }
+
+    #[test]
+    fn new_times_on_a_watched_folder_change_nothing() {
+        let (_tmp, vault) = vault();
+        fs::create_dir(vault.join("d")).unwrap();
+        fs::write(vault.join("d/n.md"), "# n").unwrap();
+        let mut watcher = watcher(&vault);
+        let root = wd(&watcher, "");
+        let attrib = event(root, ReadFlags::ATTRIB | ReadFlags::ISDIR, "d");
+        let (changes, _) = watcher.changes(vec![attrib]).unwrap();
+        assert_eq!(changes, []);
+    }
+
+    #[test]
+    fn a_new_folder_is_held_when_its_parent_syncs_it() {
+        let (_tmp, vault) = vault();
+        fs::create_dir(vault.join("a")).unwrap();
+        let mut watcher = watcher(&vault);
+        let (root, a) = (wd(&watcher, ""), wd(&watcher, "a"));
+        fs::write(vault.join("a/x.md"), "# x").unwrap();
+        fs::create_dir(vault.join("a/new")).unwrap();
+        fs::write(vault.join("a/new/n.md"), "# n").unwrap();
+        // The parent's own event makes one sync of `a` cover the new child.
+        let events = vec![
+            event(root, ReadFlags::MOVED_TO | ReadFlags::ISDIR, "a"),
+            event(a, ReadFlags::CREATE | ReadFlags::ISDIR, "new"),
+        ];
+        watcher.changes(events).unwrap();
+        assert!(watcher.held.contains_key("a/new/n.md"));
+        assert!(!watcher.held.contains_key("a/x.md"));
+    }
+
+    #[test]
+    fn a_config_reload_keeps_the_removed_paths() {
+        let (_tmp, vault) = vault();
+        let mut watcher = watcher(&vault);
+        let root = wd(&watcher, "");
+        fs::write(vault.join(config::FILE), "exclude = []\n").unwrap();
+        let events = vec![
+            event(root, ReadFlags::DELETE, "n.md"),
+            event(root, ReadFlags::CLOSE_WRITE, config::FILE),
+        ];
+        let (_, removed) = watcher.changes(events).unwrap();
+        assert!(removed.contains("n.md"));
     }
 }
