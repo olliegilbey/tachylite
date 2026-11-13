@@ -69,7 +69,7 @@ One binary, `tachylite`. It runs as a long-lived process:
 4. Push the new HTML of each changed page to subscribed clients over SSE.
 5. Serve the output directory and the SSE endpoint over HTTP on `127.0.0.1`.
 
-The binary serves the files itself, so it controls compression, `ETag` and `Cache-Control`. It gzips each text response as it sends it. The service worker fetches a page once per change, so precompressing would save no CPU. Brotli is left out: it adds 1.1 MB to the binary and saves about 120 B on a typical page. Every response is `no-cache` with a content `ETag`, so a revalidation is a 304. Tailscale proxies one local port.
+The binary serves the files itself, so it controls compression, `ETag` and `Cache-Control`. It gzips each text response as it sends it, up to 256 KB for a vault file; a larger one streams as stored. The service worker fetches a page once per change, so precompressing would save no CPU. Brotli is left out: it adds 1.1 MB to the binary and saves about 120 B on a typical page. Every response is `no-cache` with an `ETag`, so a revalidation is a 304. A page's tag hashes its content. A vault file's tag comes from its size and mtime, which the copy keeps from its source, so the tag holds across restarts and its 304 reads no bytes, and its body streams in chunks off the thread that sends pushes. Tailscale proxies one local port.
 
 `tachylite build <vault> <out>` runs a single build and exits, for tests and CI.
 
@@ -114,7 +114,7 @@ Notes are trusted content, but agents write them, and a prompt-injected agent co
 - Inline HTML in Markdown passes through Tachylite's allowlist sanitizer. It keeps layout and formatting tags and drops `script`, `iframe`, `object`, `embed`, `style` attributes, event-handler attributes and `javascript:` URLs. A link or image URL survives only with a web or mail scheme, as a path, or as a relative URL with no scheme and no character reference.
   The sanitizer rebuilds each raw HTML fragment from the allowlist: it emits only tags it builds itself, and escapes every other `<` and `>`. A tag it misreads is dropped, never run. A crate such as `ammonia` was measured and declined: it added 1.24 MB to the binary, an MPL-2.0 dependency, and 0.47 ms per note.
 - Anything that needs JavaScript (a map, an interactive mockup) is a standalone `.html` file. It renders inside `<iframe sandbox="allow-scripts">`, with no `allow-same-origin`. It cannot read the main origin's storage or cache.
-- Every vault file but a pdf, `.html` and `.svg` included, is served with the header `Content-Security-Policy: sandbox allow-scripts`. Opened directly as a full page, it runs in an opaque origin, so an `.svg` with a `<script>` cannot reach the main origin. A pdf keeps the main policy, since the browser's viewer needs it. Every response sends `X-Content-Type-Options: nosniff`, so no vault file loads as a script.
+- Every vault file but a pdf, `.html` and `.svg` included, is served with the header `Content-Security-Policy: sandbox allow-scripts`. Opened directly as a full page, it runs in an opaque origin, so an `.svg` with a `<script>` cannot reach the main origin. A pdf keeps the main policy, since the browser's viewer needs it. Every response sends `X-Content-Type-Options: nosniff`, so no vault file loads as a script, and `Referrer-Policy: no-referrer`, so a remote image does not learn the site's address. One router-wide layer adds them, so no handler can skip them.
 - Embedded `.html` pages may load from the network, for example map tiles or a library from a CDN. The service worker caches the `.html` file itself. Its external assets work offline only if the browser happens to have them cached. A map can show blank tiles with no signal; that is accepted.
 - Markdown links and images with a script URL (`javascript:`, `vbscript:`, `file:`, `data:` but images) lose it, as comrak's own filter would.
 - The main origin sends a Content-Security-Policy that blocks inline script and every outbound request but images: `default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'none'`. Mermaid injects `<style>`, so styles may be inline. Remote images in notes keep working.
@@ -168,12 +168,13 @@ Only these file types reach the output: `.md` (rendered), `.html` (sandboxed), i
 
 ### Configuration
 
-Optional `tachylite.toml` in the vault root:
+Optional `tachylite.toml` in the vault root. Any other top-level key is an error, and so is `exclude` inside a table: a typo there would publish what it meant to hide.
 
-- `exclude`: globs, added to the defaults. Any file or folder whose name starts with `.` is always excluded (`.git`, `.obsidian`, `.trash`, `.draft.md`); config cannot publish it, because the reserved prefix depends on it. `target/` and `node_modules/` are always excluded as well. Excluded means never published. Tachylite may still read config from an excluded folder, such as `.obsidian/daily-notes.json`.
+- `exclude`: globs, added to the defaults. They ignore case, as the publish list does. A pattern that matches no path on a full scan is logged. Any file or folder whose name starts with `.` is always excluded (`.git`, `.obsidian`, `.trash`, `.draft.md`); config cannot publish it, because the reserved prefix depends on it. `target/` and `node_modules/` are always excluded as well. Excluded means never published. Tachylite may still read config from an excluded folder, such as `.obsidian/daily-notes.json`.
 - `daily`: folder and date format, overriding the Obsidian config.
 - `pins`: list of links.
 - `title`: site name.
+- `hosts`: names the server answers besides `127.0.0.1` and `localhost`, for the proxy in front. When set, any other `Host` gets 421, which defeats DNS rebinding. When absent, any `Host` is answered.
 
 ### Performance budgets
 

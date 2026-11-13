@@ -6,13 +6,29 @@ use crate::vault::{SkipReason, Skipped};
 /// Prints one line per skipped path.
 pub fn skipped(list: &[Skipped]) {
     for skipped in list {
-        let reason = match skipped.reason {
-            SkipReason::Symlink => "symlink".to_string(),
-            SkipReason::NonUtf8Name => "non-UTF-8 name".to_string(),
-            SkipReason::UrlClash => "URL clash".to_string(),
-            SkipReason::Unreadable(kind) => format!("unreadable ({kind})"),
-        };
-        eprintln!("skipped {}: {reason}", skipped.path.display());
+        eprintln!(
+            "skipped {}: {}",
+            skipped.path.display(),
+            reason(skipped.reason)
+        );
+    }
+}
+
+/// Why a path was skipped, in plain words.
+pub fn reason(reason: SkipReason) -> String {
+    match reason {
+        SkipReason::Symlink => "symlink".to_string(),
+        SkipReason::NonUtf8Name => "non-UTF-8 name".to_string(),
+        SkipReason::UrlClash => "URL clash".to_string(),
+        SkipReason::Unreadable(kind) => format!("unreadable ({kind})"),
+    }
+}
+
+/// Prints one line per exclude pattern that matched no path on a full scan.
+pub fn unmatched<S: AsRef<str>>(patterns: &[S]) {
+    for pattern in patterns {
+        let pattern = pattern.as_ref();
+        eprintln!("exclude {pattern:?} matched no published path; check it for a typo");
     }
 }
 
