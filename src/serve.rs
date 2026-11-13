@@ -349,8 +349,9 @@ fn page_event(version: &str, html: &str) -> Event {
 }
 
 fn gone_event() -> Event {
-    // An event with empty data is never dispatched, so `gone` carries a word.
-    Event::default().event("gone").data("gone")
+    // An event with empty data is never dispatched, so `gone` carries a word. Its id is no
+    // version, so a reconnect's Last-Event-ID gets the page if it is back unchanged.
+    Event::default().event("gone").id("gone").data("gone")
 }
 
 impl Stream {
