@@ -114,9 +114,12 @@ impl Watcher {
         live: Live,
         config: Config,
     ) -> Result<Watcher, Error> {
-        let inotify = inotify::init(CreateFlags::CLOEXEC).map_err(|e| Error::Watch {
-            path: vault.root().to_path_buf(),
-            source: e.into(),
+        // Non-blocking, so a read tells the watcher its queue is empty.
+        let inotify = inotify::init(CreateFlags::CLOEXEC | CreateFlags::NONBLOCK).map_err(|e| {
+            Error::Watch {
+                path: vault.root().to_path_buf(),
+                source: e.into(),
+            }
         })?;
         let mut watcher = Watcher {
             inotify,
@@ -138,6 +141,7 @@ impl Watcher {
         }
         let sync = watcher.sync("")?;
         watcher.apply(vec![sync], HashSet::new())?;
+        watcher.derive()?;
         Ok(watcher)
     }
 
@@ -145,40 +149,49 @@ impl Watcher {
     pub fn run(mut self) -> Error {
         let mut buf = vec![MaybeUninit::<u8>::uninit(); 64 * 1024];
         loop {
-            let result = self
-                .wait()
-                .and_then(|queued| match queued {
-                    true => self.read_batch(&mut buf),
-                    false => Ok(Vec::new()),
-                })
-                .and_then(|events| self.changes(events))
-                .and_then(|(changes, removed)| self.apply(changes, removed));
+            let result = self.read_batch(&mut buf).and_then(|(events, drained)| {
+                let (changes, removed) = self.changes(events)?;
+                let excluded = self.apply(changes, removed)?;
+                // Index pages wait until no event is queued, so a burst derives them once.
+                // A newly excluded note leaves them at once.
+                if drained || excluded {
+                    self.derive()?;
+                }
+                if drained {
+                    self.wait()?;
+                }
+                Ok(())
+            });
             if let Err(e) = result {
                 return e;
             }
         }
     }
 
-    /// Waits for an event, or until the first hold ends. Returns whether events are queued.
-    /// With no path held, it returns at once and the read blocks, so idle costs nothing.
-    fn wait(&self) -> Result<bool, Error> {
-        let Some(end) = self.held.values().min() else {
-            return Ok(true);
-        };
-        let timeout = Timespec::try_from(end.saturating_duration_since(Instant::now())).ok();
+    /// Waits for an event, or until the first hold ends. With no path held it has no
+    /// timeout, so idle costs nothing.
+    fn wait(&self) -> Result<(), Error> {
+        let timeout =
+            self.held.values().min().and_then(|end| {
+                Timespec::try_from(end.saturating_duration_since(Instant::now())).ok()
+            });
         let mut fds = [PollFd::new(&self.inotify, PollFlags::IN)];
         match poll(&mut fds, timeout.as_ref()) {
-            Ok(ready) => Ok(ready > 0),
-            Err(rustix::io::Errno::INTR) => Ok(false),
-            Err(e) => Err(Error::Watch {
-                path: self.vault.root().to_path_buf(),
-                source: e.into(),
-            }),
+            Ok(_) | Err(rustix::io::Errno::INTR) => Ok(()),
+            Err(e) => Err(self.watch_error(e)),
         }
     }
 
-    /// One blocking read, plus every event already in its buffer.
-    fn read_batch(&self, buf: &mut [MaybeUninit<u8>]) -> Result<Vec<Event>, Error> {
+    fn watch_error(&self, e: rustix::io::Errno) -> Error {
+        Error::Watch {
+            path: self.vault.root().to_path_buf(),
+            source: e.into(),
+        }
+    }
+
+    /// The events in one read's buffer, and whether the queue was empty after them.
+    /// The read never blocks.
+    fn read_batch(&self, buf: &mut [MaybeUninit<u8>]) -> Result<(Vec<Event>, bool), Error> {
         let mut reader = inotify::Reader::new(&self.inotify, buf);
         let mut events = Vec::new();
         loop {
@@ -191,15 +204,11 @@ impl Watcher {
                         .map(|n| OsString::from_vec(n.to_bytes().to_vec())),
                 }),
                 Err(rustix::io::Errno::INTR) => continue,
-                Err(e) => {
-                    return Err(Error::Watch {
-                        path: self.vault.root().to_path_buf(),
-                        source: e.into(),
-                    });
-                }
+                Err(rustix::io::Errno::AGAIN) => return Ok((events, true)),
+                Err(e) => return Err(self.watch_error(e)),
             }
             if reader.is_buffer_empty() {
-                return Ok(events);
+                return Ok((events, false));
             }
         }
     }
@@ -433,38 +442,54 @@ impl Watcher {
         Ok(())
     }
 
-    fn apply(&mut self, changes: Vec<Change>, removed: HashSet<String>) -> Result<(), Error> {
+    /// Applies a batch. Returns whether it unpublished a path the config now excludes.
+    fn apply(&mut self, changes: Vec<Change>, removed: HashSet<String>) -> Result<bool, Error> {
         if changes.is_empty() {
-            return Ok(());
+            return Ok(false);
         }
         let mut batch = Batch {
             vault: &self.vault,
             held: &self.held,
             removed: &removed,
         };
-        let live = &self.live;
-        let mut writer = Writer::new(&self.out, &self.vault, |push: Push| {
-            {
-                let mut versions = live.versions.lock().unwrap_or_else(PoisonError::into_inner);
-                match &push {
-                    Push::Page { key, version, .. } => {
-                        versions.insert(key.clone(), version.clone());
-                    }
-                    Push::Gone { key } => {
-                        versions.remove(key);
-                    }
-                }
-            }
-            // An error only means no client is listening.
-            let _ = live.pushes.send(Arc::new(push));
-        });
+        let mut writer = writer(&self.out, &self.vault, &self.live);
         let report = self.site.apply_to(changes, &mut batch, &mut writer);
         let failed = writer.finish()?;
         report::skipped(&report.skipped);
         report::skipped(&failed);
         report::broken(&report.broken);
-        Ok(())
+        Ok(report.excluded)
     }
+
+    /// Writes the index pages and the manifest that the applies since the last left due.
+    fn derive(&mut self) -> Result<(), Error> {
+        let mut writer = writer(&self.out, &self.vault, &self.live);
+        self.site.derive_to(&mut writer);
+        writer.finish().map(|_| ())
+    }
+}
+
+/// A writer into `out` that records each push's version and sends it to the clients.
+fn writer<'a>(
+    out: &'a std::path::Path,
+    vault: &'a VaultDir,
+    live: &'a Live,
+) -> Writer<'a, impl FnMut(Push) + 'a> {
+    Writer::new(out, vault, move |push: Push| {
+        {
+            let mut versions = live.versions.lock().unwrap_or_else(PoisonError::into_inner);
+            match &push {
+                Push::Page { key, version, .. } => {
+                    versions.insert(key.clone(), version.clone());
+                }
+                Push::Gone { key } => {
+                    versions.remove(key);
+                }
+            }
+        }
+        // An error only means no client is listening.
+        let _ = live.pushes.send(Arc::new(push));
+    })
 }
 
 #[cfg(test)]

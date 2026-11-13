@@ -53,12 +53,16 @@ impl Source for &VaultDir {
     }
 }
 
-/// Where `Site::apply_to` sends output, as it makes it, in this order:
+/// Where `Site::apply_to` and `Site::derive_to` send output, as they make it. An apply sends:
 /// 1. the removed vault files' deletes, then their gone pushes;
-/// 2. the vault files' writes, each page's write followed by its push;
-/// 3. each removed index page's delete and gone push;
-/// 4. the index pages' writes, each followed by its push, and the switcher list's write;
-/// 5. the manifest.
+/// 2. the writes of the notes it read, and of the html pages and assets, each page's write
+///    followed by its push;
+/// 3. the writes and pushes of the pages that depend on them.
+///
+/// A derive sends:
+/// 1. each removed index page's delete and gone push;
+/// 2. the index pages' writes, each followed by its push, and the switcher list's write;
+/// 3. the manifest.
 ///
 /// Paths are relative to the output directory. Streaming means a full sync never holds
 /// every page at once.
@@ -74,6 +78,9 @@ pub struct Report {
     pub skipped: Vec<Skipped>,
     /// The broken links of every note rendered for its own change or a link target's.
     pub broken: Vec<Broken>,
+    /// Whether the apply unpublished a path the config now excludes. Its index entries
+    /// must go at once, so the caller derives without waiting for its queue to drain.
+    pub excluded: bool,
 }
 
 /// All of an apply's output and its report, collected.
@@ -192,8 +199,10 @@ pub struct Site {
     tagged: BTreeMap<String, BTreeSet<String>>,
     /// The tag keys whose pages may have changed since the last apply.
     dirty_tags: BTreeSet<String>,
-    /// Whether a manifest was written, so the first apply writes one even when empty.
+    /// Whether a manifest was written, so the first derive writes one even when empty.
     listed: bool,
+    /// Whether an apply changed what the manifest lists since it was written.
+    unlisted: bool,
 }
 
 /// One note's outgoing links.
@@ -325,16 +334,18 @@ impl Site {
         &self.exclude
     }
 
-    /// Applies changes and collects the output.
+    /// Applies changes, derives the index pages, and collects the output.
     pub fn apply(&mut self, changes: Vec<Change>, source: &mut impl Source) -> Delta {
         let mut delta = Delta::default();
         let report = self.apply_to(changes, source, &mut delta);
+        self.derive_to(&mut delta);
         delta.skipped = report.skipped;
         delta.broken = report.broken;
         delta
     }
 
-    /// Applies changes and sends the output to `sink` as it is made.
+    /// Applies changes and sends the vault files' output to `sink` as it is made. The index
+    /// pages and the manifest wait for `derive_to`.
     pub fn apply_to(
         &mut self,
         changes: Vec<Change>,
@@ -408,8 +419,7 @@ impl Site {
             }
         }
 
-        let mut bodies = self.link(&won, &mut fresh, source, &mut report.broken);
-        drop(fresh);
+        let (own, deps) = self.link(&won, &fresh);
 
         // A new note always pushes, so its key stays live and gets no gone. No other
         // winner can hold a key a removed winner held.
@@ -418,16 +428,16 @@ impl Site {
             .filter(|p| !self.winners.contains(*p) && self.entries.get(*p) == Some(&Kind::Note))
             .map(|p| note_key(p))
             .collect();
-        let mut listing = !self.listed;
         let mut gone = Vec::new();
         for path in self.winners.difference(&won) {
             // Its kind by extension: the path may be excluded now.
             let kind = classify(path, &Exclude::default()).unwrap_or(Kind::Asset);
             let (_, out) = claim(path, kind);
             sink.delete(out);
-            listing |= kind != Kind::Note;
+            report.excluded |= self.exclude.path(path);
+            self.unlisted |= kind != Kind::Note;
             if kind == Kind::Note {
-                listing |= self.versions.remove(path).is_some();
+                self.unlisted |= self.versions.remove(path).is_some();
                 if !live.contains(note_key(path)) {
                     gone.push(note_key(path).to_string());
                 }
@@ -437,46 +447,34 @@ impl Site {
             sink.push(Push::Gone { key });
         }
 
+        // The notes read this apply go first, so a save's own push waits for no dependent.
+        // Their pages show the backlinks as their own links leave them; a dependent that
+        // changes one re-emits it below.
+        let mut bodies = HashMap::new();
+        let mut changed = BTreeSet::new();
+        let mut pushed = HashSet::new();
+        self.render(
+            &own,
+            &mut fresh,
+            source,
+            &mut bodies,
+            &mut changed,
+            &mut report.broken,
+        );
         for path in &won {
             let kind = self.entries.get(path).copied().unwrap_or(Kind::Asset);
-            let (_, out) = claim(path, kind);
-            let new = !self.winners.contains(path);
             match kind {
                 Kind::Note => {
-                    let Some(body) = bodies.remove(path) else {
-                        continue;
-                    };
-                    let backlinks: Vec<(String, String)> = self
-                        .inbound
-                        .get(path.as_str())
-                        .into_iter()
-                        .flatten()
-                        .filter(|from| ***from != **path)
-                        .map(|from| (self.title(from).to_string(), url(from)))
-                        .collect();
-                    let page = render_page(path, self.title(path), &body, &backlinks);
-                    drop(body);
-                    if !new && self.versions.get(path) == Some(&page.version) {
-                        continue;
+                    if let Some(body) = bodies.get(path) {
+                        self.emit_note(path, body, &mut pushed, sink);
                     }
-                    self.versions.insert(path.clone(), page.version.clone());
-                    listing = true;
-                    let html: Arc<str> = Arc::from(page.html);
-                    sink.write(Write::Page {
-                        out,
-                        html: Arc::clone(&html),
-                    });
-                    sink.push(Push::Page {
-                        key: note_key(path).to_string(),
-                        version: page.version,
-                        html,
-                    });
                 }
                 Kind::Html | Kind::Asset => {
-                    listing |= new;
+                    let new = !self.winners.contains(path);
+                    self.unlisted |= new;
                     if new || touched.contains(path) {
                         sink.write(Write::Copy {
-                            out,
+                            out: claim(path, kind).1,
                             from: path.clone(),
                         });
                     }
@@ -484,18 +482,104 @@ impl Site {
             }
         }
 
+        // Then every page that depends on them, in batches, until no page's backlinks are
+        // left to change. Each pass renders only notes not yet rendered, so it ends.
+        let mut pending: BTreeSet<String> = deps;
+        pending.extend(std::mem::take(&mut changed).iter().map(|p| p.to_string()));
+        let mut stale = BTreeSet::new();
+        loop {
+            let next: Vec<String> = std::mem::take(&mut pending)
+                .into_iter()
+                .filter(|p| {
+                    !bodies.contains_key(p)
+                        && won.contains(p)
+                        && self.entries.get(p) == Some(&Kind::Note)
+                })
+                .collect();
+            if next.is_empty() {
+                break;
+            }
+            self.render(
+                &next,
+                &mut fresh,
+                source,
+                &mut bodies,
+                &mut changed,
+                &mut report.broken,
+            );
+            stale.extend(next);
+            for path in std::mem::take(&mut changed) {
+                if bodies.contains_key(&*path) {
+                    stale.insert(path.to_string());
+                } else {
+                    pending.insert(path.to_string());
+                }
+            }
+        }
+        drop(fresh);
+        for path in &stale {
+            if let Some(body) = bodies.remove(path) {
+                self.emit_note(path, &body, &mut pushed, sink);
+            }
+        }
+
         self.modified.retain(|path, _| won.contains(path));
-        listing |= self.indexes(&won, sink);
-        if listing {
+        self.winners = won;
+        report.skipped.sort_by(|a, b| a.path.cmp(&b.path));
+        report
+    }
+
+    /// Writes and pushes a note's page if its version changed, or if the note is new and
+    /// this apply has not pushed it yet.
+    fn emit_note(
+        &mut self,
+        path: &str,
+        body: &str,
+        pushed: &mut HashSet<String>,
+        sink: &mut impl Sink,
+    ) {
+        let backlinks: Vec<(String, String)> = self
+            .inbound
+            .get(path)
+            .into_iter()
+            .flatten()
+            .filter(|from| ***from != *path)
+            .map(|from| (self.title(from).to_string(), url(from)))
+            .collect();
+        let page = render_page(path, self.title(path), body, &backlinks);
+        let new = !self.winners.contains(path) && !pushed.contains(path);
+        if !new && self.versions.get(path) == Some(&page.version) {
+            return;
+        }
+        pushed.insert(path.to_string());
+        self.versions.insert(path.to_string(), page.version.clone());
+        self.unlisted = true;
+        let html: Arc<str> = Arc::from(page.html);
+        sink.write(Write::Page {
+            out: claim(path, Kind::Note).1,
+            html: Arc::clone(&html),
+        });
+        sink.push(Push::Page {
+            key: note_key(path).to_string(),
+            version: page.version,
+            html,
+        });
+    }
+
+    /// Derives the index pages and the switcher list, and writes the manifest, if any apply
+    /// since the last derive changed what they show. The watcher calls it once its queue is
+    /// empty, so a burst of saves pays it once; a full build calls it after its one apply.
+    pub fn derive_to(&mut self, sink: &mut impl Sink) {
+        let won = std::mem::take(&mut self.winners);
+        self.unlisted |= self.indexes(&won, sink);
+        if self.unlisted || !self.listed {
             sink.write(Write::Manifest {
                 json: self.manifest(&won),
             });
             self.listed = true;
+            self.unlisted = false;
         }
-
         self.winners = won;
-        report.skipped.sort_by(|a, b| a.path.cmp(&b.path));
-        report
     }
 
     /// Derives every index page and the switcher list from the winners, and writes and
@@ -770,16 +854,14 @@ impl Site {
         json
     }
 
-    /// Updates the link graph for the new winners and renders the body of every winning
-    /// note whose page may change: notes read this apply, notes whose links may now resolve
-    /// differently, and notes whose backlinks changed. Returns the bodies by path.
+    /// Updates the link index for the new winners. Returns the notes read this apply, and
+    /// every other winning note whose page may change with them: notes whose links may now
+    /// resolve differently, the embedders of either, and the targets of a retitled note.
     fn link(
         &mut self,
         won: &BTreeSet<String>,
-        fresh: &mut HashMap<String, Vec<u8>>,
-        source: &mut impl Source,
-        broken: &mut Vec<Broken>,
-    ) -> HashMap<String, String> {
+        fresh: &HashMap<String, Vec<u8>>,
+    ) -> (Vec<String>, BTreeSet<String>) {
         let removed: Vec<String> = self.winners.difference(won).cloned().collect();
         let added: Vec<String> = won.difference(&self.winners).cloned().collect();
 
@@ -792,7 +874,7 @@ impl Site {
         }
 
         // A retitled note changes the backlink text on every page it links to.
-        let mut changed = BTreeSet::new();
+        let mut deps = BTreeSet::new();
         let mut aliased = Vec::new();
         for (path, bytes) in fresh.iter().filter(|(p, _)| won.contains(*p)) {
             let meta = front::meta(&String::from_utf8_lossy(bytes));
@@ -815,12 +897,11 @@ impl Site {
                 None => self.titles.remove(path),
             };
             if let Some(links) = self.links.get(path.as_str()) {
-                changed.extend(links.targets.iter().cloned());
+                deps.extend(links.targets.iter().map(|t| t.to_string()));
             }
         }
 
-        let mut first: BTreeSet<String> =
-            fresh.keys().filter(|p| won.contains(*p)).cloned().collect();
+        let own: Vec<String> = fresh.keys().filter(|p| won.contains(*p)).cloned().collect();
         for k in &keys {
             let owners = self
                 .index
@@ -828,7 +909,7 @@ impl Site {
                 .iter()
                 .chain(self.index.alias_bucket(k));
             for path in owners {
-                first.extend(
+                deps.extend(
                     self.inbound
                         .get(path)
                         .into_iter()
@@ -836,7 +917,7 @@ impl Site {
                         .map(|n| n.to_string()),
                 );
             }
-            first.extend(
+            deps.extend(
                 self.unresolved
                     .get(k)
                     .into_iter()
@@ -846,16 +927,18 @@ impl Site {
         }
         // An embedder shows the note's body, so it re-renders with it. Embeds list what
         // they read at any depth, so one step reaches every embedder.
-        let embedders: Vec<String> = first
+        let embedders: Vec<String> = own
             .iter()
+            .chain(&deps)
             .chain(&removed)
             .filter_map(|p| self.embedded_by.get(p.as_str()))
             .flatten()
             .map(|n| n.to_string())
             .collect();
-        first.extend(embedders);
-        first.retain(|p| won.contains(p));
+        deps.extend(embedders);
+        deps.retain(|p| won.contains(p) && !fresh.contains_key(p));
 
+        let mut changed = BTreeSet::new();
         for path in &removed {
             if let Some(note) = self.index.get(path) {
                 self.relink(&note, Links::default(), &mut changed);
@@ -864,17 +947,31 @@ impl Site {
             self.retag(path, Vec::new());
             self.index.remove(path);
         }
+        deps.extend(changed.iter().map(|p| p.to_string()));
         for path in &added {
             self.index.insert(path);
         }
         for (path, aliases) in aliased {
             self.index.set_aliases(&path, &aliases);
         }
+        let mut own = own;
+        own.sort_unstable();
+        (own, deps)
+    }
 
-        let mut bodies = HashMap::new();
-        let first: Vec<String> = first.into_iter().collect();
-        // Batches keep a full sync from holding every source and every body at once.
-        for batch in first.chunks(256) {
+    /// Renders the bodies of `paths` in batches, and updates the link graph and tags from
+    /// each. A note whose backlinks change joins `changed`.
+    fn render(
+        &mut self,
+        paths: &[String],
+        fresh: &mut HashMap<String, Vec<u8>>,
+        source: &mut impl Source,
+        bodies: &mut HashMap<String, String>,
+        changed: &mut BTreeSet<Arc<str>>,
+        broken: &mut Vec<Broken>,
+    ) {
+        // Batches keep a full sync from holding every source at once.
+        for batch in paths.chunks(256) {
             // A dependent that cannot be read keeps its page; its own event follows.
             let notes: Vec<(&str, Vec<u8>)> = batch
                 .iter()
@@ -896,29 +993,12 @@ impl Site {
                 };
                 broken.extend(body.broken);
                 if let Some(note) = self.index.get(path) {
-                    self.relink(&note, links, &mut changed);
+                    self.relink(&note, links, changed);
                 }
                 self.retag(path, body.tags.into_iter().collect());
                 bodies.insert(path.to_string(), body.html);
             }
         }
-
-        // Their links resolve as before, so the graph stands.
-        for path in changed {
-            let path = path.to_string();
-            let note = self.entries.get(&path) == Some(&Kind::Note);
-            if !note || !won.contains(&path) || bodies.contains_key(&path) {
-                continue;
-            }
-            if let Ok(Note { bytes, .. }) = source.note(&path) {
-                let notes = [(path.as_str(), bytes)];
-                if let Some((_, body)) = self.render_notes(&notes, fresh, source).pop() {
-                    self.retag(&path, body.tags.into_iter().collect());
-                    bodies.insert(path, body.html);
-                }
-            }
-        }
-        bodies
     }
 
     /// Renders `notes` with every note their embeds read. A scan of the text finds most

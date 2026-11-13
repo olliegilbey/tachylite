@@ -392,10 +392,12 @@ fn indexed(delta: &Delta) -> Vec<&str> {
         .collect()
 }
 
+/// The last page pushed for `key`: the one a client ends on.
 fn html<'a>(delta: &'a Delta, key: &str) -> &'a str {
     delta
         .pushes
         .iter()
+        .rev()
         .find_map(|p| match p {
             Push::Page { key: k, html, .. } if k == key => Some(&**html),
             _ => None,
@@ -415,6 +417,19 @@ fn synced(mem: &mut Mem, exclude: Exclude) -> (Site, Delta) {
     let mut site = Site::new(exclude);
     let delta = site.apply(vec![sync_all(mem)], mem);
     (site, delta)
+}
+
+#[test]
+fn an_apply_says_when_it_unpublished_an_excluded_note() {
+    let mut mem = Mem::with(&[("a.md", "# a"), ("d/n.md", "# n")]);
+    let (mut site, _) = synced(&mut mem, Exclude::default());
+    mem.0.remove("a.md");
+    let mut delta = Delta::default();
+    let report = site.apply_to(vec![touch("a.md")], &mut mem.clone(), &mut delta);
+    assert!(!report.excluded, "a delete is not an exclusion");
+    site.set_exclude(Exclude::new(&["d".to_string()]).unwrap());
+    let report = site.apply_to(vec![sync_all(&mem)], &mut mem.clone(), &mut delta);
+    assert!(report.excluded);
 }
 
 #[test]
@@ -480,7 +495,7 @@ fn rename_target_breaks_links() {
     let bytes = mem.0.remove("b.md").unwrap();
     mem.0.insert("c.md".into(), bytes);
     let delta = site.apply(vec![touch("b.md"), touch("c.md")], &mut mem);
-    assert_eq!(pushed(&delta), ["a", "c"]);
+    assert_eq!(pushed(&delta), ["c", "a"]);
     assert!(html(&delta, "a").contains("<a class=\"broken-link\">b</a>"));
     assert_eq!(delta.broken, [broken("a.md", "b", 0)]);
 }
@@ -492,7 +507,8 @@ fn create_fixes_broken_link() {
     assert_eq!(first.broken, [broken("a.md", "b", 0)]);
     mem.0.insert("b.md".into(), b"# B".to_vec());
     let delta = site.apply(vec![touch("b.md")], &mut mem);
-    assert_eq!(pushed(&delta), ["a", "b"]);
+    // The new note goes first, then again with the backlink its linker's render adds.
+    assert_eq!(pushed(&delta), ["b", "a", "b"]);
     assert!(html(&delta, "a").contains("<a href=\"/b\">b</a>"));
     assert!(html(&delta, "b").contains("<li><a href=\"/a\">a</a></li>"));
     assert!(delta.broken.is_empty());
@@ -505,7 +521,7 @@ fn create_makes_link_ambiguous() {
     assert!(html(&first, "y/a").contains("<a href=\"/x/r\">r</a>"));
     mem.0.insert("z/r.md".into(), b"# r".to_vec());
     let delta = site.apply(vec![touch("z/r.md")], &mut mem);
-    assert_eq!(pushed(&delta), ["x/r", "y/a", "z/r"]);
+    assert_eq!(pushed(&delta), ["z/r", "x/r", "y/a"]);
     assert!(html(&delta, "y/a").contains("<a class=\"broken-link\">r</a>"));
     assert!(!html(&delta, "x/r").contains("backlinks"));
     assert_eq!(delta.broken, [broken("y/a.md", "r", 2)]);
@@ -540,7 +556,7 @@ fn adding_alias_fixes_broken_link() {
         b"---\naliases: [jd]\n---\n# Jane".to_vec(),
     );
     let delta = site.apply(vec![touch("p/jane.md")], &mut mem);
-    assert_eq!(pushed(&delta), ["a", "p/jane"]);
+    assert_eq!(pushed(&delta), ["p/jane", "a", "p/jane"]);
     assert!(html(&delta, "a").contains("<a href=\"/p/jane\">JD</a>"));
     assert!(html(&delta, "p/jane").contains("<li><a href=\"/a\">a</a></li>"));
     assert!(delta.broken.is_empty());
@@ -553,7 +569,7 @@ fn removing_alias_breaks_link() {
     assert!(html(&first, "a").contains("<a href=\"/p/jane\">JD</a>"));
     mem.0.insert("p/jane.md".into(), b"# Jane".to_vec());
     let delta = site.apply(vec![touch("p/jane.md")], &mut mem);
-    assert_eq!(pushed(&delta), ["a", "p/jane"]);
+    assert_eq!(pushed(&delta), ["p/jane", "a", "p/jane"]);
     assert!(html(&delta, "a").contains("<a class=\"broken-link\">JD</a>"));
     assert!(!html(&delta, "p/jane").contains("backlinks"));
 }
@@ -573,7 +589,7 @@ fn new_file_named_like_alias_takes_the_link() {
     let (mut site, _) = synced(&mut mem, Exclude::default());
     mem.0.insert("q/jd.md".into(), b"# other".to_vec());
     let delta = site.apply(vec![touch("q/jd.md")], &mut mem);
-    assert_eq!(pushed(&delta), ["a", "p/jane", "q/jd"]);
+    assert_eq!(pushed(&delta), ["q/jd", "a", "p/jane", "q/jd"]);
     assert!(html(&delta, "a").contains("<a href=\"/q/jd\">JD</a>"));
     assert!(!html(&delta, "p/jane").contains("backlinks"));
 }
@@ -802,19 +818,30 @@ fn apply_op(mem: &mut Mem, op: &Op) -> Vec<Change> {
 
 proptest! {
     #[test]
-    fn incremental_equals_full(ops in prop::collection::vec(op(), 1..30), batch in 1usize..4) {
+    fn incremental_equals_full(
+        ops in prop::collection::vec((op(), any::<bool>()), 1..30),
+        batch in 1usize..4,
+    ) {
         let mut mem = Mem::default();
         let mut site = Site::new(hush());
         let mut out = Out::new();
         let mut last_push: BTreeMap<String, Push> = BTreeMap::new();
 
-        for chunk in ops.chunks(batch) {
+        // A chunk derives only if its last op says so, as a watcher derives only once its
+        // queue is empty; the last chunk always does.
+        let chunks: Vec<_> = ops.chunks(batch).collect();
+        for (i, chunk) in chunks.iter().enumerate() {
             let mut changes = Vec::new();
-            for op in chunk {
+            for (op, _) in *chunk {
                 changes.extend(apply_op(&mut mem, op));
             }
             let mut source = mem.clone();
-            let delta = site.apply(changes, &mut source);
+            let mut delta = Delta::default();
+            let report = site.apply_to(changes, &mut source, &mut delta);
+            delta.skipped = report.skipped;
+            if chunk[chunk.len() - 1].1 || i == chunks.len() - 1 {
+                site.derive_to(&mut delta);
+            }
             fold(&mut out, &delta, &mem);
             prop_assert!(!leaks(&delta), "an excluded note reached the output");
             for push in delta.pushes {
@@ -893,7 +920,8 @@ fn editing_an_embedded_note_re_renders_its_embedders() {
     let (mut site, _) = synced(&mut mem, Exclude::default());
     mem.0.insert("c.md".into(), b"new".to_vec());
     let delta = site.apply(vec![touch("c.md")], &mut mem);
-    assert_eq!(pushed(&delta), ["a", "b", "c"]);
+    // The saved note's own push waits for no embedder.
+    assert_eq!(pushed(&delta), ["c", "a", "b"]);
     assert!(html(&delta, "a").contains("new"));
 }
 

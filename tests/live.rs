@@ -367,6 +367,24 @@ fn overflow(d: &Dirs, server: &Server) -> usize {
 }
 
 #[test]
+fn a_burst_derives_index_pages_once_its_queue_drains() {
+    let (d, server) = with_notes(&[("burst/a.md", "# a")]);
+    let page = "/.tachylite/folders/burst";
+    let mut index = server.subscribe(page, &version(&server, page), None);
+    stop(&server);
+    // Each note queues CREATE and CLOSE_WRITE, so the burst takes more than one read.
+    for i in 0..2_000 {
+        fs::write(d.vault().join(format!("burst/n{i:04}.md")), "# n").unwrap();
+    }
+    resume(&server);
+    let first = index.expect("page");
+    assert!(
+        first.data.contains("href=\"/burst/n1999\""),
+        "the index was derived before the queue drained"
+    );
+}
+
+#[test]
 fn queue_overflow_reloads_the_config() {
     let (d, server) = with_notes(&[("a.md", "# a"), ("p/x.md", "# x")]);
     let mut hidden = server.subscribe("/p/x", &version(&server, "/p/x"), None);
