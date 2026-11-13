@@ -529,6 +529,53 @@ fn code_spans_and_indented_code_keep_their_percent_signs() {
 }
 
 #[test]
+fn a_lone_carriage_return_never_hides_a_comment_in_code() {
+    // The parser reads `<pre>` on a line of its own, so the HTML block takes the first fence
+    // line and the stripper's fences pair one off from the parser's.
+    let html = plain("x\r<pre>\n```\n</pre>\n```\n%%d\n```\n%%zebra%%\n");
+    assert!(html.contains("comment-error"), "{html}");
+    assert!(!html.contains("zebra"), "{html}");
+}
+
+#[test]
+fn an_indented_closing_fence_never_hides_a_comment_in_code() {
+    // The parser closes the first fence at `  ```` and opens one at the next, so `%%d` is
+    // in code there.
+    let html = plain("```\n  ```\n```\n%%d\n```\n%%zebra%%\n");
+    assert!(html.contains("comment-error"), "{html}");
+    assert!(!html.contains("zebra"), "{html}");
+}
+
+#[test]
+fn a_fence_line_in_a_comment_never_hides_a_comment_in_code() {
+    // To the parser, the fence in the comment pairs with the one under `<div>`, so the
+    // fences after pair one off from the stripper's, and `%%d` is in code.
+    let html = plain("%%\n```\n%%\n<div>\n```\n\n```\n%%d\n```\n%%zebra%%\n");
+    assert!(!html.contains("zebra"), "{html}");
+}
+
+#[test]
+fn an_html_block_that_ends_at_a_blank_line_keeps_the_note() {
+    let html = plain(
+        "<details><summary>More</summary>\n\nHidden.\n\n</details>\n\n```\n%%d\n```\n\nx %%zebra%% y",
+    );
+    assert!(!html.contains("comment-error"), "{html}");
+    assert!(!html.contains("zebra"), "{html}");
+    assert!(html.contains("%%d"), "{html}");
+}
+
+#[test]
+fn a_fence_line_in_an_html_block_withholds_the_note() {
+    // The HTML block takes the fence line under it, so the parser's fences pair one off
+    // from the stripper's, and `%%d` is in code.
+    for open in ["<div>", "<details>", "<x-tag>", "  <DIV class=\"a\">"] {
+        let md = format!("{open}\n```\n\n```\n%%d\n```\n%%zebra%%\n");
+        let html = plain(&md);
+        assert!(!html.contains("zebra"), "{md:?}: {html}");
+    }
+}
+
+#[test]
 fn an_escape_never_hides_a_comment() {
     let html = plain("a \\%%zebra%% b");
     assert!(html.contains(" b") && !html.contains("zebra"), "{html}");

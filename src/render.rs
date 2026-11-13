@@ -641,18 +641,33 @@ fn unstripped<'a>(root: &'a AstNode<'a>) -> bool {
 
 /// True when the parser reads any of `openers`, the byte offsets where the stripper opened
 /// a comment, as code. The stripper then took code for text, and its `%%` pairs may have
-/// shifted, which would publish a comment's text with no `%%` left to find. Each opener
-/// becomes a mark the parser treats as plain text, as it does `%%`, so code ends where it
-/// did. comrak's inline source positions drift after a link title that spans lines, so
-/// the mark, not a position, says where each opener landed.
+/// shifted, which would publish a comment's text with no `%%` left to find.
 fn opened_in_code(md: &str, openers: &[usize]) -> bool {
-    const MARK: &str = "\u{E000}\u{E000}";
+    !openers.is_empty() && !plain(md, openers) && parsed_in_code(md, openers)
+}
+
+/// True when the stripper reads code exactly as the parser does up to the last opener, so
+/// no opener can be in code: the only code is plain fences, and no comment holds a fence
+/// character, since a fence line in a comment is no fence to the stripper.
+fn plain(md: &str, openers: &[usize]) -> bool {
     let Some(&last) = openers.last() else {
-        return false;
+        return true;
     };
-    if plain_fences(&md[..last]) {
-        return false;
-    }
+    let fence_in_comment = openers.iter().any(|&at| {
+        let body = &md[at + 2..];
+        body[..body.find("%%").unwrap_or(body.len())].contains(['`', '~'])
+    });
+    // The whole line, so a fence's info string is read in full.
+    let end = md[last..].find('\n').map_or(md.len(), |at| last + at + 1);
+    !fence_in_comment && plain_fences(&md[..end])
+}
+
+/// The parser's answer for `opened_in_code`. Each opener becomes a mark the parser treats
+/// as plain text, as it does `%%`, so code ends where it did. comrak's inline source
+/// positions drift after a link title that spans lines, so the mark, not a position, says
+/// where each opener landed.
+fn parsed_in_code(md: &str, openers: &[usize]) -> bool {
+    const MARK: &str = "\u{E000}\u{E000}";
     let mut marked = String::with_capacity(md.len() + openers.len() * 4);
     let mut last = 0;
     for &at in openers {
@@ -671,31 +686,63 @@ fn opened_in_code(md: &str, openers: &[usize]) -> bool {
 }
 
 /// True when the only code in `md` is fences at column 0, which the stripper reads exactly
-/// as the parser does: no other backtick or tilde, no tab, no four-space run, and no HTML
-/// block.
+/// as the parser does: no other backtick or tilde, no tab, no four-space run, no lone
+/// carriage return, and no HTML block that could hold a fence line. An HTML block that opens with `<!`, `<?`, `<pre`,
+/// `<script`, `<style` or `<textarea` may run past a blank line, so it rules the note out.
+/// Any other ends at a blank line, so it holds no fence line when its lines hold no
+/// backtick or tilde.
 fn plain_fences(md: &str) -> bool {
+    const RAW: [&str; 6] = ["<!", "<?", "<pre", "<script", "<style", "<textarea"];
+    // A lone `\r` ends a line for the parser but not for this scan.
+    if md
+        .match_indices('\r')
+        .any(|(at, _)| md.as_bytes().get(at + 1) != Some(&b'\n'))
+    {
+        return false;
+    }
     let mut fence = None;
+    let mut html = false;
     for line in md.split_inclusive('\n') {
         let bytes = line.as_bytes();
         let run = |c: u8| bytes.iter().take_while(|&&b| b == c).count();
         if let Some((c, n)) = fence {
-            if run(c) >= n && line[run(c)..].trim().is_empty() {
+            let lead = run(b' ');
+            let fence_run = bytes[lead..].iter().take_while(|&&b| b == c).count();
+            let rest = &line[lead + fence_run..];
+            // The stripper's test, and the parser's: only spaces and tabs may follow.
+            let loose = fence_run >= n && rest.trim().is_empty();
+            let strict = fence_run >= n && rest.bytes().all(|b| b" \t\r\n".contains(&b));
+            if loose || strict {
+                // The parser closes a fence indented up to 3 spaces; the stripper does not.
+                if lead > 0 || loose != strict {
+                    return false;
+                }
                 fence = None;
             }
             continue;
         }
         if let Some(&c @ (b'`' | b'~')) = bytes.first()
+            && !html
             && run(c) >= 3
             && !(c == b'`' && line[run(c)..].contains('`'))
         {
             fence = Some((c, run(c)));
             continue;
         }
-        if line.contains(['`', '~', '\t'])
-            || line.contains("    ")
-            || line.trim_start_matches(' ').starts_with('<')
-        {
+        if line.contains(['`', '~', '\t']) || line.contains("    ") {
             return false;
+        }
+        let rest = line.trim_start_matches(' ');
+        if rest.starts_with('<') {
+            let start = rest.get(..9).unwrap_or(rest).to_ascii_lowercase();
+            if RAW.iter().any(|raw| start.starts_with(raw)) {
+                return false;
+            }
+            html = true;
+        }
+        // Only spaces make a blank line, and a blank line ends the HTML block.
+        if bytes.iter().all(|b| matches!(b, b' ' | b'\r' | b'\n')) {
+            html = false;
         }
     }
     true
@@ -1181,4 +1228,66 @@ pub fn shell(title: &str, main: &str) -> Page {
     Page { html, version }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
 
+    /// Lines and marks that move where code starts and ends, to the stripper or the parser.
+    const PARTS: &[&str] = &[
+        "%%",
+        "%%",
+        "%%d",
+        "\n",
+        "\n",
+        "\n\n",
+        "\r",
+        "\r\n",
+        " ",
+        "  ",
+        "    ",
+        "\t",
+        "\u{3000}",
+        "```",
+        "```\n",
+        "~~~",
+        "~",
+        "`",
+        "  ```",
+        "<div>",
+        "</div>",
+        "<details>",
+        "<x-y>",
+        "<pre>",
+        "</pre>",
+        "<PRE>",
+        "<!--",
+        "-->",
+        "<span title=\"",
+        "\">",
+        "<",
+        "- ",
+        "> ",
+        "1. ",
+        "# ",
+        "---",
+        "|",
+        "x",
+        "word ",
+    ];
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(20_000))]
+
+        /// The fast path never clears a note the parser reads an opener of as code.
+        #[test]
+        fn plain_notes_open_no_comment_in_code(
+            parts in proptest::collection::vec(proptest::sample::select(PARTS), 0..30)
+        ) {
+            let md = parts.concat();
+            let openers = strip_comments(&md).openers;
+            if !openers.is_empty() && plain(&md, &openers) {
+                proptest::prop_assert!(!parsed_in_code(&md, &openers), "md={md:?}");
+            }
+        }
+    }
+}
