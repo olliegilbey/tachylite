@@ -83,7 +83,7 @@ The binary serves the files itself, so it controls compression, `ETag` and `Cach
   Tachylite reads the YAML subset that Obsidian's Properties support: scalars, flow and block lists, and `|` or `>` block scalars. Any other value, such as a nested map, shows as its raw text. A full YAML crate would be the largest dependency in the binary, for values Obsidian itself does not edit. Frontmatter is the block between a first line of `---` and the next line of `---`.
 - Wikilinks: `[[note]]`, `[[note|label]]`, `[[note#heading]]`. Obsidian's "new link format" setting writes three link forms, and a vault often mixes them. All must resolve: relative to the linking note (`[[../people/jane-doe]]`), from the vault root (`[[people/jane-doe]]`), and bare basename (`[[jane-doe]]`). Resolution order:
   1. A path starting `./` or `../` resolves relative to the linking note.
-  2. A path with a `/` resolves from the vault root.
+  2. A path with a `/` resolves from the vault root. When nothing is there, it resolves from the linking note's folder: Obsidian's "Relative path to file" setting writes a path down from the note without `./` (`[[sub/detail]]`).
   3. A bare name matches by basename. When several files share it (`README` in many folders), the nearest one wins: same folder, then the fewest folder steps away. A tie is a broken link.
   4. Then aliases, for a bare name only. The nearest note with the alias wins, and a tie is a broken link.
   Matching ignores case, and a note's `.md` is optional. Any other file needs its extension: `[[route.html]]`, `[[dot.png]]`. A link whose last segment names a folder (`[[people/..]]`) is missing.

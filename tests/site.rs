@@ -588,6 +588,22 @@ fn excluded_note_alias_does_not_resolve() {
 }
 
 #[test]
+fn a_downward_link_without_dot_slash_resolves_from_its_note() {
+    let mut mem = Mem::with(&[
+        ("proj/plan.md", "[[sub/detail]] and [md](sub/detail.md)"),
+        ("proj/sub/detail.md", "# Detail"),
+    ]);
+    let (_, delta) = synced(&mut mem, Exclude::default());
+    let plan = html(&delta, "proj/plan");
+    assert_eq!(
+        plan.matches("href=\"/proj/sub/detail\"").count(),
+        2,
+        "{plan}"
+    );
+    assert!(delta.broken.is_empty(), "{:?}", delta.broken);
+}
+
+#[test]
 fn unchanged_backlinks_render_nothing() {
     let mut mem = Mem::with(&[("a.md", "[[b]] one"), ("b.md", "# B")]);
     let (mut site, _) = synced(&mut mem, Exclude::default());
@@ -621,7 +637,8 @@ fn hush() -> Exclude {
 /// Text only an excluded note holds.
 const HUSHED: &str = "hush-marker";
 
-const CONTENTS: [&str; 14] = [
+const CONTENTS: [&str; 15] = [
+    "[[e/m]] [down](e/m.md)",
     "# one",
     "two *b*",
     "- [ ] three",

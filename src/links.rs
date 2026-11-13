@@ -1,5 +1,6 @@
-//! Link resolution in the spec's order: relative, from the root, the nearest bare name, then
-//! the nearest alias. Matching ignores case, and a note's `.md` is optional.
+//! Link resolution in the spec's order: relative, from the root then from the linking note,
+//! the nearest bare name, then the nearest alias. Matching ignores case, and a note's `.md`
+//! is optional.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -132,15 +133,21 @@ pub fn resolve(index: &Index, from: &str, target: &str) -> Resolved {
     }
     let relative = target.starts_with("./") || target.starts_with("../");
     if relative || target.contains('/') {
-        let base = if relative { folder(from) } else { Vec::new() };
-        let Some(path) = normalize(base, target) else {
-            return Resolved::Missing;
+        let at = |base| {
+            let path = normalize(base, target)?;
+            match index.by_path.get(&fold(&path)).map(Vec::as_slice) {
+                None | Some([]) => None,
+                Some([one]) => Some(Resolved::Found(one.clone())),
+                Some(many) => Some(Resolved::Ambiguous(many.len())),
+            }
         };
-        return match index.by_path.get(&fold(&path)).map(Vec::as_slice) {
-            None | Some([]) => Resolved::Missing,
-            Some([one]) => Resolved::Found(one.clone()),
-            Some(many) => Resolved::Ambiguous(many.len()),
+        // Obsidian's relative format writes a path down from the note without `./`.
+        let found = if relative {
+            at(folder(from))
+        } else {
+            at(Vec::new()).or_else(|| at(folder(from)))
         };
+        return found.unwrap_or(Resolved::Missing);
     }
     let mut candidates = index.bucket(&key(target));
     if candidates.is_empty() {
