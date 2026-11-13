@@ -751,3 +751,20 @@ fn exchanged_folders_stay_watched() {
     fs::write(d.vault().join("a/y.md"), "# also").unwrap();
     assert!(next_page(&mut other).contains("\">also</h1>"));
 }
+
+#[test]
+fn a_renamed_vault_parent_stops_the_server() {
+    let tmp = tempfile::tempdir().unwrap();
+    let vault = tmp.path().join("p/vault");
+    fs::create_dir_all(&vault).unwrap();
+    fs::write(vault.join("a.md"), "# a").unwrap();
+    let mut server = Server::start(&vault, &tmp.path().join("out"));
+    fs::rename(tmp.path().join("p"), tmp.path().join("q")).unwrap();
+    // A new folder is watched and scanned by path, which now names nothing.
+    fs::create_dir(tmp.path().join("q/vault/d")).unwrap();
+    let line = server
+        .wait_line(|l| l.starts_with("error:"), Duration::from_secs(10))
+        .expect("no error line");
+    assert!(line.contains("vault"), "{line}");
+    assert_eq!(server.child.wait().unwrap().code(), Some(1));
+}

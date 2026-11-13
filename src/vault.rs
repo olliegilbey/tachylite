@@ -268,6 +268,14 @@ impl VaultDir {
         &self.root
     }
 
+    /// Whether the root path no longer names the open vault, as after its parent is renamed.
+    pub fn moved(&self) -> bool {
+        match (rustix::fs::fstat(&self.fd), rustix::fs::stat(&self.root)) {
+            (Ok(open), Ok(named)) => (open.st_dev, open.st_ino) != (named.st_dev, named.st_ino),
+            _ => true,
+        }
+    }
+
     /// Opens a vault-relative path for reading. A FIFO opens without blocking and reads as missing.
     pub fn open_file(&self, rel: &str) -> Result<File, ReadError> {
         self.open_after(rel, true)

@@ -368,6 +368,10 @@ impl Watcher {
     }
 
     fn sync(&self, under: &str) -> Result<Change, Error> {
+        // Scans go by path, so a renamed parent would make them read nothing, or another folder.
+        if self.vault.moved() {
+            return Err(Error::VaultGone(self.vault.root().to_path_buf()));
+        }
         let scan = scan_under(self.vault.root(), under, self.site.exclude())?;
         report::skipped(&scan.skipped);
         Ok(Change::Sync {
