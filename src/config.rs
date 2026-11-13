@@ -26,6 +26,8 @@ const MATCH: MatchOptions = MatchOptions {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigError {
     Unreadable(SkipReason),
+    /// A folder or other non-file at the config's name.
+    NotFile,
     NotUtf8,
     Syntax {
         line: usize,
@@ -52,6 +54,7 @@ impl fmt::Display for ConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ConfigError::Unreadable(reason) => f.write_str(&crate::report::reason(*reason)),
+            ConfigError::NotFile => f.write_str("not a file"),
             ConfigError::NotUtf8 => f.write_str("not UTF-8"),
             ConfigError::Syntax { line, message } => write!(f, "line {line}: {message}"),
             ConfigError::UnknownKey(key) => write!(
@@ -154,14 +157,28 @@ impl Exclude {
     }
 
     /// The patterns, as written, that have matched no path so far. After a full scan, each one
-    /// is likely a typo. The scan enters no excluded folder, so a pattern inside one counts
-    /// as unmatched too.
+    /// is likely a typo. The scan enters no excluded folder, so a pattern inside one is left
+    /// out: it matched nothing because it had nothing left to match.
     pub fn unmatched(&self) -> Vec<&str> {
         self.globs
             .iter()
-            .filter(|g| !g.hit.load(Ordering::Relaxed))
+            .filter(|g| !g.hit.load(Ordering::Relaxed) && !self.inside_excluded(g))
             .map(|g| g.text.as_str())
             .collect()
+    }
+
+    /// Whether a folder in the pattern's own text is excluded, as `private` is for
+    /// `private/draft.md`. Unlike `path`, it marks no pattern as matched.
+    fn inside_excluded(&self, glob: &Glob) -> bool {
+        let text = glob.pattern.as_str();
+        text.match_indices('/').any(|(i, _)| {
+            let folder = &text[..i];
+            folder.split('/').any(|s| Exclude::segment(s.as_bytes()))
+                || self
+                    .globs
+                    .iter()
+                    .any(|g| g.pattern.matches_with(folder, MATCH))
+        })
     }
 }
 
@@ -174,7 +191,31 @@ pub struct Config {
 
 /// Reads `tachylite.toml` from the vault root. A missing file is the default config.
 pub fn load(vault: &VaultDir) -> Result<Config, Error> {
+    // A name in another case is no config, and its exclusions would protect nothing.
+    // An unreadable root is the scan's to report.
+    if let Ok(items) = std::fs::read_dir(vault.root()) {
+        let misnamed: Vec<String> = items
+            .flatten()
+            .filter_map(|item| item.file_name().into_string().ok())
+            .filter(|name| name != FILE && name.eq_ignore_ascii_case(FILE))
+            .filter(|name| !same_file(vault, name))
+            .collect();
+        crate::report::misnamed(&misnamed);
+    }
     reload(vault).map(Option::unwrap_or_default)
+}
+
+/// Whether `name` is the config itself, as on a file system that folds case.
+fn same_file(vault: &VaultDir, name: &str) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let ino = |n: &str| {
+        vault
+            .root()
+            .join(n)
+            .symlink_metadata()
+            .map(|m| (m.dev(), m.ino()))
+    };
+    matches!((ino(name), ino(FILE)), (Ok(a), Ok(b)) if a == b)
 }
 
 /// Reads the config like `load`, but `None` when the file is missing or mid-save. A running
@@ -182,6 +223,11 @@ pub fn load(vault: &VaultDir) -> Result<Config, Error> {
 pub fn reload(vault: &VaultDir) -> Result<Option<Config>, Error> {
     let bytes = match vault.read(FILE) {
         Ok(bytes) => bytes,
+        // A folder of the config's name reads as missing, and would publish what the
+        // config excludes.
+        Err(ReadError::Missing) if vault.root().join(FILE).symlink_metadata().is_ok() => {
+            return Err(Error::Config(ConfigError::NotFile));
+        }
         Err(ReadError::Missing | ReadError::MidSave) => return Ok(None),
         Err(ReadError::Skip(reason)) => return Err(Error::Config(ConfigError::Unreadable(reason))),
     };
