@@ -136,3 +136,55 @@ fn an_unreadable_config_names_the_reason_in_words() {
         "error: tachylite.toml: symlink\n"
     );
 }
+
+fn build(dir: &std::path::Path) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_tachylite"))
+        .args([
+            "build".as_ref(),
+            dir.join("vault").as_os_str(),
+            dir.join("out").as_os_str(),
+        ])
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn a_config_named_in_another_case_is_named_and_not_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = dir.path().join("vault");
+    std::fs::create_dir_all(vault.join("private")).unwrap();
+    std::fs::write(vault.join("private/secret.md"), "# secret").unwrap();
+    std::fs::write(vault.join("Tachylite.toml"), "exclude = [\"private\"]\n").unwrap();
+    let run = build(dir.path());
+    assert_eq!(run.status.code(), Some(0));
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        stderr.contains("Tachylite.toml is not read: the config must be named tachylite.toml\n"),
+        "{stderr}"
+    );
+    assert!(dir.path().join("out/pages/private/secret.html").is_file());
+}
+
+#[test]
+fn a_folder_named_like_the_config_stops_the_build() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = dir.path().join("vault");
+    std::fs::create_dir_all(vault.join("tachylite.toml")).unwrap();
+    std::fs::write(vault.join("a.md"), "# a").unwrap();
+    let run = build(dir.path());
+    assert_eq!(run.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&run.stderr),
+        "error: tachylite.toml: not a file\n"
+    );
+    assert!(!dir.path().join("out").exists());
+}
+
+#[test]
+fn a_pattern_inside_an_excluded_folder_is_not_named() {
+    let (run, dir) = build_with_config("exclude = [\"private\", \"private/secret.md\"]\n");
+    assert_eq!(run.status.code(), Some(0));
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(!stderr.contains("matched no published path"), "{stderr}");
+    assert!(!dir.path().join("out/pages/private").exists());
+}

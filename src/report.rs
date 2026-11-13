@@ -37,6 +37,16 @@ pub fn unmatched<S: AsRef<str>>(patterns: &[S]) {
     }
 }
 
+/// Prints one line per vault-root file named like the config in another case.
+pub fn misnamed(names: &[String]) {
+    for name in names {
+        eprintln!(
+            "{name} is not read: the config must be named {}",
+            crate::config::FILE
+        );
+    }
+}
+
 /// Prints one line per broken or ambiguous link.
 pub fn broken(list: &[Broken]) {
     for link in list {
