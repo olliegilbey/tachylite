@@ -1,5 +1,7 @@
 BUDGET_SCALE ?= 3
 TARGET ?= x86_64-unknown-linux-gnu
+# CI passes --with-deps: a fresh runner lacks Chromium's system libraries.
+PLAYWRIGHT_INSTALL ?=
 SIZE_LIMIT := 5000000
 
 .PHONY: check browser budget size upgrade mermaid
@@ -11,18 +13,18 @@ check:
 	cargo machete
 	cargo deny check
 	cargo test
-	BUDGET_SCALE=$(BUDGET_SCALE) cargo test --release --test budgets -- --ignored
+	BUDGET_SCALE=$(BUDGET_SCALE) cargo test --release --test budgets -- --ignored --test-threads=1
 	$(MAKE) browser
 
 # The browser seam: Playwright drives headless Chromium against a real server.
 browser:
 	cargo build --release
-	cd browser && npm ci && npx playwright install --only-shell chromium && \
+	cd browser && npm ci && npx playwright install $(PLAYWRIGHT_INSTALL) --only-shell chromium && \
 	BUDGET_SCALE=$(BUDGET_SCALE) npx playwright test
 
 # Timed budgets at 1x, for the reference host.
 budget:
-	BUDGET_SCALE=1 cargo test --release --test budgets -- --ignored --nocapture
+	BUDGET_SCALE=1 cargo test --release --test budgets -- --ignored --nocapture --test-threads=1
 
 # A static glibc build: musl's allocator serialises the render threads.
 size:
