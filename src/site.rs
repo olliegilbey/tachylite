@@ -593,12 +593,12 @@ impl Site {
             .filter(|key| !key.starts_with(TAGS) && !fresh.contains(*key))
             .cloned()
             .collect();
-        for tag in self.dirty_tag_pages() {
+        // A tag page is built as it is written, so a full sync never holds them all.
+        let tags = self.dirty_tag_pages();
+        for tag in &tags {
             let key = format!("{TAGS}{tag}");
-            match self.tag_page(&tag) {
-                Some(page) => built.push((key, page.version, page.html)),
-                None if self.generated.contains_key(&key) => gone.push(key),
-                None => {}
+            if !self.tagged_any(tag) && self.generated.contains_key(&key) {
+                gone.push(key);
             }
         }
 
@@ -610,25 +610,35 @@ impl Site {
             changed = true;
         }
         for (key, version, html) in built {
-            if self.generated.get(&key) == Some(&version) {
-                continue;
+            changed |= self.emit(key, version, html, sink);
+        }
+        for tag in tags {
+            if let Some(page) = self.tag_page(&tag) {
+                changed |= self.emit(format!("{TAGS}{tag}"), page.version, page.html, sink);
             }
-            let html: Arc<str> = Arc::from(html);
-            sink.write(Write::Page {
-                out: generated_out(&key),
-                html: Arc::clone(&html),
-            });
-            if key != NOTES_JSON {
-                sink.push(Push::Page {
-                    key: key.clone(),
-                    version: version.clone(),
-                    html,
-                });
-            }
-            self.generated.insert(key, version);
-            changed = true;
         }
         changed
+    }
+
+    /// Writes and pushes a generated page whose version changed. Returns whether it did.
+    fn emit(&mut self, key: String, version: String, html: String, sink: &mut impl Sink) -> bool {
+        if self.generated.get(&key) == Some(&version) {
+            return false;
+        }
+        let html: Arc<str> = Arc::from(html);
+        sink.write(Write::Page {
+            out: generated_out(&key),
+            html: Arc::clone(&html),
+        });
+        if key != NOTES_JSON {
+            sink.push(Push::Page {
+                key: key.clone(),
+                version: version.clone(),
+                html,
+            });
+        }
+        self.generated.insert(key, version);
+        true
     }
 
     /// Takes the dirty tags, with every tag above each, since a tag's page lists the notes
@@ -647,19 +657,27 @@ impl Site {
         pages
     }
 
+    /// The notes of each tag nested under `tag`.
+    fn nested(&self, tag: &str) -> impl Iterator<Item = &BTreeSet<String>> {
+        // Every key that starts `tag/` sorts between `tag/` and `tag0`.
+        self.tagged
+            .range(format!("{tag}/")..format!("{tag}0"))
+            .map(|(_, notes)| notes)
+    }
+
+    /// Whether any note carries `tag` or a tag under it.
+    fn tagged_any(&self, tag: &str) -> bool {
+        self.tagged.contains_key(tag) || self.nested(tag).next().is_some()
+    }
+
     /// The page of tag `tag`: the notes tagged `tag` or a tag under it, or none if no
     /// note is.
     fn tag_page(&self, tag: &str) -> Option<Page> {
-        // Every key that starts `tag/` sorts between `tag/` and `tag0`.
-        let nested = self
-            .tagged
-            .range(format!("{tag}/")..format!("{tag}0"))
-            .map(|(_, notes)| notes);
         let notes: BTreeSet<&String> = self
             .tagged
             .get(tag)
             .into_iter()
-            .chain(nested)
+            .chain(self.nested(tag))
             .flatten()
             .collect();
         if notes.is_empty() {
