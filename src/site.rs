@@ -10,8 +10,8 @@ use crate::front;
 use crate::indexes::{self, Folder, Item};
 use crate::links::{Index, key};
 use crate::render::{
-    Body, Broken, EMBED_DEPTH, Sources, embed_targets, encode, note_title, render_body,
-    render_page, url,
+    Body, Broken, EMBED_DEPTH, NAME_MAX, Page, Sources, embed_targets, encode, note_title,
+    render_body, render_page, url,
 };
 use crate::vault::{Entry, Kind, ReadError, SkipReason, Skipped, VaultDir, classify};
 
@@ -123,8 +123,9 @@ fn generated_out(key: &str) -> String {
 /// The URL key prefix of the folder indexes.
 const FOLDERS: &str = ".tachylite/folders/";
 
-/// The longest file name the output filesystem takes, in bytes.
-const NAME_MAX: usize = 255;
+/// The URL key prefix of the tag pages. A tag holds no `.`, so `<tag>.html` never clashes
+/// with the folder of a nested tag.
+const TAGS: &str = ".tachylite/tags/";
 
 /// Where the manifest lives in the output: `/.tachylite/manifest.json`.
 pub const MANIFEST: &str = "files/.tachylite/manifest.json";
@@ -185,6 +186,12 @@ pub struct Site {
     generated: BTreeMap<String, String>,
     /// Each read note's modified time, for the recent pages.
     modified: HashMap<String, i64>,
+    /// Each winning note's tag keys, sorted.
+    tags: HashMap<String, Vec<String>>,
+    /// The winning notes that carry each tag key.
+    tagged: BTreeMap<String, BTreeSet<String>>,
+    /// The tag keys whose pages may have changed since the last apply.
+    dirty_tags: BTreeSet<String>,
     /// Whether a manifest was written, so the first apply writes one even when empty.
     listed: bool,
 }
@@ -577,14 +584,25 @@ impl Site {
             built.push((NOTES_JSON.into(), format!("{:016x}", hasher.finish()), json));
         }
 
-        let mut changed = false;
         let fresh: HashSet<String> = built.iter().map(|(key, ..)| key.clone()).collect();
-        let gone: Vec<String> = self
+        // Tag pages derive only where a tag was added, removed or retitled, so a save that
+        // changes no tag builds none.
+        let mut gone: Vec<String> = self
             .generated
             .keys()
-            .filter(|key| !fresh.contains(*key))
+            .filter(|key| !key.starts_with(TAGS) && !fresh.contains(*key))
             .cloned()
             .collect();
+        for tag in self.dirty_tag_pages() {
+            let key = format!("{TAGS}{tag}");
+            match self.tag_page(&tag) {
+                Some(page) => built.push((key, page.version, page.html)),
+                None if self.generated.contains_key(&key) => gone.push(key),
+                None => {}
+            }
+        }
+
+        let mut changed = false;
         for key in gone {
             self.generated.remove(&key);
             sink.delete(generated_out(&key));
@@ -611,6 +629,79 @@ impl Site {
             changed = true;
         }
         changed
+    }
+
+    /// Takes the dirty tags, with every tag above each, since a tag's page lists the notes
+    /// of the tags nested under it.
+    fn dirty_tag_pages(&mut self) -> BTreeSet<String> {
+        let mut pages = BTreeSet::new();
+        for tag in std::mem::take(&mut self.dirty_tags) {
+            let mut tag = tag.as_str();
+            while pages.insert(tag.to_string()) {
+                match tag.rsplit_once('/') {
+                    Some((parent, _)) => tag = parent,
+                    None => break,
+                }
+            }
+        }
+        pages
+    }
+
+    /// The page of tag `tag`: the notes tagged `tag` or a tag under it, or none if no
+    /// note is.
+    fn tag_page(&self, tag: &str) -> Option<Page> {
+        // Every key that starts `tag/` sorts between `tag/` and `tag0`.
+        let nested = self
+            .tagged
+            .range(format!("{tag}/")..format!("{tag}0"))
+            .map(|(_, notes)| notes);
+        let notes: BTreeSet<&String> = self
+            .tagged
+            .get(tag)
+            .into_iter()
+            .chain(nested)
+            .flatten()
+            .collect();
+        if notes.is_empty() {
+            return None;
+        }
+        let mut items: Vec<Item> = notes
+            .into_iter()
+            .map(|path| Item {
+                title: self.title(path),
+                url: url(path),
+                folder: path.rsplit_once('/').map_or("", |(f, _)| f),
+                modified: 0,
+            })
+            .collect();
+        items.sort_by_cached_key(|i| (indexes::order(i.title), i.url.clone()));
+        Some(indexes::tag(tag, items))
+    }
+
+    /// Replaces a note's tag keys, and marks each added or removed tag dirty.
+    fn retag(&mut self, path: &str, tags: Vec<String>) {
+        let old = self.tags.remove(path).unwrap_or_default();
+        if old != tags {
+            for tag in old.iter().filter(|t| tags.binary_search(t).is_err()) {
+                if let Some(notes) = self.tagged.get_mut(tag) {
+                    notes.remove(path);
+                    if notes.is_empty() {
+                        self.tagged.remove(tag);
+                    }
+                }
+                self.dirty_tags.insert(tag.clone());
+            }
+            for tag in tags.iter().filter(|t| old.binary_search(t).is_err()) {
+                self.tagged
+                    .entry(tag.clone())
+                    .or_default()
+                    .insert(path.to_string());
+                self.dirty_tags.insert(tag.clone());
+            }
+        }
+        if !tags.is_empty() {
+            self.tags.insert(path.to_string(), tags);
+        }
     }
 
     /// `{"pages":{"<url>":"<version>",...}}`: note pages in path order, then generated
@@ -679,6 +770,10 @@ impl Site {
             if self.titles.get(path) == meta.title.as_ref() {
                 continue;
             }
+            // A retitled note changes its line on its tags' pages.
+            if let Some(tags) = self.tags.get(path) {
+                self.dirty_tags.extend(tags.iter().cloned());
+            }
             match meta.title {
                 Some(title) => self.titles.insert(path.clone(), title),
                 None => self.titles.remove(path),
@@ -730,6 +825,7 @@ impl Site {
                 self.relink(&note, Links::default(), &mut changed);
                 self.links.remove(path.as_str());
             }
+            self.retag(path, Vec::new());
             self.index.remove(path);
         }
         for path in &added {
@@ -766,6 +862,7 @@ impl Site {
                 if let Some(note) = self.index.get(path) {
                     self.relink(&note, links, &mut changed);
                 }
+                self.retag(path, body.tags.into_iter().collect());
                 bodies.insert(path.to_string(), body.html);
             }
         }
@@ -780,6 +877,7 @@ impl Site {
             if let Ok(Note { bytes, .. }) = source.note(&path) {
                 let notes = [(path.as_str(), bytes)];
                 if let Some((_, body)) = self.render_notes(&notes, fresh, source).pop() {
+                    self.retag(&path, body.tags.into_iter().collect());
                     bodies.insert(path, body.html);
                 }
             }

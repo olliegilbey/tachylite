@@ -21,7 +21,7 @@ const PATHS: [&str; 10] = [
     "d/e/m.md",
     ".h.md",
 ];
-const CONTENTS: [&str; 13] = [
+const CONTENTS: [&str; 15] = [
     "# one",
     "two *b*",
     "- [ ] three",
@@ -35,6 +35,8 @@ const CONTENTS: [&str; 13] = [
     "two ![[a]] ![[q]]",
     "![[n]] ![[d/e/m]] ![[p.png]] ![[x.html]]",
     "| t |\n|---|\n| ![[a\\|x]] ![[n\\|y]] |",
+    "#a #A/b x",
+    "---\ntags: [a/b, Über]\ntitle: T3\n---\n#c",
 ];
 
 #[derive(Debug, Clone)]
