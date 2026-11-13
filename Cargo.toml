@@ -13,7 +13,7 @@ comrak = { version = "0.59.0", default-features = false }
 flate2 = "1.1.11"
 futures-util = { version = "0.3.34", default-features = false }
 glob = "0.3.4"
-rustix = { version = "1.1.6", features = ["fs"] }
+rustix = { version = "1.1.6", features = ["event", "fs"] }
 tokio = { version = "1.54.1", features = ["rt", "net", "sync"] }
 toml = { version = "1.2.0", default-features = false, features = ["std", "parse"] }
 
@@ -33,5 +33,5 @@ expect_used = "deny"
 [dev-dependencies]
 insta = "1.49.0"
 proptest = "1.12.0"
-rustix = { version = "1.1.6", features = ["fs", "process"] }
+rustix = { version = "1.1.6", features = ["event", "fs", "process"] }
 tempfile = "3.27.0"
