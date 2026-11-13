@@ -2,11 +2,11 @@
 
 Tachylite serves a folder of Obsidian-style Markdown as a fast, offline-capable website. It is a read-only viewer, and a phone on a bad connection is its main client.
 
-One small static binary renders the vault, re-renders only what changes, and pushes updates to open pages. After the first sync, every note and full search work with no network.
+One small static binary renders the vault, re-renders only what changes, and pushes updates to open pages. After the first sync, every note and the quick switcher work with no network. Full-text search is not built yet.
 
 ## Status
 
-Pre-release. Tachylite is built in slices; see the [`v1` milestone](https://github.com/olliegilbey/tachylite/milestone/1) and the [v1 spec](https://github.com/olliegilbey/tachylite/issues/14).
+Pre-release. Tachylite is built in slices; see the [`v1` milestone](https://github.com/olliegilbey/tachylite/milestone/1) and the [design doc](docs/superpowers/specs/2026-11-03-tachylite-design.md), which is the spec.
 
 ## Run it
 
@@ -26,16 +26,19 @@ Tachylite renders the vault into `<out>`, watches it, and serves the site on `ht
 - The app opens on a home page: the newest notes, then the vault's top folders.
 - Each folder has an index page, and each note links to its folders at the top. Notes whose title starts with an ISO date, such as daily notes, list newest first.
 - Recent lists the 50 newest notes.
+- Each `#tag` links to a page of the notes with that tag, or with a tag nested under it.
 - Find, or Ctrl-K, Cmd-K or `/`, opens a fuzzy switcher over titles, aliases and paths. It works offline.
 
 ## Run it on a server
 
-This example keeps Tachylite running on a Linux box, and reaches it from a phone over a tailnet. Build the binary and put it on your path:
+This example keeps Tachylite running on a Linux box, and reaches it from a phone over a tailnet. Build the static binary and put it on your path:
 
 ```sh
-cargo build --release
-install -m 755 target/release/tachylite ~/.local/bin/
+make release
+install -m 755 target/x86_64-unknown-linux-gnu/release/tachylite ~/.local/bin/
 ```
+
+On an ARM board such as a Raspberry Pi, run `make release TARGET=aarch64-unknown-linux-gnu`, and install from `target/aarch64-unknown-linux-gnu/release/`.
 
 Run it as a systemd user service. Save this as `~/.config/systemd/user/tachylite.service`, with your own vault and output paths:
 
@@ -78,7 +81,7 @@ Notes render close to Obsidian's reading view:
 - `[[wikilinks]]` and Markdown links to notes, resolved the way Obsidian resolves them. Every note lists its backlinks.
 - Callouts, `==highlight==` and `#tags`.
 - Mermaid diagrams, drawn in the browser. The script loads only on a page that has one.
-- `%%comments%%` are never published. When a comment is left open, Tachylite hides everything after it rather than risk showing it.
+- `%%comments%%` are never published. When a comment is left open, Tachylite hides everything after it rather than risk showing it, and a notice says so.
 
 ## Keep notes private
 

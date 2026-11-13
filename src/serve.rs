@@ -36,8 +36,8 @@ const APP_MANIFEST: &str = include_str!("app.webmanifest");
 const ICON_SVG: &str = include_str!("icon.svg");
 const ICON_MASKABLE_SVG: &str = include_str!("icon-maskable.svg");
 const STYLE_CSS: &str = include_str!("style.css");
-/// `@mermaid-js/tiny`, gzipped by `make mermaid`. Every browser accepts gzip, so it is served
-/// as stored.
+/// `@mermaid-js/tiny`, gzipped by `make mermaid`. It is served as stored, and inflated only
+/// for a client that refuses gzip.
 const MERMAID_JS_GZ: &[u8] = include_bytes!("vendor/mermaid.tiny.js.gz");
 
 /// Percent-decodes a URL path into a vault-style path, or `None` for a path no page can have:
