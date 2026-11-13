@@ -48,6 +48,8 @@ pub struct Writer<'a, F: FnMut(Push)> {
     pub copies: usize,
     skipped: Vec<Skipped>,
     error: Option<Error>,
+    /// Whether this batch has checked that the marker is still there.
+    marked: bool,
 }
 
 impl<'a, F: FnMut(Push)> Writer<'a, F> {
@@ -60,6 +62,7 @@ impl<'a, F: FnMut(Push)> Writer<'a, F> {
             copies: 0,
             skipped: Vec::new(),
             error: None,
+            marked: false,
         }
     }
 
@@ -99,6 +102,13 @@ impl<F: FnMut(Push)> Sink for Writer<'_, F> {
     }
 
     fn write(&mut self, write: Write) {
+        if !self.marked {
+            self.marked = true;
+            // A write into a deleted output would recreate it without the marker.
+            if self.error.is_none() && !self.out.join(MARKER).is_file() {
+                self.error = Some(Error::OutputGone(self.out.to_path_buf()));
+            }
+        }
         if self.error.is_some() {
             return;
         }
