@@ -803,7 +803,7 @@ fn manifest(delta: &Delta) -> Option<&str> {
 /// The manifest's note entries, as `{"pages":{…}}`, without the generated pages.
 fn note_manifest(delta: &Delta) -> Option<String> {
     let json = manifest(delta)?;
-    let inner = &json[r#"{"pages":{"#.len()..json.len() - 2];
+    let inner = &json[r#"{"pages":{"#.len()..json.find(r#"},"files":["#)?];
     let quoted: Vec<&str> = inner.split('"').skip(1).step_by(2).collect();
     let notes: Vec<String> = quoted
         .chunks(2)
@@ -849,6 +849,44 @@ fn the_manifest_lists_every_note_page_with_its_version() {
     );
     let last = delta.writes.last();
     assert!(matches!(last, Some(Write::Manifest { .. })), "{last:?}");
+}
+
+/// The manifest's `files` list, as written.
+fn file_list(delta: &Delta) -> Option<&str> {
+    let json = manifest(delta)?;
+    let at = json.find(r#""files":"#)? + r#""files":"#.len();
+    Some(&json[at..json.len() - 1])
+}
+
+#[test]
+fn the_manifest_lists_every_html_page_and_asset_without_a_version() {
+    let mem = Mem::with(&[
+        ("a.md", "aye"),
+        ("page.html", "<p>page</p>"),
+        ("img.png", "png"),
+        ("sub/c d.pdf", "pdf"),
+        ("private/x.png", "png"),
+    ]);
+    let mut source = mem.clone();
+    let delta = Site::new(Exclude::new(&["private".to_string()]).unwrap())
+        .apply(vec![sync_all(&mem)], &mut source);
+    assert_eq!(
+        file_list(&delta),
+        Some(r#"["/img.png","/page.html","/sub/c%20d.pdf"]"#)
+    );
+}
+
+#[test]
+fn the_manifest_follows_a_file_added_and_removed() {
+    let mut mem = Mem::with(&[("a.md", "aye")]);
+    let (mut site, first) = synced(&mut mem, Exclude::default());
+    assert_eq!(file_list(&first), Some("[]"));
+    mem.0.insert("img.png".into(), b"png".to_vec());
+    let delta = site.apply(vec![touch("img.png")], &mut mem);
+    assert_eq!(file_list(&delta), Some(r#"["/img.png"]"#));
+    mem.0.remove("img.png");
+    let delta = site.apply(vec![touch("img.png")], &mut mem);
+    assert_eq!(file_list(&delta), Some("[]"));
 }
 
 #[test]

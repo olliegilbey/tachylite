@@ -398,6 +398,7 @@ impl Site {
             let kind = classify(path, &Exclude::default()).unwrap_or(Kind::Asset);
             let (_, out) = claim(path, kind);
             sink.delete(out);
+            listing |= kind != Kind::Note;
             if kind == Kind::Note {
                 listing |= self.versions.remove(path).is_some();
                 if !live.contains(note_key(path)) {
@@ -445,6 +446,7 @@ impl Site {
                     });
                 }
                 Kind::Html | Kind::Asset => {
+                    listing |= new;
                     if new || touched.contains(path) {
                         sink.write(Write::Copy {
                             out,
@@ -459,7 +461,7 @@ impl Site {
         listing |= self.indexes(&won, sink);
         if listing {
             sink.write(Write::Manifest {
-                json: self.manifest(),
+                json: self.manifest(&won),
             });
             self.listed = true;
         }
@@ -596,10 +598,10 @@ impl Site {
         changed
     }
 
-    /// `{"pages":{"<url>":"<version>",...}}`: note pages in path order, then generated
-    /// pages in key order. URLs are percent-encoded and
-    /// versions are hex, so neither needs escaping.
-    fn manifest(&self) -> String {
+    /// `{"pages":{"<url>":"<version>",...},"files":["<url>",...]}`: note pages in path
+    /// order, then generated pages in key order, then the html pages and assets of `won` in
+    /// path order. URLs are percent-encoded and versions are hex, so neither needs escaping.
+    fn manifest(&self, won: &BTreeSet<String>) -> String {
         let mut json = String::with_capacity(16 + self.versions.len() * 64);
         json.push_str("{\"pages\":{");
         for (i, (path, version)) in self.versions.iter().enumerate() {
@@ -622,7 +624,19 @@ impl Site {
             json.push_str(version);
             json.push('"');
         }
-        json.push_str("}}");
+        json.push_str("},\"files\":[");
+        let files = won
+            .iter()
+            .filter(|path| self.entries.get(*path).is_some_and(|k| *k != Kind::Note));
+        for (i, path) in files.enumerate() {
+            if i > 0 {
+                json.push(',');
+            }
+            json.push_str("\"/");
+            json.push_str(&encode(path));
+            json.push('"');
+        }
+        json.push_str("]}");
         json
     }
 
