@@ -322,6 +322,23 @@ fn pid(server: &Server) -> Pid {
     Pid::from_raw(i32::try_from(server.child.id()).unwrap()).unwrap()
 }
 
+/// Stops the server, so every event that follows lands in its next batch.
+fn stop(server: &Server) {
+    kill_process(pid(server), Signal::STOP).unwrap();
+    // Returns once every thread has stopped, or if the child exits. NOWAIT reaps nothing.
+    let status = waitid(
+        WaitId::Pid(pid(server)),
+        WaitIdOptions::STOPPED | WaitIdOptions::EXITED | WaitIdOptions::NOWAIT,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(status.stopped(), "the server exited instead of stopping");
+}
+
+fn resume(server: &Server) {
+    kill_process(pid(server), Signal::CONT).unwrap();
+}
+
 /// Stops the server and writes enough new notes to overflow its inotify queue. Returns the
 /// queue limit, or `None` when the host's limit is too large to fill.
 fn overflow(d: &Dirs, server: &Server) -> Option<usize> {
@@ -334,15 +351,7 @@ fn overflow(d: &Dirs, server: &Server) -> Option<usize> {
         eprintln!("skipped: max_queued_events is {limit}, too many files to write");
         return None;
     }
-    kill_process(pid(server), Signal::STOP).unwrap();
-    // Returns once every thread has stopped, or if the child exits. NOWAIT reaps nothing.
-    let status = waitid(
-        WaitId::Pid(pid(server)),
-        WaitIdOptions::STOPPED | WaitIdOptions::EXITED | WaitIdOptions::NOWAIT,
-    )
-    .unwrap()
-    .unwrap();
-    assert!(status.stopped(), "the server exited instead of stopping");
+    stop(server);
     // Each new note queues CREATE and CLOSE_WRITE, so this overflows the queue.
     for i in 0..limit / 2 + 2_000 {
         fs::write(d.vault().join(format!("n{i}.md")), "# n").unwrap();
@@ -359,7 +368,7 @@ fn queue_overflow_reloads_the_config() {
     }
     // The kernel drops this save's events: the queue is already full.
     fs::write(d.vault().join("tachylite.toml"), "exclude = [\"p\"]\n").unwrap();
-    kill_process(pid(&server), Signal::CONT).unwrap();
+    resume(&server);
     hidden.expect("gone");
     assert_eq!(server.get("/p/x").status, 404);
 }
@@ -375,7 +384,7 @@ fn queue_overflow_resyncs_the_vault() {
     // These events come after the overflow, so the kernel drops them.
     fs::remove_file(d.vault().join("a.md")).unwrap();
     fs::write(d.vault().join("z.md"), "# late").unwrap();
-    kill_process(pid(&server), Signal::CONT).unwrap();
+    resume(&server);
     assert!(
         server
             .wait_line(|l| l.contains("overflowed"), Duration::from_secs(10))
@@ -484,6 +493,29 @@ fn a_stale_home_page_catches_up_on_connect() {
     );
 }
 
+/// The next `page` event, past any `gone`.
+fn next_page(events: &mut common::Events) -> String {
+    loop {
+        let event = events.next(Duration::from_secs(10)).expect("no page event");
+        if event.name == "page" {
+            return event.data;
+        }
+    }
+}
+
+/// Writes the start of a note and keeps it open, as a slow writer does.
+fn open_half(path: &std::path::Path, text: &str) -> fs::File {
+    use std::io::Write;
+    let mut file = fs::File::create(path).unwrap();
+    file.write_all(text.as_bytes()).unwrap();
+    file
+}
+
+fn finish(mut file: fs::File, text: &str) {
+    use std::io::Write;
+    file.write_all(text.as_bytes()).unwrap();
+}
+
 #[test]
 fn a_config_save_during_a_config_reload_is_kept() {
     use rustix::event::{PollFd, PollFlags, Timespec, poll};
@@ -526,4 +558,131 @@ fn a_config_save_during_a_config_reload_is_kept() {
         let want = if round % 2 == 0 { 404 } else { 200 };
         assert_eq!(server.get("/d/n").status, want, "round {round}");
     }
+}
+
+#[test]
+fn a_save_earlier_in_the_batch_does_not_publish_a_new_half_note() {
+    let (d, server) = with_notes(&[("w.md", "# w"), ("bar.md", "# b0")]);
+    let mut events = server.subscribe("/w", &version(&server, "/w"), None);
+    let mut barrier = server.subscribe("/bar", &version(&server, "/bar"), None);
+    let note = d.vault().join("w.md");
+    stop(&server);
+    // One batch: the saved note, its removal, and a new file still being written.
+    fs::write(&note, "# saved").unwrap();
+    fs::remove_file(&note).unwrap();
+    let file = open_half(&note, "# new\n\nhalf");
+    fs::write(d.vault().join("bar.md"), "# b1").unwrap();
+    resume(&server);
+    barrier.expect("page");
+    finish(file, " and the rest");
+    let page = next_page(&mut events);
+    assert!(page.contains("half and the rest"), "{page}");
+}
+
+#[test]
+fn a_dependent_rerender_waits_for_an_open_note() {
+    let (d, server) = with_notes(&[("a.md", "# a"), ("b.md", "# b"), ("bar.md", "# b0")]);
+    let mut events = server.subscribe("/b", &version(&server, "/b"), None);
+    let mut barrier = server.subscribe("/bar", &version(&server, "/bar"), None);
+    let mut a = server.subscribe("/a", &version(&server, "/a"), None);
+    let note = d.vault().join("b.md");
+    fs::remove_file(&note).unwrap();
+    let file = open_half(&note, "# b\n\nhalf");
+    fs::write(d.vault().join("bar.md"), "# b1").unwrap();
+    barrier.expect("page");
+    // A new link to `b` re-renders its page in a later batch, while `b.md` is still open.
+    fs::write(d.vault().join("a.md"), "see [[b]]").unwrap();
+    a.expect("page");
+    finish(file, " and the rest");
+    let page = next_page(&mut events);
+    assert!(page.contains("half and the rest"), "{page}");
+    assert!(page.contains("<h2>Backlinks</h2>"), "{page}");
+}
+
+#[test]
+fn an_embedder_renders_again_when_an_open_note_is_saved() {
+    let (d, server) = with_notes(&[("x.md", "![[b]]"), ("b.md", "# b"), ("bar.md", "# b0")]);
+    let mut x = server.subscribe("/x", &version(&server, "/x"), None);
+    let mut barrier = server.subscribe("/bar", &version(&server, "/bar"), None);
+    let note = d.vault().join("b.md");
+    stop(&server);
+    // One batch removes and recreates `b.md`, so it keeps its page while held.
+    fs::remove_file(&note).unwrap();
+    let file = open_half(&note, "# b\n\nhalf");
+    fs::write(d.vault().join("bar.md"), "# b1").unwrap();
+    resume(&server);
+    barrier.expect("page");
+    // `x` renders while `b.md` is open, so its embed of `b` is a link for now.
+    fs::write(d.vault().join("x.md"), "![[b]] again").unwrap();
+    assert!(!next_page(&mut x).contains("half"));
+    finish(file, " and the rest");
+    let page = next_page(&mut x);
+    assert!(page.contains("half and the rest"), "{page}");
+}
+
+#[test]
+fn a_new_folder_scan_waits_for_an_open_note() {
+    let (d, server) = with_notes(&[("bar.md", "# b0")]);
+    let mut events = server.subscribe("/d/n", "", None);
+    let mut barrier = server.subscribe("/bar", &version(&server, "/bar"), None);
+    stop(&server);
+    // The folder's watch is added after the note was created, so no CREATE names it.
+    fs::create_dir(d.vault().join("d")).unwrap();
+    let file = open_half(&d.vault().join("d/n.md"), "# n\n\nhalf");
+    fs::write(d.vault().join("bar.md"), "# b1").unwrap();
+    resume(&server);
+    barrier.expect("page");
+    finish(file, " and the rest");
+    let page = next_page(&mut events);
+    assert!(page.contains("half and the rest"), "{page}");
+}
+
+#[test]
+fn a_folder_deleted_and_recreated_publishes_the_new_note() {
+    let (d, server) = with_notes(&[("d/n.md", "# old")]);
+    let mut events = server.subscribe("/d/n", &version(&server, "/d/n"), None);
+    stop(&server);
+    // The new note is written and closed before the new folder's watch exists.
+    fs::remove_dir_all(d.vault().join("d")).unwrap();
+    fs::create_dir(d.vault().join("d")).unwrap();
+    fs::write(d.vault().join("d/n.md"), "# new").unwrap();
+    resume(&server);
+    let page = next_page(&mut events);
+    assert!(page.contains("\">new</h1>"), "{page}");
+}
+
+#[test]
+fn a_save_by_link_is_published() {
+    let (d, server) = with_notes(&[("a.md", "# a")]);
+    let mut events = server.subscribe("/n", "", None);
+    let tmp = d.vault().join(".n.md.tmp");
+    fs::write(&tmp, "# linked").unwrap();
+    stop(&server);
+    // `link()` then `unlink()`: the note appears with one link and no CLOSE_WRITE.
+    fs::hard_link(&tmp, d.vault().join("n.md")).unwrap();
+    fs::remove_file(&tmp).unwrap();
+    resume(&server);
+    let page = next_page(&mut events);
+    assert!(page.contains("\">linked</h1>"), "{page}");
+}
+
+#[test]
+fn exchanged_folders_stay_watched() {
+    use rustix::fs::{CWD, RenameFlags, renameat_with};
+    let (d, server) = with_notes(&[("a/x.md", "# x"), ("b/y.md", "# y")]);
+    let mut moved = server.subscribe("/b/x", "", None);
+    renameat_with(
+        CWD,
+        d.vault().join("a"),
+        CWD,
+        d.vault().join("b"),
+        RenameFlags::EXCHANGE,
+    )
+    .unwrap();
+    assert!(next_page(&mut moved).contains("\">x</h1>"));
+    fs::write(d.vault().join("b/x.md"), "# edited").unwrap();
+    assert!(next_page(&mut moved).contains("\">edited</h1>"));
+    let mut other = server.subscribe("/a/y", &version(&server, "/a/y"), None);
+    fs::write(d.vault().join("a/y.md"), "# also").unwrap();
+    assert!(next_page(&mut other).contains("\">also</h1>"));
 }

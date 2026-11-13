@@ -273,9 +273,9 @@ impl VaultDir {
         self.open_after(rel, true)
     }
 
-    /// Opens like `open_file`. Unless the path's last event was a save, a regular file with
-    /// one link is `MidSave`: it was created after a create, delete or move-away event, and
-    /// its `CLOSE_WRITE` follows. The check uses the open file, so it cannot race the read.
+    /// Opens like `open_file`. Unless `saved`, a regular file with one link is `MidSave`: the
+    /// watcher holds a new file's path until its save, or its hold ends. The check uses the
+    /// open file, so it cannot race the read.
     pub fn open_after(&self, rel: &str, saved: bool) -> Result<File, ReadError> {
         let flags = OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC | OFlags::NOCTTY;
         let file = match openat2(&self.fd, rel, flags, Mode::empty(), RESOLVE) {

@@ -1,6 +1,6 @@
 //! The watch edge: inotify events in, site changes applied, output written, pushes sent.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ffi::OsString;
 use std::fs;
 use std::mem::MaybeUninit;
@@ -8,7 +8,9 @@ use std::os::fd::OwnedFd;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::fs::inotify::{self, CreateFlags, ReadFlags, WatchFlags};
 use tokio::sync::broadcast;
 
@@ -37,6 +39,13 @@ const MASK: WatchFlags = WatchFlags::CLOSE_WRITE
     .union(WatchFlags::DONT_FOLLOW)
     .union(WatchFlags::EXCL_UNLINK);
 
+/// How long a path stays held as mid-save with no save event. A save by `link()` sends
+/// none, and neither does a note closed before its new folder's watch existed.
+const HOLD: Duration = Duration::from_secs(1);
+
+/// Sets the hold in milliseconds, so property tests do not wait out a second per case.
+const HOLD_ENV: &str = "TACHYLITE_HOLD_MS";
+
 struct Event {
     wd: i32,
     flags: ReadFlags,
@@ -51,6 +60,9 @@ pub struct Watcher {
     out: PathBuf,
     site: Site,
     live: Live,
+    /// Paths that may be mid-save, each with the time it is read as saved anyway.
+    held: HashMap<String, Instant>,
+    hold: Duration,
 }
 
 fn join(dir: &str, name: &str) -> String {
@@ -61,20 +73,26 @@ fn join(dir: &str, name: &str) -> String {
     }
 }
 
-/// The vault, as one batch reads it. A path whose events held no save may be mid-save.
+/// The vault, as one batch reads it. A held path may be mid-save, and so may a file at a
+/// path whose last event removed it: the new file's CREATE is still queued.
 struct Batch<'a> {
     vault: &'a VaultDir,
-    unsaved: &'a HashSet<String>,
+    held: &'a HashMap<String, Instant>,
+    removed: &'a HashSet<String>,
+}
+
+impl Batch<'_> {
+    fn saved(&self, path: &str) -> bool {
+        !self.held.contains_key(path) && !self.removed.contains(path)
+    }
 }
 
 impl Source for Batch<'_> {
     fn note(&mut self, path: &str) -> Result<Note, ReadError> {
-        self.vault.read_note(path, !self.unsaved.contains(path))
+        self.vault.read_note(path, self.saved(path))
     }
     fn file(&mut self, path: &str) -> Result<(), ReadError> {
-        self.vault
-            .open_after(path, !self.unsaved.contains(path))
-            .map(|_| ())
+        self.vault.open_after(path, self.saved(path)).map(|_| ())
     }
 }
 
@@ -106,6 +124,11 @@ impl Watcher {
             out,
             site: Site::new(config.exclude),
             live,
+            held: HashMap::new(),
+            hold: std::env::var(HOLD_ENV)
+                .ok()
+                .and_then(|ms| ms.parse().ok())
+                .map_or(HOLD, Duration::from_millis),
         };
         watcher.watch_tree("")?;
         // A config saved before the root watch existed sent no event.
@@ -122,12 +145,34 @@ impl Watcher {
         let mut buf = vec![MaybeUninit::<u8>::uninit(); 64 * 1024];
         loop {
             let result = self
-                .read_batch(&mut buf)
+                .wait()
+                .and_then(|queued| match queued {
+                    true => self.read_batch(&mut buf),
+                    false => Ok(Vec::new()),
+                })
                 .and_then(|events| self.changes(events))
-                .and_then(|(changes, unsaved)| self.apply(changes, unsaved));
+                .and_then(|(changes, removed)| self.apply(changes, removed));
             if let Err(e) = result {
                 return e;
             }
+        }
+    }
+
+    /// Waits for an event, or until the first hold ends. Returns whether events are queued.
+    /// With no path held, it returns at once and the read blocks, so idle costs nothing.
+    fn wait(&self) -> Result<bool, Error> {
+        let Some(end) = self.held.values().min() else {
+            return Ok(true);
+        };
+        let timeout = Timespec::try_from(end.saturating_duration_since(Instant::now())).ok();
+        let mut fds = [PollFd::new(&self.inotify, PollFlags::IN)];
+        match poll(&mut fds, timeout.as_ref()) {
+            Ok(ready) => Ok(ready > 0),
+            Err(rustix::io::Errno::INTR) => Ok(false),
+            Err(e) => Err(Error::Watch {
+                path: self.vault.root().to_path_buf(),
+                source: e.into(),
+            }),
         }
     }
 
@@ -158,12 +203,14 @@ impl Watcher {
         }
     }
 
-    /// The batch's changes, and the touched paths none of whose events was a save.
+    /// The batch's changes, and the paths whose last event removed them.
     fn changes(&mut self, events: Vec<Event>) -> Result<(Vec<Change>, HashSet<String>), Error> {
-        let mut changes = Vec::new();
-        // Path to whether any of its events was a save.
-        let mut touched: BTreeMap<String, bool> = BTreeMap::new();
+        let mut paths = BTreeSet::new();
+        let mut removed = HashSet::new();
+        // Each folder with an event, and whether one was a create.
+        let mut folders: BTreeMap<String, bool> = BTreeMap::new();
         let mut reload = false;
+        let now = Instant::now();
         for event in events {
             if event.flags.contains(ReadFlags::QUEUE_OVERFLOW) {
                 eprintln!("inotify queue overflowed; rescanning the vault");
@@ -201,43 +248,72 @@ impl Watcher {
                     .intersects(ReadFlags::CLOSE_WRITE | ReadFlags::MOVED_TO);
                 continue;
             }
+            if event.flags.contains(ReadFlags::ISDIR) {
+                if !self.site.exclude().path(&path) {
+                    *folders.entry(path).or_default() |= event.flags.contains(ReadFlags::CREATE);
+                }
+                continue;
+            }
             if self.site.exclude().path(&path) {
                 continue;
             }
-            if event.flags.contains(ReadFlags::ISDIR) {
-                if event
-                    .flags
-                    .intersects(ReadFlags::CREATE | ReadFlags::MOVED_TO)
-                {
-                    self.watch_tree(&path)?;
-                    changes.push(self.sync(&path)?);
-                } else if event
-                    .flags
-                    .intersects(ReadFlags::MOVED_FROM | ReadFlags::DELETE)
-                {
-                    self.unwatch(&path);
-                    changes.push(Change::Sync {
-                        under: path,
-                        entries: Vec::new(),
-                    });
-                }
-            } else {
-                let save = event
-                    .flags
-                    .intersects(ReadFlags::CLOSE_WRITE | ReadFlags::MOVED_TO);
-                *touched.entry(path).or_default() |= save;
+            // The last event decides.
+            if event
+                .flags
+                .intersects(ReadFlags::CLOSE_WRITE | ReadFlags::MOVED_TO)
+            {
+                self.held.remove(&path);
+                removed.remove(&path);
+            } else if event.flags.contains(ReadFlags::CREATE) {
+                self.held.insert(path.clone(), now + self.hold);
+                removed.remove(&path);
+            } else if event
+                .flags
+                .intersects(ReadFlags::DELETE | ReadFlags::MOVED_FROM)
+            {
+                self.held.remove(&path);
+                removed.insert(path.clone());
             }
+            paths.insert(path);
         }
         if reload && self.reload_config() {
             return self.resync();
         }
-        let unsaved = touched
+
+        // The folders as they stand now, each once: a parent's sync covers its children.
+        let mut tops: Vec<(&str, bool)> = Vec::new();
+        for (folder, created) in &folders {
+            if !tops.iter().any(|(top, _)| within(folder, top)) {
+                tops.push((folder, *created));
+            }
+        }
+        let names: Vec<&str> = tops.iter().map(|(folder, _)| *folder).collect();
+        self.rewatch(&names)?;
+        let mut changes = Vec::new();
+        for (folder, created) in tops {
+            let sync = self.sync(folder)?;
+            // A file in a new folder may be mid-save, and its CREATE came before the watch.
+            if created && let Change::Sync { entries, .. } = &sync {
+                for entry in entries {
+                    self.held.insert(entry.path.clone(), now + self.hold);
+                }
+            }
+            changes.push(sync);
+        }
+
+        let now = Instant::now();
+        let ended: Vec<String> = self
+            .held
             .iter()
-            .filter(|(_, saved)| !**saved)
+            .filter(|(_, end)| **end <= now)
             .map(|(path, _)| path.clone())
             .collect();
-        changes.extend(touched.into_keys().map(Change::Touch));
-        Ok((changes, unsaved))
+        for path in ended {
+            self.held.remove(&path);
+            paths.insert(path);
+        }
+        changes.extend(paths.into_iter().map(Change::Touch));
+        Ok((changes, removed))
     }
 
     /// Rereads `tachylite.toml`. Returns true when a config was read and is now in force. A
@@ -329,27 +405,14 @@ impl Watcher {
         Ok(())
     }
 
-    fn unwatch(&mut self, rel: &str) {
-        let gone: Vec<i32> = self
-            .dirs
-            .iter()
-            .filter(|(_, dir)| within(dir, rel))
-            .map(|(wd, _)| *wd)
-            .collect();
-        for wd in gone {
-            // The folder may already be gone, which removes its watch too.
-            let _ = inotify::remove_watch(&self.inotify, wd);
-            self.dirs.remove(&wd);
-        }
-    }
-
-    fn apply(&mut self, changes: Vec<Change>, unsaved: HashSet<String>) -> Result<(), Error> {
+    fn apply(&mut self, changes: Vec<Change>, removed: HashSet<String>) -> Result<(), Error> {
         if changes.is_empty() {
             return Ok(());
         }
         let mut batch = Batch {
             vault: &self.vault,
-            unsaved: &unsaved,
+            held: &self.held,
+            removed: &removed,
         };
         let live = &self.live;
         let mut writer = Writer::new(&self.out, &self.vault, |push: Push| {

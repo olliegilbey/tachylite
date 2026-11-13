@@ -8,3 +8,4 @@ cc fda25f25884ee0994a7a920419f209f26fc403c4720175012e102e67b9bdf3ef # shrinks to
 cc fd99d138af377aefcbb3e768acbf2fe1e065ad35dad88c81271a2c39bf76d01c # shrinks to ops = [(RenameFolder, false), (Config(true), true), (Write(0, 6), true), (Delete(4), true), (Write(8, 10), false)]
 cc 07daba6d72ce507f2be6cac1e5ccf7edb65d967e5741d6b5a619f4325cecf71c # shrinks to ops = [(Config(false), true), (Delete(2), true), (DeleteFolder, true), (Write(3, 7), true), (RenameFolder, true), (Rename(4, 9), false)]
 cc 8453c088a9786b27e308130e60e77eeb87178c5be4dad716c6ace40d88351418 # shrinks to a config save that lands during the previous one's reload (#40)
+cc cd9490e58fd32de70b590c193a4afbc9a74148e7e6dfa7d3e8cfec5f5a0890e0 # shrinks to ops = [(Write(3, 11), false), (Write(8, 6), true), (Write(6, 6), true), (Write(8, 2), true), (DeleteFolder, false), (Write(8, 4), true)]
