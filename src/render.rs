@@ -212,9 +212,13 @@ fn embed(
                 escape(alt)
             ))
         }
+        // The frame is network-only, as the worker never sees an opaque origin's requests.
+        // Opened full screen, the page is cached and works offline.
         Some(Kind::Html) => Embed::Block(format!(
             "<iframe class=\"embed-html\" sandbox=\"allow-scripts\" src=\"{src}\" \
-             loading=\"lazy\"></iframe>\n"
+             loading=\"lazy\"></iframe>\n\
+             <p class=\"embed-open\"><a href=\"{src}\">Open {} full screen</a></p>\n",
+            escape(target.rsplit('/').next().unwrap_or(&target))
         )),
         Some(Kind::Note) if depth < EMBED_DEPTH && !seen.contains(&*target) => {
             let Some(bytes) = sources.get(&*target) else {
