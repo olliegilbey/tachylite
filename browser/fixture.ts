@@ -1,4 +1,4 @@
-import { expect, test as base } from "@playwright/test";
+import { expect, test as base, type Page } from "@playwright/test";
 
 /** The run's directory, and the shared server's address, from `global-setup.ts`. */
 // Empty when a tool loads the specs without running the global setup, as `--list` does.
@@ -27,3 +27,12 @@ export const test = base.extend<{ allowedErrors: RegExp[] }>({
 });
 
 export { expect };
+
+/** Hides or shows the page as a phone does on a tab switch. Headless tabs stay visible. */
+export function setHidden(page: Page, hidden: boolean): Promise<void> {
+  return page.evaluate((h) => {
+    Object.defineProperty(document, "hidden", { value: h, configurable: true });
+    Object.defineProperty(document, "visibilityState", { value: h ? "hidden" : "visible", configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+  }, hidden);
+}

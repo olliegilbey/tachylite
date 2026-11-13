@@ -9,6 +9,9 @@ const SHELL = [
   "/.tachylite/icon-maskable.svg",
 ];
 const PASS = new Set(["/.tachylite/events", "/.tachylite/sw.js", MANIFEST]);
+const NOTES = "/.tachylite/notes.json";
+const MERMAID = "/.tachylite/mermaid.js";
+const KEEP = [...SHELL, MANIFEST, MERMAID];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(
@@ -21,7 +24,8 @@ self.addEventListener("install", (e) => {
 
 self.addEventListener("activate", (e) => e.waitUntil(self.clients.claim()));
 
-// Stale-while-revalidate: the cached copy at once, and a fresh one stored behind it.
+// Stale-while-revalidate: the cached copy at once, and a fresh one stored behind it. The
+// switcher asks for its list with `no-cache` while connected, and gets the fresh one first.
 self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== "GET" || url.origin !== location.origin || PASS.has(url.pathname)) return;
@@ -35,43 +39,77 @@ self.addEventListener("fetch", (e) => {
         if (r.status === 404) e.waitUntil(cache.delete(url.pathname));
         return r;
       });
-      if (hit) {
+      if (hit && !(url.pathname === NOTES && e.request.cache === "no-cache")) {
         e.waitUntil(fresh.catch(() => {}));
         return hit;
       }
-      return fresh.catch(() => new Response("Offline, and this page is not cached yet.", { status: 503 }));
+      return fresh.then(
+        (r) => (r.ok || !hit ? r : hit),
+        () => hit ?? new Response("Offline, and this page is not cached yet.", { status: 503 }),
+      );
     })(),
   );
 });
 
-// The page asks for a sync on load and on every reconnect. One runs at a time.
-let syncing = null;
+// One job runs at a time: a sync, or a pushed page to store. A sync asked for while one
+// runs runs again after it, since the running one read an older manifest.
+let queue = Promise.resolve();
+let queued = false;
+const later = (job) => (queue = queue.then(job).catch(() => {}));
 self.addEventListener("message", (e) => {
-  if (e.data !== "sync") return;
-  syncing ??= sync().finally(() => (syncing = null));
-  e.waitUntil(syncing);
+  if (e.data === "sync" && !queued) {
+    queued = true;
+    later(() => {
+      queued = false;
+      return sync();
+    });
+  } else if (e.data?.html) later(() => store(e.data));
+  e.waitUntil(queue);
 });
 
-// The stored manifest maps each listed URL to the version its cached copy carries, or ""
-// for one not fetched yet. It is stored before the fetches, so a page whose fetch fails,
-// or a worker stopped mid-sync, stays listed: retried next time, and dropped once gone.
+const json = (value) => new Response(JSON.stringify(value), { headers: { "content-type": "application/json" } });
+
+// A page pushed to an open tab, stored with the headers of the copy it replaces, so its
+// policy stays. The page has the HTML already, so the worker fetches nothing.
+async function store({ url, version, html }) {
+  const cache = await caches.open(CACHE);
+  const old = await cache.match(url);
+  if (!old) return;
+  const headers = new Headers(old.headers);
+  headers.delete("content-encoding");
+  headers.delete("content-length");
+  await cache.put(url, new Response(html, { headers }));
+  const have = await (await cache.match(MANIFEST))?.json();
+  if (have) await cache.put(MANIFEST, json({ ...have, [url]: version }));
+}
+
+// The stored manifest maps each listed page to the version its cached copy carries, or ""
+// for one not fetched yet. It is saved before the fetches and every 50 pages, so a worker
+// stopped mid-sync resumes where it stopped. A listed page with no cached copy is fetched
+// again. A cached key the manifest does not list, as page or file, is dropped.
 async function sync() {
   const cache = await caches.open(CACHE);
   const response = await fetch(MANIFEST).catch(() => null);
   if (!response?.ok) return;
-  const want = (await response.json()).pages;
-  const stored = await cache.match(MANIFEST);
-  const held = stored ? await stored.json() : {};
-  const have = {};
+  const { pages: want, files = [] } = await response.json();
+  const held = (await (await cache.match(MANIFEST))?.json()) ?? {};
+  const keys = (await cache.keys()).map((r) => new URL(r.url).pathname);
+  const cached = new Set(keys);
+  const keep = new Set([...KEEP, ...files]);
+  // A pending Mermaid entry outlives a sync cut short, so the script is fetched in the end.
+  const have = MERMAID in held ? { [MERMAID]: "" } : {};
   const stale = [];
   for (const [url, version] of Object.entries(want)) {
-    have[url] = held[url] ?? "";
+    have[url] = cached.has(url) ? (held[url] ?? "") : "";
     if (have[url] !== version) stale.push(url);
   }
-  await Promise.all(Object.keys(held).filter((url) => !(url in want)).map((url) => cache.delete(url)));
-  const save = () =>
-    cache.put(MANIFEST, new Response(JSON.stringify(have), { headers: { "content-type": "application/json" } }));
+  // The home page, the index pages and the switcher list first: they reach the rest.
+  const index = (url) => url === "/" || url.startsWith("/.tachylite/");
+  stale.sort((a, b) => index(b) - index(a));
+  await Promise.all(keys.filter((url) => !(url in want) && !keep.has(url)).map((url) => cache.delete(url)));
+  const save = () => cache.put(MANIFEST, json(have));
   await save();
+  let stored = 0;
   const workers = Array.from({ length: 6 }, async () => {
     for (let url; (url = stale.shift()); ) {
       try {
@@ -87,6 +125,8 @@ async function sync() {
           : want[url];
         await cache.put(url, r);
         have[url] = version;
+        if (!cached.has(MERMAID) && text.includes('<pre class="mermaid">')) have[MERMAID] = "";
+        if (++stored % 50 === 0) await save();
       } catch {
         // A dropped connection or a full disk: the next sync retries it.
       }
@@ -94,4 +134,10 @@ async function sync() {
   });
   await Promise.all(workers);
   await save();
+  // A diagram draws offline only with the script. It is large, so it comes after the pages.
+  if (MERMAID in have) {
+    if (!cached.has(MERMAID)) await cache.add(MERMAID);
+    delete have[MERMAID];
+    await save();
+  }
 }

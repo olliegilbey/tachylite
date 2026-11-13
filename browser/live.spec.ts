@@ -1,7 +1,7 @@
 import type { Page } from "@playwright/test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, lost, run, test } from "./fixture";
+import { expect, lost, run, setHidden, test } from "./fixture";
 import { serve, stop } from "./server";
 
 const vault = join(run, "vault");
@@ -28,8 +28,11 @@ test.beforeEach(async ({ page }) => {
     window.EventSource = class extends Native {
       constructor(url: string | URL, init?: EventSourceInit) {
         super(url, init);
-        this.addEventListener("open", () => ((window as any).liveOpen = true));
-        this.addEventListener("error", () => ((window as any).liveOpen = false));
+        const w = window as any;
+        (w.streams ??= []).push(this);
+        this.addEventListener("open", () => (w.liveOpen = true));
+        this.addEventListener("error", () => (w.liveOpen = false));
+        this.addEventListener("gone", () => (w.gones = (w.gones ?? 0) + 1));
       }
     };
   });
@@ -100,6 +103,62 @@ test("catches up after a lost connection", async ({ page, allowedErrors }, info)
   }
 });
 
+// A proxy answers an HTTP error while the server is down, and an EventSource closes for good
+// on one. The page opens a new stream, which catches up.
+test("an HTTP error on the stream does not stop live updates", async ({ page, context, allowedErrors }, info) => {
+  allowedErrors.push(/502/);
+  const name = `proxy-${info.project.name}`;
+  note(name, "# Proxy\n\nbefore error\n");
+  await expect.poll(async () => (await page.request.get(`/${name}`)).status()).toBe(200);
+  let refused = 0;
+  await context.route(/\/\.tachylite\/events/, (route) => {
+    refused++;
+    return route.fulfill({ status: 502, body: "bad gateway" });
+  });
+  await page.goto(`/${name}`);
+  await expect.poll(() => refused).toBeGreaterThan(0);
+  await page.waitForFunction(() => (window as any).streams.at(-1).readyState === 2);
+  await context.unroute(/\/\.tachylite\/events/);
+  note(name, "# Proxy\n\nafter error\n");
+  await expect(page.locator("main")).toContainText("after error", { timeout: 15_000 });
+});
+
+// A browser allows six HTTP/1.1 connections per origin, so a hidden tab gives its stream up.
+test("a hidden tab closes its stream and catches up once visible", async ({ page }, info) => {
+  const name = `hidden-${info.project.name}`;
+  note(name, "# Hidden\n\nbefore hide\n");
+  await open(page, name, "before hide");
+  await setHidden(page, true);
+  expect(await page.evaluate(() => (window as any).streams.map((s: EventSource) => s.readyState))).toEqual([2]);
+  note(name, "# Hidden\n\nwhile hidden\n");
+  await expect.poll(async () => (await page.request.get(`/${name}`)).text()).toContain("while hidden");
+  await setHidden(page, false);
+  await expect(page.locator("main")).toContainText("while hidden");
+});
+
+// After `gone` the client's version is `gone`, so a note back with the same bytes is sent.
+test("a note back unchanged after a lost connection replaces the notice", async ({ page, allowedErrors }, info) => {
+  allowedErrors.push(lost);
+  const dir = join(run, `back-${info.project.name}`);
+  mkdirSync(join(dir, "vault"), { recursive: true });
+  const file = join(dir, "vault", "back.md");
+  writeFileSync(file, "# Back\n\nsame text\n");
+  let server = await serve(dir);
+  try {
+    await page.goto(`${server.base}/back`);
+    await page.waitForFunction(() => (window as any).liveOpen === true);
+    rmSync(file);
+    await expect(page.locator("main")).toContainText("This page was deleted or moved.");
+    await stop(server);
+    await page.waitForFunction(() => (window as any).liveOpen === false);
+    writeFileSync(file, "# Back\n\nsame text\n");
+    server = await serve(dir, server.port);
+    await expect(page.locator("main")).toContainText("same text", { timeout: 15_000 });
+  } finally {
+    await stop(server);
+  }
+});
+
 // Vim and git save by removing the note, then writing it again. The page must survive that.
 test("a deleted note shows a notice and comes back", async ({ page }, info) => {
   const name = `gone-${info.project.name}`;
@@ -107,14 +166,16 @@ test("a deleted note shows a notice and comes back", async ({ page }, info) => {
   await open(page, name, "soon gone");
   await page.evaluate(() => ((window as any).stayed = true));
   rmSync(join(vault, `${name}.md`));
-  await expect(page.locator("main")).toContainText("deleted");
+  await expect(page.locator("main")).toContainText("This page was deleted or moved.");
   note(name, "# Gone\n\nback again\n");
   await expect(page.locator("main")).toContainText("back again");
   expect(await page.evaluate(() => (window as any).stayed)).toBe(true);
 });
 
+// Each round waits for the `gone`, then runs the page's clock past the notice's second.
 test("a save that removes the note first never flashes the notice", async ({ page }, info) => {
   const name = `resave-${info.project.name}`;
+  await page.clock.install();
   note(name, "# Resave\n\nround start\n");
   await open(page, name, "round start");
   await page.evaluate(() => {
@@ -124,10 +185,12 @@ test("a save that removes the note first never flashes the notice", async ({ pag
       }
     }).observe(document.body, { childList: true, subtree: true, characterData: true });
   });
-  for (let round = 0; round < 10; round++) {
+  for (let round = 0; round < 3; round++) {
     rmSync(join(vault, `${name}.md`));
+    await expect.poll(() => page.evaluate(() => (window as any).gones)).toBe(round + 1);
     note(name, `# Resave\n\nround ${round}\n`);
     await expect(page.locator("main")).toContainText(`round ${round}`);
+    await page.clock.runFor(1500);
   }
   expect(await page.evaluate(() => (window as any).flashed ?? false)).toBe(false);
 });
@@ -183,16 +246,20 @@ test("a script in a note never runs", async ({ page, allowedErrors }, info) => {
   expect(await page.evaluate(() => (window as any).ran ?? 0)).toBe(0);
 });
 
+// The script runs, so the sandbox, not the main policy, is what keeps it off the origin.
 test("an svg opened as a page cannot run script on the origin", async ({ page }, info) => {
   const name = `svg-${info.project.name}`;
-  writeFileSync(join(vault, `${name}-payload.html`), `document.title = "PWNED";`);
   writeFileSync(
     join(vault, `${name}.svg`),
-    `<svg xmlns="http://www.w3.org/2000/svg"><script href="/${name}-payload.html"/></svg>`,
+    `<svg xmlns="http://www.w3.org/2000/svg"><text id="out" y="20">waiting</text><script>
+      let storage = "open";
+      try { localStorage.length; } catch { storage = "blocked"; }
+      document.getElementById("out").textContent = "ran, storage " + storage;
+    </script></svg>`,
   );
   await expect
     .poll(async () => (await page.request.get(`/${name}.svg`)).status())
     .toBe(200);
-  await page.goto(`/${name}.svg`, { waitUntil: "load" });
-  expect(await page.title()).not.toBe("PWNED");
+  await page.goto(`/${name}.svg`);
+  await expect(page.locator("#out")).toHaveText("ran, storage blocked");
 });
