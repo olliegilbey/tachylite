@@ -1,9 +1,10 @@
-import { expect, test, type Page } from "@playwright/test";
+import type { Page } from "@playwright/test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { expect, lost, run, test } from "./fixture";
 import { serve, stop } from "./server";
 
-const vault = join(__dirname, ".tmp", "vault");
+const vault = join(run, "vault");
 const scale = Number(process.env.BUDGET_SCALE ?? "1");
 
 // Each test writes its own note, named for the test and project, so no two tests share one.
@@ -20,7 +21,6 @@ async function open(page: Page, name: string, text: string) {
   await page.waitForFunction(() => (window as any).liveOpen === true);
 }
 
-let errors: string[] = [];
 test.beforeEach(async ({ page }) => {
   // Marks the page live once its event stream opens, without a hook in the shipped script.
   await page.addInitScript(() => {
@@ -33,11 +33,6 @@ test.beforeEach(async ({ page }) => {
       }
     };
   });
-  errors = [];
-  page.on("console", (m) => {
-    if (m.type() === "error") errors.push(m.text());
-  });
-  page.on("pageerror", (e) => errors.push(e.message));
 });
 
 test("push swaps main", async ({ page }, info) => {
@@ -46,7 +41,6 @@ test("push swaps main", async ({ page }, info) => {
   await open(page, name, "first text");
   note(name, "# Second\n\nsecond text\n");
   await expect(page.locator("main")).toContainText("second text");
-  expect(errors).toEqual([]);
 });
 
 test("a backlink appears on an open page", async ({ page }, info) => {
@@ -58,7 +52,6 @@ test("a backlink appears on an open page", async ({ page }, info) => {
   await expect(page.locator("main .backlinks")).toContainText(linker);
   await page.locator("main .backlinks a").click();
   await expect(page.locator("main")).toContainText(`see ${target}`);
-  expect(errors).toEqual([]);
 });
 
 test("save to screen within budget", async ({ page }, info) => {
@@ -82,33 +75,29 @@ test("save to screen within budget", async ({ page }, info) => {
   const gap = swappedAt - savedAt;
   console.log(`save to screen, ${info.project.name}, 4x CPU throttle: ${gap.toFixed(1)} ms`);
   expect(gap).toBeLessThanOrEqual(100 * scale);
-  expect(errors).toEqual([]);
 });
 
 // Offline emulation keeps an open event stream alive, so a lost connection is a server
 // that stops and starts again. The client reconnects and sends its Last-Event-ID.
-test("catches up after a lost connection", async ({ page }, info) => {
-  const dir = join(__dirname, ".tmp", `restart-${info.project.name}`);
+test("catches up after a lost connection", async ({ page, allowedErrors }, info) => {
+  allowedErrors.push(lost);
+  const dir = join(run, `restart-${info.project.name}`);
   mkdirSync(join(dir, "vault"), { recursive: true });
-  const port = 7432;
   const file = join(dir, "vault", "away.md");
   writeFileSync(file, "# Away\n\nonline text\n");
-  let server = await serve(dir, port);
+  let server = await serve(dir);
   try {
-    await page.goto(`http://127.0.0.1:${port}/away`);
+    await page.goto(`${server.base}/away`);
     await expect(page.locator("main")).toContainText("online text");
     await page.waitForFunction(() => (window as any).liveOpen === true);
     await stop(server);
     await page.waitForFunction(() => (window as any).liveOpen === false);
     writeFileSync(file, "# Away\n\nmissed text\n");
-    server = await serve(dir, port);
+    server = await serve(dir, server.port);
     await expect(page.locator("main")).toContainText("missed text", { timeout: 15_000 });
   } finally {
     await stop(server);
   }
-  // The stop cuts the stream and refuses the first retries; nothing else may log.
-  const cut = /net::ERR_(INCOMPLETE_CHUNKED_ENCODING|CONNECTION_REFUSED)/;
-  expect(errors.filter((e) => !cut.test(e))).toEqual([]);
 });
 
 // Vim and git save by removing the note, then writing it again. The page must survive that.
@@ -122,7 +111,6 @@ test("a deleted note shows a notice and comes back", async ({ page }, info) => {
   note(name, "# Gone\n\nback again\n");
   await expect(page.locator("main")).toContainText("back again");
   expect(await page.evaluate(() => (window as any).stayed)).toBe(true);
-  expect(errors).toEqual([]);
 });
 
 test("a save that removes the note first never flashes the notice", async ({ page }, info) => {
@@ -142,7 +130,6 @@ test("a save that removes the note first never flashes the notice", async ({ pag
     await expect(page.locator("main")).toContainText(`round ${round}`);
   }
   expect(await page.evaluate(() => (window as any).flashed ?? false)).toBe(false);
-  expect(errors).toEqual([]);
 });
 
 test("a Mermaid block draws, and only its page loads the script", async ({ page }, info) => {
@@ -162,7 +149,6 @@ test("a Mermaid block draws, and only its page loads the script", async ({ page 
   await expect(page.locator("main h1")).toHaveText("Drawn again");
   await expect(page.locator("main pre.mermaid svg")).toBeVisible();
   expect(requested.length).toBe(1);
-  expect(errors).toEqual([]);
 });
 
 test("a page with a Mermaid block draws on first load", async ({ page }, info) => {
@@ -170,7 +156,6 @@ test("a page with a Mermaid block draws on first load", async ({ page }, info) =
   note(name, "# Loaded\n\n```mermaid\ngraph LR\nX-->Y\n```\n");
   await open(page, name, "Loaded");
   await expect(page.locator("main pre.mermaid svg")).toBeVisible();
-  expect(errors).toEqual([]);
 });
 
 test("an embedded html page runs its script in an opaque origin", async ({ page }, info) => {
@@ -188,10 +173,10 @@ test("an embedded html page runs its script in an opaque origin", async ({ page 
   await expect(page.frameLocator("main iframe.embed-html").locator("#out")).toHaveText(
     "ran, parent blocked, storage blocked",
   );
-  expect(errors).toEqual([]);
 });
 
-test("a script in a note never runs", async ({ page }, info) => {
+test("a script in a note never runs", async ({ page, allowedErrors }, info) => {
+  allowedErrors.push(/status of 404/);
   const name = `script-${info.project.name}`;
   note(name, `# Scripted\n\n<img src="x.png" onerror="window.ran = 1">\n\n<script>window.ran = 2</script>\n`);
   await open(page, name, "Scripted");

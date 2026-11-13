@@ -23,9 +23,7 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: browser/package-lock.json
-      - run: npm ci && npx playwright install --with-deps --only-shell chromium
-        working-directory: browser
-      - run: make check
+      - run: make check PLAYWRIGHT_INSTALL=--with-deps
       - if: failure()
         uses: actions/upload-artifact@v7
         with:

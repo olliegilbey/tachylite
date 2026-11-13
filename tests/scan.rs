@@ -1,17 +1,16 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod common;
+
 use std::ffi::OsStr;
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::symlink;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
+use common::fixture;
 use tachylite::config::Exclude;
 use tachylite::vault::{Entry, Kind, SkipReason, Skipped, scan};
-
-fn fixture() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/vault")
-}
 
 fn entry(path: &str, kind: Kind) -> Entry {
     Entry {
@@ -124,10 +123,10 @@ fn unreadable_folder_is_skipped_not_fatal() {
     fs::create_dir(&locked).unwrap();
     fs::write(locked.join("x.md"), "hidden").unwrap();
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
-    if fs::read_dir(&locked).is_ok() {
-        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
-        return; // Running as root: permissions cannot make a folder unreadable.
-    }
+    assert!(
+        fs::read_dir(&locked).is_err(),
+        "run as non-root: root reads any folder"
+    );
 
     let result = scan(dir.path(), &Exclude::default());
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
