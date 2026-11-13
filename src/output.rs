@@ -147,13 +147,13 @@ fn remove(out: &Path, rel: &str) -> Result<(), Error> {
     Ok(())
 }
 
-/// Writes `.<name>.tmp` beside the target, then renames it, so a reader never sees half a
-/// file and no URL can reach the temp file.
+/// Writes `.tmp` beside the target, then renames it, so a reader never sees half a file and
+/// no URL can reach the temp file. One short name fits beside any target name, and one name
+/// per folder is enough: a writer writes one file at a time.
 fn write_via_tmp(path: &Path, write: impl FnOnce(&Path) -> io::Result<()>) -> Result<(), Error> {
     let parent = path.parent().unwrap_or(Path::new("."));
     fs::create_dir_all(parent).map_err(io_err(parent))?;
-    let name = path.file_name().unwrap_or_default().to_string_lossy();
-    let tmp = parent.join(format!(".{name}.tmp"));
+    let tmp = parent.join(".tmp");
     write(&tmp).map_err(io_err(&tmp))?;
     fs::rename(&tmp, path).map_err(io_err(path))
 }

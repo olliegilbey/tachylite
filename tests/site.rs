@@ -223,6 +223,45 @@ fn folder_page_clash() {
 }
 
 #[test]
+fn a_name_too_long_for_its_page_leaves_no_trace() {
+    let long = format!("{}.md", "n".repeat(251));
+    let link = format!("[[{0}]] ![[{0}]]", "n".repeat(251));
+    let mut mem = Mem::with(&[("a.md", &link)]);
+    let (mut site, first) = synced(&mut mem, Exclude::default());
+    let mut out = Out::new();
+    fold(&mut out, &first, &mem);
+    // Create it, rename it to a short name, then rename it back.
+    let steps = [
+        (None, &*long),
+        (Some(&*long), "s.md"),
+        (Some("s.md"), &*long),
+    ];
+    for (from, to) in steps {
+        let bytes = match from {
+            Some(from) => mem.0.remove(from).unwrap(),
+            None => b"# toolong-marker".to_vec(),
+        };
+        mem.0.insert(to.to_string(), bytes);
+        let mut changes: Vec<Change> = from.into_iter().map(touch).collect();
+        changes.push(touch(to));
+        let delta = site.apply(changes, &mut mem);
+        fold(&mut out, &delta, &mem);
+        assert_eq!(out, full(&mem).0, "after {to}");
+        let skipped: Vec<Skipped> = (to == long)
+            .then(|| Skipped {
+                path: PathBuf::from(to),
+                reason: SkipReason::NameTooLong,
+            })
+            .into_iter()
+            .collect();
+        assert_eq!(delta.skipped, skipped);
+    }
+    let text: String = out.values().map(|b| String::from_utf8_lossy(b)).collect();
+    assert!(!text.contains("toolong-marker"));
+    assert!(!out.keys().any(|k| k.contains("nnnn")));
+}
+
+#[test]
 fn deleting_the_winner_promotes_the_loser() {
     let mut mem = Mem::with(&[("a.MD", "# upper"), ("a.md", "# lower")]);
     let mut site = Site::new(Exclude::default());

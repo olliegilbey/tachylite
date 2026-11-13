@@ -31,6 +31,7 @@ pub enum SkipReason {
     Symlink,
     NonUtf8Name,
     UrlClash,
+    NameTooLong,
     Unreadable(io::ErrorKind),
 }
 
