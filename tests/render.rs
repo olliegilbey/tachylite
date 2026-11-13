@@ -156,6 +156,41 @@ fn heading_links_use_heading_ids() {
 }
 
 #[test]
+fn markdown_heading_links_use_heading_ids() {
+    let html = plain("# Some Heading\n\n[x](#Some%20Heading) [y](#some-heading)");
+    assert_eq!(
+        html.matches("<a href=\"#some-heading\">").count(),
+        2,
+        "{html}"
+    );
+    assert!(plain("[top](#)").contains("<a href=\"#\">top</a>"));
+}
+
+#[test]
+fn a_tag_can_start_a_heading() {
+    let html = plain("# #start of it\n\n## #only");
+    for want in [
+        "<h1 id=\"start-of-it\"><a class=\"tag\" href=\"/.tachylite/tags/start\">#start</a> of it</h1>",
+        "<h2 id=\"only\"><a class=\"tag\" href=\"/.tachylite/tags/only\">#only</a></h2>",
+    ] {
+        assert!(html.contains(want), "{want} not in {html}");
+    }
+}
+
+#[test]
+fn frontmatter_tabs_comma_tags_and_empty_items() {
+    let html = plain("---\ntitle:\tTabbed\ntags: a, b\nlist:\n  - x\n  -\n  - y\n---\n");
+    for want in [
+        "<dt>title</dt><dd>Tabbed</dd>",
+        "<dd><a class=\"tag\" href=\"/.tachylite/tags/a\">#a</a>, \
+         <a class=\"tag\" href=\"/.tachylite/tags/b\">#b</a></dd>",
+        "<dt>list</dt><dd>x, y</dd>",
+    ] {
+        assert!(html.contains(want), "{want} not in {html}");
+    }
+}
+
+#[test]
 fn backlinks_list_at_the_foot_of_main() {
     let page = render_page(
         "b.md",
@@ -449,11 +484,11 @@ fn comments_in_code_spans_and_fences_in_containers_stay() {
 
 #[test]
 fn disagreement_on_code_withholds_the_text() {
-    // comrak's code span crosses the line break; the stripper reads spans within a line.
+    // The stripper reads a fence inside the HTML block; the parser reads HTML, then text.
     let index = Index::new(["b.md"]);
     let body = render_body(
         "a.md",
-        "`a\nb` %% zebra [[b]] `d`\n",
+        "<div>\n```\n</div>\n\n%% zebra [[b]] %%\n```\n",
         &index,
         &Sources::new(),
     );
@@ -464,6 +499,63 @@ fn disagreement_on_code_withholds_the_text() {
     );
     assert!(!body.html.contains("zebra"));
     assert!(body.targets.is_empty());
+}
+
+#[test]
+fn code_spans_and_indented_code_keep_their_percent_signs() {
+    for (md, kept) in [
+        (
+            "Intro.\n\n    printf(\"%%d\\n\", n);\n\nAfter %%zebra%% this.",
+            "this",
+        ),
+        (
+            "Use `printf(\"%%d\",\nn)` to print. %%zebra%% Rest.",
+            "Rest",
+        ),
+        // A heading is one line, so a code span cannot run out of it.
+        ("# Title `x\nmore `%%d` %%zebra%% `y`", "more"),
+        // Indented four columns, list content is text, not code.
+        (
+            "- a\n\n    more %%zebra%% text\n\n\t- b %%zebra%% c `%%d`",
+            "c",
+        ),
+    ] {
+        let html = plain(md);
+        assert!(html.contains("%%d"), "{html}");
+        assert!(html.contains(kept), "{kept} not in {html}");
+        assert!(!html.contains("zebra"), "{html}");
+        assert!(!html.contains("comment-error"), "{html}");
+    }
+}
+
+#[test]
+fn an_escape_never_hides_a_comment() {
+    let html = plain("a \\%%zebra%% b");
+    assert!(html.contains(" b") && !html.contains("zebra"), "{html}");
+    assert!(!html.contains("comment-error"), "{html}");
+    // In code to the stripper, but text to the parser: `\%%` parses as two nodes.
+    let html = plain("<div>\n```\n</div>\n\n\\%%zebra\n```\n");
+    assert!(html.contains("comment-error"), "{html}");
+    assert!(!html.contains("zebra"), "{html}");
+}
+
+#[test]
+fn only_spaces_and_tabs_indent() {
+    // U+3000 is text, so the next line opens a fence, as the parser reads it.
+    let html = plain("\u{3000}```\n```\nx %%a\n%%b%%\n```\n");
+    assert!(
+        html.contains("<pre><code>x %%a\n%%b%%\n</code></pre>"),
+        "{html}"
+    );
+}
+
+#[test]
+fn an_unclosed_comment_shows_a_notice() {
+    let html = plain("one %%zebra\n\nyak");
+    assert!(html.contains("one"), "{html}");
+    assert!(!html.contains("zebra") && !html.contains("yak"), "{html}");
+    assert!(html.contains("class=\"comment-error\""), "{html}");
+    assert!(!plain("one %%zebra%% two").contains("comment-error"));
 }
 
 #[test]
@@ -556,6 +648,24 @@ fn paths(set: &std::collections::BTreeSet<std::sync::Arc<str>>) -> Vec<&str> {
 }
 
 #[test]
+fn a_note_embed_splits_its_paragraph() {
+    let body = embed(
+        "a.md",
+        "Before ![[b]] after.\n![[c]]\n![[d]]\n",
+        &[("b.md", "Bee"), ("c.md", "Cee"), ("d.md", "Dee")],
+        &[],
+    );
+    assert!(!body.html.contains("<p><div"), "{}", body.html);
+    assert!(!body.html.contains("</div>\n</p>"), "{}", body.html);
+    for want in [
+        "<p>Before</p>\n<div class=\"embed\"><a class=\"embed-link\" href=\"/b\">b</a>\n<p>Bee</p>\n</div>\n<p>after.</p>\n<div class=\"embed\">",
+        "<p>Dee</p>\n</div>\n",
+    ] {
+        assert!(body.html.contains(want), "{want} not in {}", body.html);
+    }
+}
+
+#[test]
 fn image_embed_renders_img() {
     let body = embed(
         "a.md",
@@ -643,7 +753,7 @@ fn note_embed_transcludes_the_body() {
     );
     assert!(
         body.html.contains(
-            "<div class=\"embed\"><a class=\"embed-link\" href=\"/b\">Bee</a>\n<h1 id=\"b\">B</h1>"
+            "<div class=\"embed\"><a class=\"embed-link\" href=\"/b\">Bee</a>\n<h1 id=\"e1.b\">B</h1>"
         ),
         "{}",
         body.html
@@ -794,4 +904,192 @@ fn render_reports_embeds_it_could_not_load() {
     );
     assert_eq!(paths(&body.missing), ["a.md"]);
     assert!(body.embeds.is_empty());
+}
+
+/// The page with the contents of every `<code>` and `<pre>` element removed. Code keeps its
+/// `%%` by design; everything else, attributes included, must not.
+fn outside_code(html: &str) -> String {
+    let mut out = String::new();
+    let mut rest = html;
+    let mut depth = 0usize;
+    while let Some(i) = rest.find('<') {
+        if depth == 0 {
+            out.push_str(&rest[..i]);
+        }
+        let end = rest[i..].find('>').map_or(rest.len(), |j| i + j + 1);
+        let tag = &rest[i..end];
+        if tag.starts_with("<code") || tag.starts_with("<pre") {
+            if depth == 0 {
+                out.push_str(tag);
+            }
+            depth += 1;
+        } else if tag.starts_with("</code") || tag.starts_with("</pre") {
+            depth = depth.saturating_sub(1);
+        } else if depth == 0 {
+            // A heading id slugs the heading's text, code spans included.
+            let id = tag
+                .find(" id=\"")
+                .filter(|_| tag.starts_with("<h"))
+                .and_then(|at| Some((at, at + 5 + tag[at + 5..].find('"')? + 1)));
+            match id {
+                Some((from, to)) => out.push_str(&format!("{}{}", &tag[..from], &tag[to..])),
+                None => out.push_str(tag),
+            }
+        }
+        rest = &rest[end..];
+    }
+    if depth == 0 {
+        out.push_str(rest);
+    }
+    out
+}
+
+/// The parser's own reading of a note, comments and all, with Tachylite's extensions.
+fn raw_html(md: &str) -> String {
+    let mut options = comrak::Options::default();
+    options.extension.strikethrough = true;
+    options.extension.table = true;
+    options.extension.autolink = true;
+    options.extension.tasklist = true;
+    options.extension.footnotes = true;
+    options.extension.wikilinks_title_after_pipe = true;
+    options.extension.ofm_callouts = true;
+    options.extension.highlight = true;
+    options.parse.escaped_char_spans = true;
+    options.render.r#unsafe = true;
+    comrak::markdown_to_html(md, &options)
+}
+
+/// Block and inline syntax that moves where code starts and ends.
+const SYNTAX: &[&str] = &[
+    "```",
+    "~~~",
+    "```md",
+    "    ",
+    "  ",
+    "\t",
+    "\n",
+    "\n",
+    "\n",
+    "\n\n",
+    "- ",
+    "1. ",
+    "2) ",
+    "> ",
+    "# ",
+    "---",
+    "<div>",
+    "</div>",
+    "<details>",
+    "<span title=\"",
+    "\">",
+    "<p>",
+    "[x](https://example.com/ \"",
+    "\")",
+    "[x](<",
+    ">)",
+    "`",
+    "`",
+    "``",
+    "word",
+    "*",
+    "<!--",
+    "-->",
+    "|",
+    "[[",
+    "]]",
+    "[^1]",
+    "[^1]: ",
+    "> [!note] ",
+];
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(2000))]
+
+    /// Whatever the note, no `%%` reaches the page outside code.
+    #[test]
+    fn no_comment_marker_outside_code(
+        parts in proptest::collection::vec(
+            proptest::sample::select(
+                [SYNTAX, &["%%", "%%", "%", "\\"]].concat()
+            ),
+            0..60,
+        )
+    ) {
+        // `%\%` escapes its second `%`, and a dropped HTML comment can join two `%`. Neither
+        // is a marker, so a space keeps them apart. A blank first line rules out frontmatter,
+        // which is YAML, where `%%` is a plain value.
+        let md = format!("\n{}", parts.concat())
+            .replace("%\\%", "% \\%")
+            .replace("%<!--", "% <!--");
+        let html = render_body("a.md", &md, &Index::new(["a.md"]), &Sources::new()).html;
+        let text = outside_code(&html);
+        proptest::prop_assert!(!text.contains("%%"), "md={md:?}\nhtml={html}");
+    }
+
+    /// In a note whose every `%%` outside code pairs into a comment, no comment text reaches
+    /// the page outside code.
+    #[test]
+    fn no_comment_text_outside_code(
+        parts in proptest::collection::vec(
+            proptest::sample::select(
+                [SYNTAX, &[
+                    "%%zebra%%", "%%zebra%%", "\n\n%%\nzebra\n%%\n\n",
+                    // `%%` in code: if the stripper reads it as text, the pairs shift.
+                    "\n```\nx %%d\n```\n", "`%%d`", "\n\n    %%d\n\n",
+                ]].concat()
+            ),
+            0..60,
+        )
+    ) {
+        let md = format!("\n{}", parts.concat());
+        // A `%%d` that its neighbours took out of code opens a comment, so its pairs differ.
+        let raw = raw_html(&md);
+        let in_code = raw.matches("%%d").count() - outside_code(&raw).matches("%%d").count();
+        if in_code != md.matches("%%d").count() {
+            return Ok(());
+        }
+        let html = render_body("a.md", &md, &Index::new(["a.md"]), &Sources::new()).html;
+        let text = outside_code(&html);
+        proptest::prop_assert!(!text.contains("zebra"), "md={md:?}\nhtml={html}");
+    }
+}
+
+/// Every `attr="…"` value in `html`.
+fn attrs<'a>(html: &'a str, attr: &str) -> Vec<&'a str> {
+    let pat = format!(" {attr}=\"");
+    html.match_indices(&pat)
+        .map(|(at, _)| {
+            let rest = &html[at + pat.len()..];
+            &rest[..rest.find('"').unwrap()]
+        })
+        .collect()
+}
+
+#[test]
+fn embedded_ids_stay_unique_and_their_links_stay_inside() {
+    let note = "# Top\n\nText[^1] and [[#Top]].\n\n[^1]: A note.\n";
+    let body = embed(
+        "a.md",
+        &format!("{note}\n![[b]]\n"),
+        &[("b.md", &format!("{note}\n![[c]]\n")), ("c.md", note)],
+        &[],
+    );
+    let ids = attrs(&body.html, "id");
+    let unique: std::collections::BTreeSet<_> = ids.iter().collect();
+    assert_eq!(unique.len(), ids.len(), "{ids:?}");
+    assert_eq!(ids.len(), 9, "{ids:?}");
+    for href in attrs(&body.html, "href") {
+        if let Some(fragment) = href.strip_prefix('#') {
+            assert!(
+                ids.contains(&fragment),
+                "{href} targets no id in {}",
+                body.html
+            );
+        }
+    }
+    // The host's own ids keep their plain names.
+    for id in ["top", "fn-1", "fnref-1"] {
+        assert!(ids.contains(&id), "{id} not in {ids:?}");
+    }
 }

@@ -48,6 +48,8 @@ pub struct Writer<'a, F: FnMut(Push)> {
     pub copies: usize,
     skipped: Vec<Skipped>,
     error: Option<Error>,
+    /// Whether this batch has checked that the marker is still there.
+    marked: bool,
 }
 
 impl<'a, F: FnMut(Push)> Writer<'a, F> {
@@ -60,6 +62,7 @@ impl<'a, F: FnMut(Push)> Writer<'a, F> {
             copies: 0,
             skipped: Vec::new(),
             error: None,
+            marked: false,
         }
     }
 
@@ -76,7 +79,10 @@ impl<'a, F: FnMut(Push)> Writer<'a, F> {
         match self.vault.open_file(from) {
             Ok(mut file) => write_via_tmp(&self.out.join(rel), |tmp| {
                 let mut to = fs::File::create(tmp)?;
-                io::copy(&mut file, &mut to).map(|_| ())
+                io::copy(&mut file, &mut to)?;
+                // The asset's ETag is built from size and mtime, so the copy keeps the
+                // source's mtime and its tag holds across restarts.
+                to.set_modified(file.metadata()?.modified()?)
             }),
             // The source vanished; the watcher reports the removal next.
             Err(ReadError::Missing | ReadError::MidSave) => Ok(()),
@@ -99,6 +105,13 @@ impl<F: FnMut(Push)> Sink for Writer<'_, F> {
     }
 
     fn write(&mut self, write: Write) {
+        if !self.marked {
+            self.marked = true;
+            // A write into a deleted output would recreate it without the marker.
+            if self.error.is_none() && !self.out.join(MARKER).is_file() {
+                self.error = Some(Error::OutputGone(self.out.to_path_buf()));
+            }
+        }
         if self.error.is_some() {
             return;
         }
@@ -147,13 +160,13 @@ fn remove(out: &Path, rel: &str) -> Result<(), Error> {
     Ok(())
 }
 
-/// Writes `.<name>.tmp` beside the target, then renames it, so a reader never sees half a
-/// file and no URL can reach the temp file.
+/// Writes `.tmp` beside the target, then renames it, so a reader never sees half a file and
+/// no URL can reach the temp file. One short name fits beside any target name, and one name
+/// per folder is enough: a writer writes one file at a time.
 fn write_via_tmp(path: &Path, write: impl FnOnce(&Path) -> io::Result<()>) -> Result<(), Error> {
     let parent = path.parent().unwrap_or(Path::new("."));
     fs::create_dir_all(parent).map_err(io_err(parent))?;
-    let name = path.file_name().unwrap_or_default().to_string_lossy();
-    let tmp = parent.join(format!(".{name}.tmp"));
+    let tmp = parent.join(".tmp");
     write(&tmp).map_err(io_err(&tmp))?;
     fs::rename(&tmp, path).map_err(io_err(path))
 }

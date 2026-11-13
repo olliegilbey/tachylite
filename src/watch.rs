@@ -224,7 +224,9 @@ impl Watcher {
             }
         }
         if reload && self.reload_config() {
-            return self.resync();
+            let resync = self.resync();
+            report::unmatched(&self.site.exclude().unmatched());
+            return resync;
         }
         let unsaved = touched
             .iter()

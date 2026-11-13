@@ -311,6 +311,57 @@ fn note_and_folder_page_clash_is_skipped() {
 }
 
 #[test]
+fn a_folder_named_like_a_folder_index_builds() {
+    let dir = bare(&[("a/x.md", "# x"), ("a.html/b/y.md", "# y")]);
+    let (vault, out) = (dir.path().join("vault"), dir.path().join("out"));
+    let summary = build(&vault, &out).unwrap();
+    assert!(summary.skipped.is_empty(), "{:?}", summary.skipped);
+    for folder in ["a", "a.html", "a.html/b"] {
+        let index = out.join(format!("pages/.tachylite/folders/{folder}/.index.html"));
+        assert!(index.is_file(), "{folder}");
+    }
+}
+
+#[test]
+fn a_name_too_long_for_its_page_is_skipped() {
+    // 254 bytes: its page name, `<stem>.html`, would be 256.
+    let long = format!("{}.md", "n".repeat(251));
+    // 249 bytes of CJK, and a 255-byte asset: both fit.
+    let cjk = format!("d/{}.md", "名".repeat(82));
+    let asset = format!("{}.png", "p".repeat(251));
+    let link = format!("[[{}]]", "n".repeat(251));
+    let dir = bare(&[
+        (&long, "# toolong-marker"),
+        (&cjk, "# cjk"),
+        (&asset, "png"),
+        ("a.md", &link),
+    ]);
+    let (vault, out) = (dir.path().join("vault"), dir.path().join("out"));
+    let summary = build(&vault, &out).unwrap();
+    assert_eq!(
+        summary.skipped,
+        [tachylite::vault::Skipped {
+            path: PathBuf::from(&long),
+            reason: tachylite::vault::SkipReason::NameTooLong,
+        }]
+    );
+    assert!(
+        out.join(format!("pages/{}.html", &cjk[..cjk.len() - 3]))
+            .is_file()
+    );
+    assert!(out.join(format!("files/{asset}")).is_file());
+    assert_eq!(summary.broken.len(), 1, "the link to it is broken");
+    let text = all_output_text(&out);
+    assert!(!text.contains("toolong-marker"));
+    let names = files_under(&out);
+    assert!(
+        !names
+            .iter()
+            .any(|p| p.to_string_lossy().contains(&"n".repeat(251)))
+    );
+}
+
+#[test]
 fn no_temp_files_remain() {
     let s = Dirs::fixture();
     build(&s.vault(), &s.out()).unwrap();
@@ -465,6 +516,79 @@ fn comments_reach_no_output() {
     let a = fs::read_to_string(out.join("pages/a.html")).unwrap();
     for kept in ["one", "two", "three", "four"] {
         assert!(a.contains(kept), "{kept} not in {a}");
+    }
+}
+
+/// Notes where the comment stripper and the parser can disagree about what is code.
+#[test]
+fn comments_the_stripper_misreads_reach_no_output() {
+    let vault = bare(&[
+        // An unclosed fence in a list ends with the list in the parser.
+        (
+            "u1.md",
+            "- item\n\n  ```sh\n  echo hi\n\nAfter.\n\n<div>\n%%zebra one%%\n</div>\n",
+        ),
+        ("u2.md", "> ```\n> quoted\n\n<p>\n%%zebra two%%\n</p>\n"),
+        // A fence indented 4 columns inside a fence is content, not a closer.
+        (
+            "u3.md",
+            "```md\n1. Step\n\n    ```sh\n    echo hi\n    ```\n```\n\nPublic text.\n\n\
+             <details>\n<summary>More</summary>\n%%zebra three%%\n</details>\n",
+        ),
+        // A fence line that only continues a paragraph.
+        (
+            "u4.md",
+            "para\n    ```\n[x](https://example.com/ \"%%zebra four%%\")\n",
+        ),
+        (
+            "u4b.md",
+            "para\n    ```\n<span title=\"%%zebra five%%\">s</span>\n",
+        ),
+        (
+            "u4c.md",
+            "para\n    ```\n[y](<https://example.com/%%zebra%%>)\n",
+        ),
+        (
+            "u5.md",
+            "a <span title=\"`\"> <span title=\"%%zebra six%%\">x</span> <span title=\"`\"> b\n",
+        ),
+        ("u6.md", "para\n    ```\n[[%%zebra seven%%|label]]\n"),
+        // Code the stripper misses must not shift which `%%` pairs with which.
+        (
+            "u7.md",
+            "Intro.\n\n    printf(\"%%d\\n\", n);\n\nText %%zebra eight%% more\n",
+        ),
+        (
+            "u8.md",
+            "Use `printf(\"%%d\",\nn)` here %%zebra nine%% more\n",
+        ),
+        (
+            "u9.md",
+            "<div>\n```\n</div>\n\n%%zebra ten%%\n```\n\nText %%zebra%% more\n",
+        ),
+        // Code the stripper reads as text: its `%%` must not pair with a real comment's.
+        ("s1.md", "- ```\n  code\n```\nx %%a\n%%zebra s1%%\n```\n"),
+        ("s2.md", "> ```\n> code\n```\nx %%a\n%%zebra s2%%\n```\n"),
+        ("s3.md", "para\n    ```\n```\nx %%a\n%%zebra s3%%\n```\n"),
+        // A fence line inside an HTML block is no fence.
+        ("s9.md", "<div>\n```\n\n```\nx %%a\n%%zebra s9%%\n```\n"),
+        ("s5.md", "a `x\n    # h\n%%` b\n%%zebra s5%%\n"),
+        ("s6.md", "a `x\n    ```\n    ```\n%%` b\n%%zebra s6%%\n"),
+        ("s7.md", "para\n    - item\n\n        %%x\n%%zebra s7%%\n"),
+        ("s8.md", "-\n\n  foo\n\n     %%x\n%%zebra s8%%\n"),
+    ]);
+    let out = vault.path().join("out");
+    build(&vault.path().join("vault"), &out).unwrap();
+    assert!(!all_output_text(&out).contains("zebra"));
+    let u3 = fs::read_to_string(out.join("pages/u3.html")).unwrap();
+    assert!(u3.contains("Public text."), "{u3}");
+    // A link target is never published, but the build log names it.
+    let u6 = fs::read_to_string(out.join("pages/u6.html")).unwrap();
+    assert!(u6.contains("comment-error"), "{u6}");
+    for (key, kept) in [("u7", "more"), ("u8", "here")] {
+        let page = fs::read_to_string(out.join(format!("pages/{key}.html"))).unwrap();
+        assert!(page.contains(kept), "{kept} not in {page}");
+        assert!(!page.contains("comment-error"), "{page}");
     }
 }
 
