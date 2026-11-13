@@ -9,17 +9,16 @@ use tachylite::render::Broken;
 use tachylite::site::{Change, Delta, Note, Push, Site, Source, Write};
 use tachylite::vault::{Entry, ReadError, SkipReason, Skipped, classify};
 
-/// An in-memory vault: path to bytes. Folders are implied by paths.
+/// An in-memory vault: path to bytes, and the modified times of the notes that set one.
+/// Folders are implied by paths.
 #[derive(Default, Clone)]
-struct Mem(BTreeMap<String, Vec<u8>>);
+struct Mem(BTreeMap<String, Vec<u8>>, BTreeMap<String, i64>);
 
 impl Source for Mem {
     fn note(&mut self, path: &str) -> Result<Note, ReadError> {
-        self.0
-            .get(path)
-            .cloned()
-            .map(Note::from)
-            .ok_or(ReadError::Missing)
+        let bytes = self.0.get(path).cloned().ok_or(ReadError::Missing)?;
+        let modified = self.1.get(path).copied().unwrap_or_default();
+        Ok(Note { bytes, modified })
     }
     fn file(&mut self, path: &str) -> Result<(), ReadError> {
         self.0.get(path).map(|_| ()).ok_or(ReadError::Missing)
@@ -28,10 +27,13 @@ impl Source for Mem {
 
 impl Mem {
     fn with(files: &[(&str, &str)]) -> Mem {
-        Mem(files
-            .iter()
-            .map(|(p, c)| (p.to_string(), c.as_bytes().to_vec()))
-            .collect())
+        Mem(
+            files
+                .iter()
+                .map(|(p, c)| (p.to_string(), c.as_bytes().to_vec()))
+                .collect(),
+            BTreeMap::new(),
+        )
     }
 
     fn entries_under(&self, under: &str) -> Vec<Entry> {
@@ -81,6 +83,49 @@ fn page_key(out: &str) -> &str {
         .unwrap_or(&page[..page.len() - ".html".len()])
 }
 
+/// Whether any write or push holds an excluded note's path or text.
+fn leaks(delta: &Delta) -> bool {
+    let bad = |text: &str| {
+        ["private", "secret", HUSHED]
+            .iter()
+            .any(|w| text.contains(w))
+    };
+    let writes = delta.writes.iter().any(|w| match w {
+        Write::Page { out, html } => bad(out) || bad(html),
+        Write::Copy { out, from } => bad(out) || bad(from),
+        Write::Manifest { json } => bad(json),
+    });
+    let pushes = delta.pushes.iter().any(|p| match p {
+        Push::Page { key, html, .. } => bad(key) || bad(html),
+        Push::Gone { key } => bad(key),
+    });
+    writes || pushes
+}
+
+/// The URLs the written manifest lists.
+fn manifest_urls(out: &Out) -> std::collections::BTreeSet<String> {
+    let json = String::from_utf8_lossy(&out[tachylite::site::MANIFEST]).into_owned();
+    let inner = &json[r#"{"pages":{"#.len()..json.len() - 2];
+    inner
+        .split('"')
+        .skip(1)
+        .step_by(4)
+        .map(String::from)
+        .collect()
+}
+
+/// The URLs of the pages written: every file under `pages/`, and the switcher list.
+fn page_urls(out: &Out) -> std::collections::BTreeSet<String> {
+    out.keys()
+        .filter(|p| p.starts_with("pages/"))
+        .map(|p| format!("/{}", tachylite::render::encode(page_key(p))))
+        .chain(
+            out.contains_key("files/.tachylite/notes.json")
+                .then(|| "/.tachylite/notes.json".into()),
+        )
+        .collect()
+}
+
 /// Where a pushed page's key is written.
 fn page_out(key: &str) -> String {
     if key.is_empty() {
@@ -122,8 +167,12 @@ fn sync_all(mem: &Mem) -> Change {
 }
 
 fn full(mem: &Mem) -> (Out, Delta) {
+    full_with(mem, Exclude::default())
+}
+
+fn full_with(mem: &Mem, exclude: Exclude) -> (Out, Delta) {
     let mut source = mem.clone();
-    let delta = Site::new(Exclude::default()).apply(vec![sync_all(mem)], &mut source);
+    let delta = Site::new(exclude).apply(vec![sync_all(mem)], &mut source);
     let mut out = Out::new();
     fold(&mut out, &delta, mem);
     (out, delta)
@@ -547,19 +596,32 @@ fn unchanged_backlinks_render_nothing() {
     assert_eq!(pushed(&delta), ["a"]);
 }
 
-const PATHS: [&str; 10] = [
+const PATHS: [&str; 13] = [
     "a.md",
     "a.MD",
     "x.html",
     "x.html.md",
     "x.md",
     "x.html/y.md",
+    "x/z.md",
     "d/n.md",
     "d/p.png",
     "d/e/m.md",
     ".h.md",
+    "private/s.md",
+    "d/k.secret.md",
 ];
-const CONTENTS: [&str; 13] = [
+
+/// What the exclusion property excludes: `private/s.md` and `d/k.secret.md`, wherever
+/// a move takes it.
+fn hush() -> Exclude {
+    Exclude::new(&["private".to_string(), "**/*.secret.md".to_string()]).unwrap()
+}
+
+/// Text only an excluded note holds.
+const HUSHED: &str = "hush-marker";
+
+const CONTENTS: [&str; 14] = [
     "# one",
     "two *b*",
     "- [ ] three",
@@ -573,6 +635,7 @@ const CONTENTS: [&str; 13] = [
     "two ![[a]] ![[q]]",
     "![[n]] ![[d/e/m]] ![[p.png]] ![[x.html]]",
     "| t |\n|---|\n| ![[a\\|x]] ![[n\\|y]] |",
+    "[[s|ess]] ![[k.secret|kay]] ![[private/s|pee]] [[z]]",
 ];
 
 /// A source where every file is mid-save.
@@ -658,12 +721,19 @@ fn op() -> impl Strategy<Value = Op> {
 }
 
 /// Applies an op to the model vault and returns the changes the watcher would report.
+/// Each write gets the next modified time, so recent order varies.
 fn apply_op(mem: &mut Mem, op: &Op) -> Vec<Change> {
     match op {
         Op::Write(p, c) => {
-            mem.0
-                .insert(PATHS[*p].to_string(), CONTENTS[*c].as_bytes().to_vec());
-            vec![touch(PATHS[*p])]
+            let path = PATHS[*p].to_string();
+            let mut bytes = CONTENTS[*c].as_bytes().to_vec();
+            if hush().path(&path) {
+                bytes.extend_from_slice(format!(" {HUSHED}").as_bytes());
+            }
+            let time = mem.1.values().max().map_or(1, |t| t + 1);
+            mem.1.insert(path.clone(), time);
+            mem.0.insert(path.clone(), bytes);
+            vec![touch(&path)]
         }
         Op::Delete(p) => {
             mem.0.remove(PATHS[*p]);
@@ -686,8 +756,16 @@ fn apply_op(mem: &mut Mem, op: &Op) -> Vec<Change> {
                 .filter(|(k, _)| k.starts_with("d/"))
                 .map(|(k, v)| (format!("d2/{}", &k[2..]), v.clone()))
                 .collect();
+            let times: Vec<_> = mem
+                .1
+                .iter()
+                .filter(|(k, _)| k.starts_with("d/"))
+                .map(|(k, t)| (format!("d2/{}", &k[2..]), *t))
+                .collect();
             mem.0.retain(|k, _| !k.starts_with("d/"));
+            mem.1.retain(|k, _| !k.starts_with("d/"));
             mem.0.extend(moved);
+            mem.1.extend(times);
             vec![
                 Change::Sync {
                     under: "d".into(),
@@ -706,7 +784,7 @@ proptest! {
     #[test]
     fn incremental_equals_full(ops in prop::collection::vec(op(), 1..30), batch in 1usize..4) {
         let mut mem = Mem::default();
-        let mut site = Site::new(Exclude::default());
+        let mut site = Site::new(hush());
         let mut out = Out::new();
         let mut last_push: BTreeMap<String, Push> = BTreeMap::new();
 
@@ -718,6 +796,7 @@ proptest! {
             let mut source = mem.clone();
             let delta = site.apply(changes, &mut source);
             fold(&mut out, &delta, &mem);
+            prop_assert!(!leaks(&delta), "an excluded note reached the output");
             for push in delta.pushes {
                 let key = match &push {
                     Push::Page { key, .. } | Push::Gone { key } => key.clone(),
@@ -726,8 +805,13 @@ proptest! {
             }
         }
 
-        let (expected, _) = full(&mem);
+        let (expected, _) = full_with(&mem, hush());
         prop_assert_eq!(&out, &expected);
+        prop_assert_eq!(manifest_urls(&out), page_urls(&out));
+        for path in out.keys() {
+            let file = format!("{path}/");
+            prop_assert!(!out.keys().any(|p| p.starts_with(&file)), "{path} is also a folder");
+        }
 
         for (key, push) in &last_push {
             let page = expected.get(&page_out(key));
