@@ -673,26 +673,30 @@ impl Site {
     /// The page of tag `tag`: the notes tagged `tag` or a tag under it, or none if no
     /// note is.
     fn tag_page(&self, tag: &str) -> Option<Page> {
-        let notes: BTreeSet<&String> = self
+        let mut notes: Vec<&str> = self
             .tagged
             .get(tag)
             .into_iter()
             .chain(self.nested(tag))
             .flatten()
+            .map(String::as_str)
             .collect();
         if notes.is_empty() {
             return None;
         }
-        let mut items: Vec<Item> = notes
+        // A note with two nested tags is listed once.
+        notes.sort_unstable();
+        notes.dedup();
+        notes.sort_by_cached_key(|path| indexes::order(self.title(path)));
+        let items: Vec<Item> = notes
             .into_iter()
             .map(|path| Item {
                 title: self.title(path),
                 url: url(path),
-                folder: path.rsplit_once('/').map_or("", |(f, _)| f),
+                folder: "",
                 modified: 0,
             })
             .collect();
-        items.sort_by_cached_key(|i| (indexes::order(i.title), i.url.clone()));
         Some(indexes::tag(tag, items))
     }
 

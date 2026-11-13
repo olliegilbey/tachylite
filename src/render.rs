@@ -285,8 +285,8 @@ pub const NAME_MAX: usize = 255;
 
 /// A tag's page key: the tag lowercased, as Obsidian matches tags in any case. A tag holds
 /// letters, digits, `_`, `-` and `/`, with at least one non-digit and no empty level. A tag
-/// whose page name would pass `NAME_MAX` is no tag, so no link points at a page that
-/// cannot be written.
+/// longer than a page name may be is no tag, so no link points at a page that cannot be
+/// written, and no nesting runs a page's path past the filesystem's limit.
 pub fn tag_key(tag: &str) -> Option<String> {
     let chars = tag
         .chars()
@@ -295,9 +295,8 @@ pub fn tag_key(tag: &str) -> Option<String> {
         return None;
     }
     let key = tag.to_lowercase();
-    key.split('/')
-        .all(|level| !level.is_empty() && level.len() + ".html".len() <= NAME_MAX)
-        .then_some(key)
+    let fits = key.len() + ".html".len() <= NAME_MAX;
+    (fits && key.split('/').all(|level| !level.is_empty())).then_some(key)
 }
 
 /// A tag link to its tag page, or the text alone for no tag.

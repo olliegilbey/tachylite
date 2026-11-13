@@ -1538,7 +1538,7 @@ fn renaming_a_tagged_note_moves_it_on_its_tag_page() {
 }
 
 #[test]
-fn a_retitled_note_updates_its_tag_pages_only() {
+fn a_retitled_note_rewrites_its_tag_pages_only() {
     let mut mem = Mem::with(&[("x.md", "---\ntitle: Old\n---\n#a"), ("y.md", "#b")]);
     let (mut site, _) = synced(&mut mem, Exclude::default());
     mem.0
@@ -1553,7 +1553,7 @@ fn a_retitled_note_updates_its_tag_pages_only() {
 }
 
 #[test]
-fn an_edit_that_keeps_tags_and_title_builds_no_tag_page() {
+fn an_edit_that_keeps_tags_and_title_writes_no_tag_page() {
     let mut mem = Mem::with(&[("x.md", "#a one"), ("y.md", "#a")]);
     let (mut site, _) = synced(&mut mem, Exclude::default());
     mem.0.insert("x.md".into(), b"#a two".to_vec());
@@ -1597,7 +1597,8 @@ fn excluding_a_tags_only_note_removes_its_page() {
 fn a_tag_too_long_for_its_page_is_text_and_the_build_goes_on() {
     let long = "t".repeat(251);
     let fits = "f".repeat(250);
-    let body = format!("#{long} #{fits} #ok");
+    let deep = ["d".repeat(100), "e".repeat(100), "g".repeat(100)].join("/");
+    let body = format!("#{long} #{fits} #{deep} #ok");
     let (out, delta) = full(&Mem::with(&[("x.md", &body)]));
     let note = html(&delta, "x");
     assert!(
@@ -1605,6 +1606,24 @@ fn a_tag_too_long_for_its_page_is_text_and_the_build_goes_on() {
         "a link to a page with no file"
     );
     assert!(note.contains(&format!("#{long}")));
+    assert!(
+        !note.contains("tags/ddd"),
+        "a nested tag too long for its page's path"
+    );
     assert!(out.contains_key(&format!("pages/.tachylite/tags/{fits}.html")));
     assert!(out.contains_key("pages/.tachylite/tags/ok.html"));
+}
+
+#[test]
+fn an_embedded_notes_tags_are_not_its_embedders() {
+    let (_, delta) = full(&Mem::with(&[("a.md", "![[b]]"), ("b.md", "#t")]));
+    assert!(
+        html(&delta, "a").contains("tags/t"),
+        "the embed shows the tag"
+    );
+    let page = html(&delta, ".tachylite/tags/t");
+    assert!(
+        page.contains("\"/b\"") && !page.contains("\"/a\""),
+        "{page}"
+    );
 }
