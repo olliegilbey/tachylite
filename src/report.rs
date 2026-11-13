@@ -20,6 +20,7 @@ pub fn reason(reason: SkipReason) -> String {
         SkipReason::Symlink => "symlink".to_string(),
         SkipReason::NonUtf8Name => "non-UTF-8 name".to_string(),
         SkipReason::UrlClash => "URL clash".to_string(),
+        SkipReason::NameTooLong => "name too long for its page".to_string(),
         SkipReason::Unreadable(kind) => format!("unreadable ({kind})"),
     }
 }

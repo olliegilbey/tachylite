@@ -53,9 +53,15 @@ impl Source for &VaultDir {
     }
 }
 
-/// Where `Site::apply_to` sends output, as it makes it: deletes first, then gone pushes,
-/// then writes, each page's write followed by its push. Paths are relative to the output
-/// directory. Streaming means a full sync never holds every page at once.
+/// Where `Site::apply_to` sends output, as it makes it, in this order:
+/// 1. the removed vault files' deletes, then their gone pushes;
+/// 2. the vault files' writes, each page's write followed by its push;
+/// 3. each removed index page's delete and gone push;
+/// 4. the index pages' writes, each followed by its push, and the switcher list's write;
+/// 5. the manifest.
+///
+/// Paths are relative to the output directory. Streaming means a full sync never holds
+/// every page at once.
 pub trait Sink {
     fn delete(&mut self, out: String);
     fn write(&mut self, write: Write);
@@ -103,14 +109,22 @@ pub fn generated(out: &str) -> bool {
     out.starts_with("pages/.tachylite/") || out.starts_with("files/.tachylite/")
 }
 
-/// Where a generated page's key is written in the output.
+/// Where a generated page's key is written in the output. A folder index is a dot name
+/// inside its folder's path, so no folder name can clash with it.
 fn generated_out(key: &str) -> String {
     match key {
         "" => "pages/.tachylite/home.html".into(),
         NOTES_JSON => format!("files/{key}"),
+        _ if key.starts_with(FOLDERS) => format!("pages/{key}/.index.html"),
         _ => format!("pages/{key}.html"),
     }
 }
+
+/// The URL key prefix of the folder indexes.
+const FOLDERS: &str = ".tachylite/folders/";
+
+/// The longest file name the output filesystem takes, in bytes.
+const NAME_MAX: usize = 255;
 
 /// Where the manifest lives in the output: `/.tachylite/manifest.json`.
 pub const MANIFEST: &str = "files/.tachylite/manifest.json";
@@ -213,9 +227,10 @@ fn parents(out: &str) -> impl Iterator<Item = &str> {
     out.match_indices('/').map(move |(i, _)| &out[..i])
 }
 
-/// The first claim in byte order wins. A claim loses if its URL is taken, if its output
-/// path is a folder of a claimed output, or if one of its folders is a claimed output.
-fn winners(entries: &BTreeMap<String, Kind>) -> (BTreeSet<String>, Vec<String>) {
+/// The first claim in byte order wins. A claim loses if its output file name is too long,
+/// if its URL is taken, if its output path is a folder of a claimed output, or if one of
+/// its folders is a claimed output.
+fn winners(entries: &BTreeMap<String, Kind>) -> (BTreeSet<String>, Vec<(String, SkipReason)>) {
     let mut urls = HashSet::new();
     let mut files: HashSet<String> = HashSet::new();
     let mut dirs: HashSet<String> = HashSet::new();
@@ -223,10 +238,15 @@ fn winners(entries: &BTreeMap<String, Kind>) -> (BTreeSet<String>, Vec<String>) 
     let mut lost = Vec::new();
     for (path, &kind) in entries {
         let (url, out) = claim(path, kind);
+        // A note's page name is 2 bytes longer than the note's.
+        if out.rsplit('/').next().unwrap_or(&out).len() > NAME_MAX {
+            lost.push((path.clone(), SkipReason::NameTooLong));
+            continue;
+        }
         let clash =
             urls.contains(&url) || dirs.contains(&out) || parents(&out).any(|p| files.contains(p));
         if clash {
-            lost.push(path.clone());
+            lost.push((path.clone(), SkipReason::UrlClash));
             continue;
         }
         dirs.extend(parents(&out).map(str::to_string));
@@ -372,11 +392,11 @@ impl Site {
             }
         };
 
-        for path in &lost {
-            if touched.contains(path) || self.winners.contains(path) {
+        for (path, reason) in lost {
+            if touched.contains(&path) || self.winners.contains(&path) {
                 report.skipped.push(Skipped {
                     path: PathBuf::from(path),
-                    reason: SkipReason::UrlClash,
+                    reason,
                 });
             }
         }
@@ -545,10 +565,7 @@ impl Site {
                 let (key, page) = if path.is_empty() {
                     (String::new(), indexes::home(SITE, &recent, &folder))
                 } else {
-                    (
-                        format!(".tachylite/folders/{path}"),
-                        indexes::folder(&folder),
-                    )
+                    (format!("{FOLDERS}{path}"), indexes::folder(&folder))
                 };
                 built.push((key, page.version, page.html));
             }
@@ -742,7 +759,8 @@ impl Site {
                 let links = Links {
                     targets: body.targets.into_iter().collect(),
                     unresolved: body.broken.iter().map(|b| key(&b.target)).collect(),
-                    embeds: body.embeds.into_iter().collect(),
+                    // An embed that could not be read is still one: its save re-renders this.
+                    embeds: body.embeds.union(&body.missing).cloned().collect(),
                 };
                 broken.extend(body.broken);
                 if let Some(note) = self.index.get(path) {

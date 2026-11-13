@@ -311,6 +311,57 @@ fn note_and_folder_page_clash_is_skipped() {
 }
 
 #[test]
+fn a_folder_named_like_a_folder_index_builds() {
+    let dir = bare(&[("a/x.md", "# x"), ("a.html/b/y.md", "# y")]);
+    let (vault, out) = (dir.path().join("vault"), dir.path().join("out"));
+    let summary = build(&vault, &out).unwrap();
+    assert!(summary.skipped.is_empty(), "{:?}", summary.skipped);
+    for folder in ["a", "a.html", "a.html/b"] {
+        let index = out.join(format!("pages/.tachylite/folders/{folder}/.index.html"));
+        assert!(index.is_file(), "{folder}");
+    }
+}
+
+#[test]
+fn a_name_too_long_for_its_page_is_skipped() {
+    // 254 bytes: its page name, `<stem>.html`, would be 256.
+    let long = format!("{}.md", "n".repeat(251));
+    // 249 bytes of CJK, and a 255-byte asset: both fit.
+    let cjk = format!("d/{}.md", "名".repeat(82));
+    let asset = format!("{}.png", "p".repeat(251));
+    let link = format!("[[{}]]", "n".repeat(251));
+    let dir = bare(&[
+        (&long, "# toolong-marker"),
+        (&cjk, "# cjk"),
+        (&asset, "png"),
+        ("a.md", &link),
+    ]);
+    let (vault, out) = (dir.path().join("vault"), dir.path().join("out"));
+    let summary = build(&vault, &out).unwrap();
+    assert_eq!(
+        summary.skipped,
+        [tachylite::vault::Skipped {
+            path: PathBuf::from(&long),
+            reason: tachylite::vault::SkipReason::NameTooLong,
+        }]
+    );
+    assert!(
+        out.join(format!("pages/{}.html", &cjk[..cjk.len() - 3]))
+            .is_file()
+    );
+    assert!(out.join(format!("files/{asset}")).is_file());
+    assert_eq!(summary.broken.len(), 1, "the link to it is broken");
+    let text = all_output_text(&out);
+    assert!(!text.contains("toolong-marker"));
+    let names = files_under(&out);
+    assert!(
+        !names
+            .iter()
+            .any(|p| p.to_string_lossy().contains(&"n".repeat(251)))
+    );
+}
+
+#[test]
 fn no_temp_files_remain() {
     let s = Dirs::fixture();
     build(&s.vault(), &s.out()).unwrap();

@@ -87,6 +87,10 @@ fn locate(out: &Path, key: &str) -> Option<PathBuf> {
         let home = out.join("pages/.tachylite/home.html");
         return home.is_file().then_some(home);
     }
+    if key.starts_with(".tachylite/folders/") {
+        let index = out.join("pages").join(key).join(".index.html");
+        return index.is_file().then_some(index);
+    }
     let page = out.join("pages").join(format!("{key}.html"));
     if page.is_file() {
         return Some(page);
