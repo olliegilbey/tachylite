@@ -154,8 +154,11 @@
     events.onopen = () => {
       wait = 1500;
       sync();
-      // So the offline copy survives storage pressure. It never prompts on Chrome or Safari.
-      kept ||= !!navigator.storage?.persist?.().catch(() => {});
+      // So the offline copy survives storage pressure. Only Firefox prompts, never once granted.
+      kept ||= !!navigator.storage
+        ?.persisted?.()
+        .then((p) => p || navigator.storage.persist())
+        .catch(() => {});
     };
     events.onerror = (e) =>
       e.target.readyState === 2 && (retry = setTimeout(connect, (wait = Math.min(wait * 2, 6e4))));

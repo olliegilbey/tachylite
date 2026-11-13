@@ -121,8 +121,8 @@ test("a wide table does not widen the page", async ({ page }) => {
   expect(scroll).toBeLessThanOrEqual(client);
 });
 
-test("a long property value does not widen the page", async ({ page }) => {
-  note("hash", `---\nchecksum: ${"0123456789abcdef".repeat(4)}\n---\n# Hash\n`);
+test("a long property key or value does not widen the page", async ({ page }) => {
+  note("hash", `---\nchecksum: ${"0123456789abcdef".repeat(4)}\n${"key".repeat(24)}: x\n---\n# Hash\n`);
   await expect.poll(async () => (await page.request.get(base + "/hash")).status()).toBe(200);
   await page.goto(base + "/hash");
   const [scroll, client] = await page.evaluate(() => [

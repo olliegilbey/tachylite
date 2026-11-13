@@ -85,7 +85,7 @@ li > input[type="checkbox"] + p { display: inline; }
   display: grid; grid-template-columns: fit-content(40%) minmax(0, 1fr); gap: 0.15rem 1rem; margin: 0 0 1rem;
   padding: 0.5rem 0.75rem; background: var(--raise); border-radius: 6px; font-size: 0.9rem;
 }
-.properties dt { color: var(--dim); }
+.properties dt { color: var(--dim); overflow-wrap: anywhere; }
 .properties dd { margin: 0; }
 .tag { color: var(--accent); }
 .broken-link { color: var(--broken); text-decoration: underline dotted; }

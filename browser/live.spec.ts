@@ -60,6 +60,7 @@ test("the page asks once to keep its storage, and shows an icon", async ({ page 
   await page.addInitScript(() => {
     const w = window as any;
     w.persists = 0;
+    navigator.storage.persisted = () => Promise.resolve(false);
     navigator.storage.persist = () => (w.persists++, Promise.reject(new Error("refused")));
   });
   const name = `persist-${info.project.name}`;
