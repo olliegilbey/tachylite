@@ -147,7 +147,7 @@ fn cases() -> u32 {
     std::env::var("LIVE_CASES")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(8)
+        .unwrap_or(256)
 }
 
 proptest! {
@@ -197,6 +197,7 @@ proptest! {
             live.keys().collect::<Vec<_>>(),
             full.keys().collect::<Vec<_>>()
         );
-        prop_assert!(live == full, "same files, different bytes");
+        let differs = live.iter().find(|(path, bytes)| full.get(*path) != Some(*bytes));
+        prop_assert!(differs.is_none(), "{:?} differs", differs.map(|(path, _)| path));
     }
 }
