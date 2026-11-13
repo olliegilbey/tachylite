@@ -17,7 +17,7 @@ use tokio::sync::broadcast;
 use crate::config::{self, Config, Exclude};
 use crate::output::Writer;
 use crate::site::{Change, Note, Push, Site, Source};
-use crate::vault::{ReadError, VaultDir, scan_under};
+use crate::vault::{ReadError, VaultDir, classify, scan_under};
 use crate::{Error, report};
 
 /// What the watch thread shares with the HTTP thread.
@@ -255,7 +255,8 @@ impl Watcher {
                 }
                 continue;
             }
-            if self.site.exclude().path(&path) {
+            // A path the site would not publish changes nothing.
+            if classify(&path, self.site.exclude()).is_none() {
                 continue;
             }
             // The last event decides. An attribute change rereads the path as it stands.
@@ -437,5 +438,35 @@ impl Watcher {
         report::skipped(&failed);
         report::broken(&report.broken);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_file_the_site_would_not_publish_changes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let vault = tmp.path().join("vault");
+        fs::create_dir(&vault).unwrap();
+        let (vault, out) = crate::build::open(&vault, &tmp.path().join("out")).unwrap();
+        crate::output::prepare(&out).unwrap();
+        let live = Live {
+            pushes: broadcast::channel(4).0,
+            versions: Arc::default(),
+        };
+        let mut watcher = Watcher::start(vault, out, live, Config::default()).unwrap();
+        let root = *watcher.dirs.keys().next().unwrap();
+        let save = |name: &str| Event {
+            wd: root,
+            flags: ReadFlags::CLOSE_WRITE,
+            name: Some(name.into()),
+        };
+        let (changes, _) = watcher
+            .changes(vec![save("scratch.txt"), save("n.md")])
+            .unwrap();
+        assert_eq!(changes, [Change::Touch("n.md".into())]);
     }
 }
