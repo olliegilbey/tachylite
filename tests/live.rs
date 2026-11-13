@@ -483,3 +483,47 @@ fn a_stale_home_page_catches_up_on_connect() {
         event.data
     );
 }
+
+#[test]
+fn a_config_save_during_a_config_reload_is_kept() {
+    use rustix::event::{PollFd, PollFlags, Timespec, poll};
+    use rustix::fs::inotify::{self, CreateFlags, WatchFlags};
+    use std::mem::MaybeUninit;
+    // Many folders make a config reload's rewatch long.
+    let notes: Vec<(String, &str)> = (0..300).map(|i| (format!("f{i}/n.md"), "# f")).collect();
+    let mut notes: Vec<(&str, &str)> = notes.iter().map(|(p, b)| (p.as_str(), *b)).collect();
+    notes.push(("tachylite.toml", "exclude = []\n"));
+    notes.push(("d/n.md", "# n"));
+    let (d, server) = with_notes(&notes);
+    let toml = d.vault().join("tachylite.toml");
+    let opens = inotify::init(CreateFlags::CLOEXEC).unwrap();
+    inotify::add_watch(&opens, &toml, WatchFlags::OPEN).unwrap();
+    let mut buf = vec![MaybeUninit::<u8>::uninit(); 4096];
+    // Awaits one open of the config: ours, then the server's reload.
+    let mut await_open = || {
+        let timeout = Timespec::try_from(Duration::from_secs(10)).unwrap();
+        let mut fds = [PollFd::new(&opens, PollFlags::IN)];
+        assert_eq!(poll(&mut fds, Some(&timeout)).unwrap(), 1, "no open");
+        inotify::Reader::new(&opens, &mut buf).next().unwrap();
+    };
+    for round in 0..20 {
+        let (first, last) = if round % 2 == 0 {
+            ("[]", "[\"d\"]")
+        } else {
+            ("[\"d\"]", "[]")
+        };
+        let mut events = server.subscribe(&format!("/r{round}"), "", None);
+        fs::write(&toml, format!("exclude = {first}\n")).unwrap();
+        await_open();
+        await_open();
+        // The server has read the first save, so the second lands during its rewatch.
+        fs::write(&toml, format!("exclude = {last}\n")).unwrap();
+        await_open();
+        // The server reloads the second save: its event was not lost.
+        await_open();
+        fs::write(d.vault().join(format!("r{round}.md")), "# r").unwrap();
+        events.expect("page");
+        let want = if round % 2 == 0 { 404 } else { 200 };
+        assert_eq!(server.get("/d/n").status, want, "round {round}");
+    }
+}

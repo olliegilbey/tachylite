@@ -79,7 +79,8 @@ impl Source for Batch<'_> {
 }
 
 fn within(path: &str, folder: &str) -> bool {
-    path == folder
+    folder.is_empty()
+        || path == folder
         || path
             .strip_prefix(folder)
             .is_some_and(|rest| rest.starts_with('/'))
@@ -107,6 +108,10 @@ impl Watcher {
             live,
         };
         watcher.watch_tree("")?;
+        // A config saved before the root watch existed sent no event.
+        if watcher.reload_config() {
+            watcher.rewatch(&[""])?;
+        }
         let sync = watcher.sync("")?;
         watcher.apply(vec![sync], HashSet::new())?;
         Ok(watcher)
@@ -253,11 +258,35 @@ impl Watcher {
 
     /// Rewatches the tree under the current exclusions and resyncs the root.
     fn resync(&mut self) -> Result<(Vec<Change>, HashSet<String>), Error> {
-        for wd in self.dirs.drain().map(|(wd, _)| wd).collect::<Vec<_>>() {
-            let _ = inotify::remove_watch(&self.inotify, wd);
-        }
-        self.watch_tree("")?;
+        self.rewatch(&[""])?;
         Ok((vec![self.sync("")?], HashSet::new()))
+    }
+
+    /// Watches `folders` and every published folder below them, as they stand now. A
+    /// folder still in place keeps its watch descriptor, so no event queued for it is lost.
+    fn rewatch(&mut self, folders: &[&str]) -> Result<(), Error> {
+        if folders.is_empty() {
+            return Ok(());
+        }
+        let old: Vec<i32> = self
+            .dirs
+            .iter()
+            .filter(|(_, dir)| folders.iter().any(|f| within(dir, f)))
+            .map(|(wd, _)| *wd)
+            .collect();
+        for wd in &old {
+            self.dirs.remove(wd);
+        }
+        for folder in folders {
+            self.watch_tree(folder)?;
+        }
+        for wd in old {
+            if !self.dirs.contains_key(&wd) {
+                // The folder may already be gone, which removes its watch too.
+                let _ = inotify::remove_watch(&self.inotify, wd);
+            }
+        }
+        Ok(())
     }
 
     fn sync(&self, under: &str) -> Result<Change, Error> {
