@@ -52,7 +52,7 @@ Each takes the most obvious path. They were measured or checked first.
 5. **Tags.**
    - A tag is `#` at the start of a text run or after whitespace, followed by letters, digits, `_`, `-` and `/`, with at least one non-digit. Trailing `/` is dropped.
    - No tag forms in code, link text or a URL.
-   - It renders as `<a class="tag" href="/.tachylite/tags/<lowercased tag>">#Tag</a>`. The tag pages arrive in slice 7. Until then the link is a 404, and slice 7 only adds pages.
+   - It renders as `<a class="tag" href="/.tachylite/tags/<lowercased tag>">#Tag</a>`. Slice 7 builds the tag pages.
 6. **Comments fail closed.**
    - comrak removes `%%…%%` within one line and `%%` blocks, including an unclosed block, which runs to the end of the note.
    - Any `%%` comrak leaves in text outside code is a comment it did not close: one that wraps a line or a paragraph, or one that is never closed. Tachylite hides everything from it to the next such `%%`, or to the end of the note.
