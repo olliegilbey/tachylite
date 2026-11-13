@@ -500,6 +500,69 @@ fn comments_reach_no_output() {
     }
 }
 
+/// Notes where the comment stripper and the parser can disagree about what is code.
+#[test]
+fn comments_the_stripper_misreads_reach_no_output() {
+    let vault = bare(&[
+        // An unclosed fence in a list ends with the list in the parser.
+        (
+            "u1.md",
+            "- item\n\n  ```sh\n  echo hi\n\nAfter.\n\n<div>\n%%zebra one%%\n</div>\n",
+        ),
+        ("u2.md", "> ```\n> quoted\n\n<p>\n%%zebra two%%\n</p>\n"),
+        // A fence indented 4 columns inside a fence is content, not a closer.
+        (
+            "u3.md",
+            "```md\n1. Step\n\n    ```sh\n    echo hi\n    ```\n```\n\nPublic text.\n\n\
+             <details>\n<summary>More</summary>\n%%zebra three%%\n</details>\n",
+        ),
+        // A fence line that only continues a paragraph.
+        (
+            "u4.md",
+            "para\n    ```\n[x](https://example.com/ \"%%zebra four%%\")\n",
+        ),
+        (
+            "u4b.md",
+            "para\n    ```\n<span title=\"%%zebra five%%\">s</span>\n",
+        ),
+        (
+            "u4c.md",
+            "para\n    ```\n[y](<https://example.com/%%zebra%%>)\n",
+        ),
+        (
+            "u5.md",
+            "a <span title=\"`\"> <span title=\"%%zebra six%%\">x</span> <span title=\"`\"> b\n",
+        ),
+        ("u6.md", "para\n    ```\n[[%%zebra seven%%|label]]\n"),
+        // Code the stripper misses must not shift which `%%` pairs with which.
+        (
+            "u7.md",
+            "Intro.\n\n    printf(\"%%d\\n\", n);\n\nText %%zebra eight%% more\n",
+        ),
+        (
+            "u8.md",
+            "Use `printf(\"%%d\",\nn)` here %%zebra nine%% more\n",
+        ),
+        (
+            "u9.md",
+            "<div>\n```\n</div>\n\n%%zebra ten%%\n```\n\nText %%zebra%% more\n",
+        ),
+    ]);
+    let out = vault.path().join("out");
+    build(&vault.path().join("vault"), &out).unwrap();
+    assert!(!all_output_text(&out).contains("zebra"));
+    let u3 = fs::read_to_string(out.join("pages/u3.html")).unwrap();
+    assert!(u3.contains("Public text."), "{u3}");
+    // A link target is never published, but the build log names it.
+    let u6 = fs::read_to_string(out.join("pages/u6.html")).unwrap();
+    assert!(u6.contains("comment-error"), "{u6}");
+    for (key, kept) in [("u7", "more"), ("u8", "here")] {
+        let page = fs::read_to_string(out.join(format!("pages/{key}.html"))).unwrap();
+        assert!(page.contains(kept), "{kept} not in {page}");
+        assert!(!page.contains("comment-error"), "{page}");
+    }
+}
+
 #[test]
 fn an_embedded_excluded_note_reaches_no_output() {
     let dir = bare(&[

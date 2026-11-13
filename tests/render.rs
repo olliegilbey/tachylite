@@ -453,11 +453,11 @@ fn comments_in_code_spans_and_fences_in_containers_stay() {
 
 #[test]
 fn disagreement_on_code_withholds_the_text() {
-    // comrak's code span crosses the line break; the stripper reads spans within a line.
+    // The stripper reads a fence inside the HTML block; the parser reads HTML, then text.
     let index = Index::new(["b.md"]);
     let body = render_body(
         "a.md",
-        "`a\nb` %% zebra [[b]] `d`\n",
+        "<div>\n```\n</div>\n\n%% zebra [[b]] %%\n```\n",
         &index,
         &Sources::new(),
     );
@@ -468,6 +468,53 @@ fn disagreement_on_code_withholds_the_text() {
     );
     assert!(!body.html.contains("zebra"));
     assert!(body.targets.is_empty());
+}
+
+#[test]
+fn code_spans_and_indented_code_keep_their_percent_signs() {
+    for (md, kept) in [
+        (
+            "Intro.\n\n    printf(\"%%d\\n\", n);\n\nAfter %%zebra%% this.",
+            "this",
+        ),
+        (
+            "Use `printf(\"%%d\",\nn)` to print. %%zebra%% Rest.",
+            "Rest",
+        ),
+        // A heading is one line, so a code span cannot run out of it.
+        ("# Title `x\nmore `%%d` %%zebra%% `y`", "more"),
+        // Indented four columns, list content is text, not code.
+        (
+            "- a\n\n    more %%zebra%% text\n\n\t- b %%zebra%% c `%%d`",
+            "c",
+        ),
+    ] {
+        let html = plain(md);
+        assert!(html.contains("%%d"), "{html}");
+        assert!(html.contains(kept), "{kept} not in {html}");
+        assert!(!html.contains("zebra"), "{html}");
+        assert!(!html.contains("comment-error"), "{html}");
+    }
+}
+
+#[test]
+fn an_escape_never_hides_a_comment() {
+    let html = plain("a \\%%zebra%% b");
+    assert!(html.contains(" b") && !html.contains("zebra"), "{html}");
+    assert!(!html.contains("comment-error"), "{html}");
+    // In code to the stripper, but text to the parser: `\%%` parses as two nodes.
+    let html = plain("<div>\n```\n</div>\n\n\\%%zebra\n```\n");
+    assert!(html.contains("comment-error"), "{html}");
+    assert!(!html.contains("zebra"), "{html}");
+}
+
+#[test]
+fn an_unclosed_comment_shows_a_notice() {
+    let html = plain("one %%zebra\n\nyak");
+    assert!(html.contains("one"), "{html}");
+    assert!(!html.contains("zebra") && !html.contains("yak"), "{html}");
+    assert!(html.contains("class=\"comment-error\""), "{html}");
+    assert!(!plain("one %%zebra%% two").contains("comment-error"));
 }
 
 #[test]
@@ -798,4 +845,127 @@ fn render_reports_embeds_it_could_not_load() {
     );
     assert_eq!(paths(&body.missing), ["a.md"]);
     assert!(body.embeds.is_empty());
+}
+
+/// The page with the contents of every `<code>` and `<pre>` element removed. Code keeps its
+/// `%%` by design; everything else, attributes included, must not.
+fn outside_code(html: &str) -> String {
+    let mut out = String::new();
+    let mut rest = html;
+    let mut depth = 0usize;
+    while let Some(i) = rest.find('<') {
+        if depth == 0 {
+            out.push_str(&rest[..i]);
+        }
+        let end = rest[i..].find('>').map_or(rest.len(), |j| i + j + 1);
+        let tag = &rest[i..end];
+        if tag.starts_with("<code") || tag.starts_with("<pre") {
+            if depth == 0 {
+                out.push_str(tag);
+            }
+            depth += 1;
+        } else if tag.starts_with("</code") || tag.starts_with("</pre") {
+            depth = depth.saturating_sub(1);
+        } else if depth == 0 {
+            // A heading id slugs the heading's text, code spans included.
+            let id = tag
+                .find(" id=\"")
+                .filter(|_| tag.starts_with("<h"))
+                .and_then(|at| Some((at, at + 5 + tag[at + 5..].find('"')? + 1)));
+            match id {
+                Some((from, to)) => out.push_str(&format!("{}{}", &tag[..from], &tag[to..])),
+                None => out.push_str(tag),
+            }
+        }
+        rest = &rest[end..];
+    }
+    if depth == 0 {
+        out.push_str(rest);
+    }
+    out
+}
+
+/// Block and inline syntax that moves where code starts and ends.
+const SYNTAX: &[&str] = &[
+    "```",
+    "~~~",
+    "```md",
+    "    ",
+    "  ",
+    "\t",
+    "\n",
+    "\n",
+    "\n",
+    "\n\n",
+    "- ",
+    "1. ",
+    "2) ",
+    "> ",
+    "# ",
+    "---",
+    "<div>",
+    "</div>",
+    "<details>",
+    "<span title=\"",
+    "\">",
+    "<p>",
+    "[x](https://example.com/ \"",
+    "\")",
+    "[x](<",
+    ">)",
+    "`",
+    "`",
+    "``",
+    "word",
+    "*",
+    "<!--",
+    "-->",
+    "|",
+    "[[",
+    "]]",
+    "[^1]",
+    "[^1]: ",
+    "> [!note] ",
+];
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(2000))]
+
+    /// Whatever the note, no `%%` reaches the page outside code.
+    #[test]
+    fn no_comment_marker_outside_code(
+        parts in proptest::collection::vec(
+            proptest::sample::select(
+                [SYNTAX, &["%%", "%%", "%", "\\"]].concat()
+            ),
+            0..60,
+        )
+    ) {
+        // `%\%` escapes its second `%`, and a dropped HTML comment can join two `%`. Neither
+        // is a marker, so a space keeps them apart. A blank first line rules out frontmatter,
+        // which is YAML, where `%%` is a plain value.
+        let md = format!("\n{}", parts.concat())
+            .replace("%\\%", "% \\%")
+            .replace("%<!--", "% <!--");
+        let html = render_body("a.md", &md, &Index::new(["a.md"]), &Sources::new()).html;
+        let text = outside_code(&html);
+        proptest::prop_assert!(!text.contains("%%"), "md={md:?}\nhtml={html}");
+    }
+
+    /// In a note whose every `%%` pairs into a comment, no comment text reaches the page
+    /// outside code.
+    #[test]
+    fn no_comment_text_outside_code(
+        parts in proptest::collection::vec(
+            proptest::sample::select(
+                [SYNTAX, &["%%zebra%%", "%%zebra%%", "\n\n%%\nzebra\n%%\n\n"]].concat()
+            ),
+            0..60,
+        )
+    ) {
+        let md = format!("\n{}", parts.concat());
+        let html = render_body("a.md", &md, &Index::new(["a.md"]), &Sources::new()).html;
+        let text = outside_code(&html);
+        proptest::prop_assert!(!text.contains("zebra"), "md={md:?}\nhtml={html}");
+    }
 }
