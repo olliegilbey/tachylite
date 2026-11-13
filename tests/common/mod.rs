@@ -60,11 +60,17 @@ pub struct Server {
 
 impl Server {
     pub fn start(vault: &Path, out: &Path) -> Server {
+        Server::start_with(vault, out, &[])
+    }
+
+    /// Starts with extra environment variables.
+    pub fn start_with(vault: &Path, out: &Path, envs: &[(&str, &str)]) -> Server {
         let mut child = Command::new(env!("CARGO_BIN_EXE_tachylite"))
             .arg("serve")
             .arg(vault)
             .arg(out)
             .args(["--port", "0"])
+            .envs(envs.iter().copied())
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
