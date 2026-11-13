@@ -121,7 +121,8 @@ test("a sync records the version it fetched, not the one listed", async ({ page,
   await expect.poll(() => cached(page, "/b"), { timeout: 15_000 }).toContain("bee text");
 });
 
-test("a deleted image leaves the cache once a page asks for it online", async ({ page }) => {
+test("a deleted image leaves the cache once a page asks for it online", async ({ page, allowedErrors }) => {
+  allowedErrors.push(/status of 404/);
   const gif = Buffer.from("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7", "base64");
   writeFileSync(join(dir, "vault", "dot.gif"), gif);
   note("pic", "# Pic\n\n![[dot.gif]]\n");
@@ -131,7 +132,9 @@ test("a deleted image leaves the cache once a page asks for it online", async ({
   await expect.poll(() => cached(page, "/dot.gif")).not.toBeNull();
   rmSync(join(dir, "vault", "dot.gif"));
   await expect.poll(async () => (await page.request.get(base + "/dot.gif")).status()).toBe(404);
-  await page.reload();
+  // The delete also re-renders /pic without the image, and a sync may store that page
+  // first, so the page asks for the image itself.
+  await page.evaluate(() => fetch("/dot.gif"));
   await expect.poll(() => cached(page, "/dot.gif")).toBeNull();
 });
 
