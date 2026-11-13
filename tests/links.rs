@@ -32,6 +32,25 @@ fn relative_paths_resolve_from_the_linking_note() {
 }
 
 #[test]
+fn a_downward_path_without_dot_slash_falls_back_to_the_linking_note() {
+    let index = Index::new(["proj/sub/detail.md", "sub/other.md", "notes/README.md"]);
+    assert_eq!(
+        resolve(&index, "proj/plan.md", "sub/detail"),
+        found("proj/sub/detail.md")
+    );
+    assert_eq!(
+        resolve(&index, "proj/plan.md", "Sub/Detail.md"),
+        found("proj/sub/detail.md")
+    );
+    // The root lookup comes first.
+    let index = Index::new(["proj/notes/README.md", "notes/README.md"]);
+    assert_eq!(
+        resolve(&index, "proj/plan.md", "notes/README"),
+        found("notes/README.md")
+    );
+}
+
+#[test]
 fn paths_with_a_slash_resolve_from_the_root_in_any_case() {
     let index = fixture();
     for from in ["a.md", "notes/deep/b.md"] {
@@ -181,6 +200,27 @@ proptest! {
             if p.contains('/') {
                 prop_assert_eq!(resolve(&index, &from, &link_text(p)), found(p));
                 prop_assert_eq!(resolve(&index, &from, &p.to_uppercase()), found(p));
+            }
+            // From the linking note's folder: `../` steps up, then down to `p`.
+            let (here, there) = (folder(&from), folder(p));
+            let common = here.iter().zip(&there).take_while(|(x, y)| x == y).count();
+            let mut steps = vec![".."; here.len() - common];
+            steps.extend(&there[common..]);
+            let name = link_text(p.rsplit('/').next().unwrap_or(p));
+            steps.push(&name);
+            let relative = steps.join("/");
+            let dotted = if relative.starts_with("../") { relative.clone() } else { format!("./{relative}") };
+            prop_assert_eq!(resolve(&index, &from, &dotted), found(p));
+            // A downward path without `./` tries the root first.
+            if !relative.starts_with("../") && relative.contains('/') {
+                let root: Vec<&String> =
+                    paths.iter().filter(|q| link_text(q) == relative).collect();
+                let want = match root[..] {
+                    [] => found(p),
+                    [q] => found(q),
+                    _ => Resolved::Ambiguous(root.len()),
+                };
+                prop_assert_eq!(resolve(&index, &from, &relative), want);
             }
             let bare = link_text(p.rsplit('/').next().unwrap_or(p));
             let candidates: Vec<&String> =

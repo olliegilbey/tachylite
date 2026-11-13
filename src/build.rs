@@ -14,6 +14,8 @@ pub struct Summary {
     pub files: usize,
     pub skipped: Vec<crate::vault::Skipped>,
     pub broken: Vec<crate::render::Broken>,
+    /// Exclude patterns, as written, that matched no path.
+    pub unmatched: Vec<String>,
 }
 
 fn io_err(path: &Path) -> impl FnOnce(io::Error) -> Error + '_ {
@@ -46,6 +48,13 @@ pub fn build(vault: &Path, out: &Path) -> Result<Summary, Error> {
     let (dir, out) = open(vault, out)?;
     let config = crate::config::load(&dir)?;
     let scan = scan(dir.root(), &config.exclude)?;
+    let unmatched = config
+        .exclude
+        .unmatched()
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let _lock = lock(&out)?;
     output::prepare(&out)?;
 
     let mut writer = Writer::new(&out, &dir, |_| {});
@@ -68,7 +77,21 @@ pub fn build(vault: &Path, out: &Path) -> Result<Summary, Error> {
         files: copies - failed.len(),
         skipped,
         broken: report.broken,
+        unmatched,
     })
+}
+
+/// Takes an exclusive lock on the output directory, creating it if missing, so two
+/// processes never share one output. The lock lasts while the returned file is open.
+/// The directory is locked, not the marker, because `prepare` replaces the marker.
+pub fn lock(out: &Path) -> Result<fs::File, Error> {
+    fs::create_dir_all(out).map_err(io_err(out))?;
+    let dir = fs::File::open(out).map_err(io_err(out))?;
+    match rustix::fs::flock(&dir, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
+        Ok(()) => Ok(dir),
+        Err(rustix::io::Errno::WOULDBLOCK) => Err(Error::OutputBusy(out.to_path_buf())),
+        Err(e) => Err(io_err(out)(e.into())),
+    }
 }
 
 /// Makes `out` absolute without creating it: the deepest existing ancestor is canonicalised,

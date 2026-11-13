@@ -1,14 +1,13 @@
-import { expect, test, type Page } from "@playwright/test";
-import type { ChildProcess } from "node:child_process";
+import type { Page } from "@playwright/test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { serve, stop } from "./server";
+import { expect, lost, run, test } from "./fixture";
+import { serve, stop, type Server } from "./server";
 
 // Each test runs its own server, so it can take the network away by stopping it.
-const port = 7434;
-const base = `http://127.0.0.1:${port}`;
+let base = "";
 let dir = "";
-let server: ChildProcess | null = null;
+let server: Server | null = null;
 
 function note(name: string, body: string) {
   const path = join(dir, "vault", `${name}.md`);
@@ -30,14 +29,16 @@ async function find(page: Page, query: string) {
   await page.locator("dialog.switcher input").fill(query);
 }
 
-test.beforeEach(async ({}, info) => {
-  dir = join(__dirname, ".tmp", `nav-${info.title.replace(/\W+/g, "-")}-${info.project.name}`);
+test.beforeEach(async ({ allowedErrors }, info) => {
+  allowedErrors.push(lost);
+  dir = join(run, `nav-${info.title.replace(/\W+/g, "-")}-${info.project.name}`);
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(join(dir, "vault"), { recursive: true });
   note("a", "# A\n\naye text\n");
   note("garden/Fern care", "---\naliases: [Ferns]\n---\n# Fern care\n\nwater weekly\n");
   note("garden/Rose", "# Rose\n\nprune in spring\n");
-  server = await serve(dir, port);
+  server = await serve(dir);
+  base = server.base;
 });
 
 test.afterEach(async () => {

@@ -282,7 +282,9 @@ impl Watcher {
             paths.insert(path);
         }
         if reload && self.reload_config() {
-            return self.resync(removed);
+            let resync = self.resync(removed);
+            report::unmatched(&self.site.exclude().unmatched());
+            return resync;
         }
 
         // The folders as they stand now, each once: a parent's sync covers its children.

@@ -168,6 +168,19 @@ fn dependent_push_latency() {
     assert!(median <= limit);
 }
 
+/// Context switches summed over every thread: each wakeup costs one.
+fn wakeups(pid: u32) -> u64 {
+    fs::read_dir(format!("/proc/{pid}/task"))
+        .unwrap()
+        .map(|t| t.unwrap().file_name().into_string().unwrap())
+        .map(|tid| {
+            let file = format!("task/{tid}/status");
+            proc_field(pid, &file, "voluntary_ctxt_switches:")
+                + proc_field(pid, &file, "nonvoluntary_ctxt_switches:")
+        })
+        .sum()
+}
+
 #[test]
 #[ignore = "budget: run with make budget or make check"]
 fn idle_cpu() {
@@ -179,14 +192,18 @@ fn idle_cpu() {
 
     let pid = server.child.id();
     let before = cpu_ticks(pid);
+    let woke = wakeups(pid);
     // The idle window is the measurement: an open stream that must stay silent for 5 s.
     assert!(
         events.next(Duration::from_secs(5)).is_none(),
         "an idle server pushed"
     );
     let used = cpu_ticks(pid) - before;
-    println!("idle CPU over 5 s: {used} ticks (limit 2)");
+    // A thread that exits takes its counts with it, so this can shrink.
+    let woken = wakeups(pid).saturating_sub(woke);
+    println!("idle CPU over 5 s: {used} ticks (limit 2), {woken} wakeups (limit 5)");
     assert!(used <= 2);
+    assert!(woken <= 5, "an idle server woke {woken} times");
 }
 
 #[test]

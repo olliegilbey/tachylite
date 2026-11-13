@@ -6,16 +6,36 @@ use rustix::io::Errno;
 
 #[derive(Debug)]
 pub enum Error {
-    Io { path: PathBuf, source: io::Error },
+    Io {
+        path: PathBuf,
+        source: io::Error,
+    },
     VaultNotDir(PathBuf),
-    Overlap { vault: PathBuf, out: PathBuf },
+    Overlap {
+        vault: PathBuf,
+        out: PathBuf,
+    },
     OutNotOurs(PathBuf),
     OutNotClean(PathBuf),
     NoOpenat2,
-    Bind { port: u16, source: io::Error },
-    Watch { path: PathBuf, source: io::Error },
+    Bind {
+        port: u16,
+        source: io::Error,
+    },
+    Watch {
+        path: PathBuf,
+        source: io::Error,
+    },
     VaultGone(PathBuf),
-    Config { message: String },
+    Config(crate::config::ConfigError),
+    /// The async runtime could not start.
+    Runtime(io::Error),
+    /// The server stopped accepting connections.
+    Serve(io::Error),
+    /// Another Tachylite holds the output.
+    OutputBusy(PathBuf),
+    /// The output's marker vanished under a running server: the output was deleted or moved.
+    OutputGone(PathBuf),
 }
 
 impl fmt::Display for Error {
@@ -57,7 +77,19 @@ impl fmt::Display for Error {
                     _ => Ok(()),
                 }
             }
-            Error::Config { message } => write!(f, "{}: {message}", crate::config::FILE),
+            Error::Config(e) => write!(f, "{}: {e}", crate::config::FILE),
+            Error::Runtime(source) => write!(f, "cannot start the async runtime: {source}"),
+            Error::Serve(source) => write!(f, "the server stopped: {source}"),
+            Error::OutputBusy(path) => write!(
+                f,
+                "output {} is in use by another tachylite; give each one its own output",
+                path.display()
+            ),
+            Error::OutputGone(path) => write!(
+                f,
+                "output {} lost its .tachylite-output marker, so it was deleted or moved; stopping",
+                path.display()
+            ),
             Error::VaultGone(path) => {
                 write!(f, "vault {} was moved or deleted; stopping", path.display())
             }
@@ -68,9 +100,11 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Error::Io { source, .. } | Error::Bind { source, .. } | Error::Watch { source, .. } => {
-                Some(source)
-            }
+            Error::Io { source, .. }
+            | Error::Bind { source, .. }
+            | Error::Watch { source, .. }
+            | Error::Runtime(source)
+            | Error::Serve(source) => Some(source),
             _ => None,
         }
     }
