@@ -579,7 +579,10 @@ fn render(
 fn tags(text: &str, at_start: bool) -> Vec<(usize, usize)> {
     let mut found = Vec::new();
     for (i, _) in text.match_indices('#') {
-        let boundary = text[..i].chars().next_back().map_or(at_start, char::is_whitespace);
+        let boundary = text[..i]
+            .chars()
+            .next_back()
+            .map_or(at_start, char::is_whitespace);
         if !boundary {
             continue;
         }
