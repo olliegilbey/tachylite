@@ -1,50 +1,17 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod common;
+
 use std::fs;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use common::Dirs;
 use tachylite::Error;
 use tachylite::build::{Summary, build};
 use tachylite::config::Exclude;
 use tachylite::vault::{Kind, classify};
-
-fn fixture() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/vault")
-}
-
-fn copy_dir(from: &Path, to: &Path) {
-    fs::create_dir_all(to).unwrap();
-    for item in fs::read_dir(from).unwrap() {
-        let item = item.unwrap();
-        let target = to.join(item.file_name());
-        if item.file_type().unwrap().is_dir() {
-            copy_dir(&item.path(), &target);
-        } else {
-            fs::copy(item.path(), target).unwrap();
-        }
-    }
-}
-
-/// A temp dir holding a copy of the fixture vault at `vault/`, and a path `out/` beside it.
-struct Setup {
-    dir: tempfile::TempDir,
-}
-
-impl Setup {
-    fn new() -> Self {
-        let dir = tempfile::tempdir().unwrap();
-        copy_dir(&fixture(), &dir.path().join("vault"));
-        Setup { dir }
-    }
-    fn vault(&self) -> PathBuf {
-        self.dir.path().join("vault")
-    }
-    fn out(&self) -> PathBuf {
-        self.dir.path().join("out")
-    }
-}
 
 fn files_under(root: &Path) -> Vec<PathBuf> {
     let mut found = Vec::new();
@@ -65,7 +32,7 @@ fn files_under(root: &Path) -> Vec<PathBuf> {
 
 #[test]
 fn builds_fixture() {
-    let s = Setup::new();
+    let s = Dirs::fixture();
     let summary: Summary = build(&s.vault(), &s.out()).unwrap();
     assert_eq!((summary.notes, summary.files), (5, 3));
     for path in [
@@ -85,7 +52,7 @@ fn builds_fixture() {
 
 #[test]
 fn output_holds_only_published_files() {
-    let s = Setup::new();
+    let s = Dirs::fixture();
     build(&s.vault(), &s.out()).unwrap();
     for rel in files_under(&s.out()) {
         let rel_str = rel.to_str().unwrap();
@@ -104,7 +71,7 @@ fn output_holds_only_published_files() {
 
 #[test]
 fn html_pages_and_assets_are_byte_identical() {
-    let s = Setup::new();
+    let s = Dirs::fixture();
     build(&s.vault(), &s.out()).unwrap();
     let files = s.out().join("files");
     for rel in files_under(&files) {
@@ -153,7 +120,7 @@ fn state(root: &Path) -> Vec<(PathBuf, u64, SystemTime, Vec<u8>)> {
 
 #[test]
 fn vault_is_unchanged() {
-    let s = Setup::new();
+    let s = Dirs::fixture();
     let before = (state(&s.vault()), dirs_under(&s.vault()));
     build(&s.vault(), &s.out()).unwrap();
     assert_eq!((state(&s.vault()), dirs_under(&s.vault())), before);
@@ -161,7 +128,7 @@ fn vault_is_unchanged() {
 
 #[test]
 fn refuses_out_inside_vault() {
-    let s = Setup::new();
+    let s = Dirs::fixture();
     let out = s.vault().join("site");
     assert!(matches!(
         build(&s.vault(), &out),
@@ -172,16 +139,16 @@ fn refuses_out_inside_vault() {
 
 #[test]
 fn refuses_vault_inside_out() {
-    let s = Setup::new();
+    let s = Dirs::fixture();
     assert!(matches!(
-        build(&s.vault(), s.dir.path()),
+        build(&s.vault(), s.tmp.path()),
         Err(Error::Overlap { .. })
     ));
 }
 
 #[test]
 fn refuses_out_inside_vault_through_a_symlink() {
-    let s = Setup::new();
+    let s = Dirs::fixture();
     fs::create_dir(s.vault().join("site")).unwrap();
     symlink(s.vault().join("site"), s.out()).unwrap();
     assert!(matches!(
@@ -192,19 +159,19 @@ fn refuses_out_inside_vault_through_a_symlink() {
 
 #[test]
 fn refuses_dot_dot_after_missing_dir() {
-    let s = Setup::new();
-    let out = s.dir.path().join("nope/../vault/site");
+    let s = Dirs::fixture();
+    let out = s.tmp.path().join("nope/../vault/site");
     assert!(matches!(
         build(&s.vault(), &out),
         Err(Error::OutNotClean(_))
     ));
-    assert!(!s.dir.path().join("nope").exists());
+    assert!(!s.tmp.path().join("nope").exists());
     assert!(!s.vault().join("site").exists());
 }
 
 #[test]
 fn refuses_foreign_non_empty_out() {
-    let s = Setup::new();
+    let s = Dirs::fixture();
     fs::create_dir(s.out()).unwrap();
     fs::write(s.out().join("keep.txt"), "mine").unwrap();
     assert!(matches!(
@@ -219,7 +186,7 @@ fn refuses_foreign_non_empty_out() {
 
 #[test]
 fn rebuild_drops_deleted_note() {
-    let s = Setup::new();
+    let s = Dirs::fixture();
     build(&s.vault(), &s.out()).unwrap();
     let page = s.out().join("pages/people/Jane Doe.html");
     assert!(page.is_file());
@@ -230,7 +197,7 @@ fn rebuild_drops_deleted_note() {
 
 #[test]
 fn invalid_utf8_note_still_renders() {
-    let s = Setup::new();
+    let s = Dirs::fixture();
     fs::write(s.vault().join("broken.md"), b"ok \xff ok").unwrap();
     build(&s.vault(), &s.out()).unwrap();
     assert!(
@@ -243,12 +210,13 @@ fn invalid_utf8_note_still_renders() {
 #[test]
 fn unreadable_note_is_skipped_not_fatal() {
     use std::os::unix::fs::PermissionsExt;
-    let s = Setup::new();
+    let s = Dirs::fixture();
     let note = s.vault().join("welcome.md");
     fs::set_permissions(&note, fs::Permissions::from_mode(0o000)).unwrap();
-    if fs::read(&note).is_ok() {
-        return; // Running as root: permissions cannot make a file unreadable.
-    }
+    assert!(
+        fs::read(&note).is_err(),
+        "run as non-root: root reads any file"
+    );
     let result = build(&s.vault(), &s.out());
     fs::set_permissions(&note, fs::Permissions::from_mode(0o644)).unwrap();
     let summary = result.unwrap();
@@ -269,13 +237,13 @@ fn unreadable_note_is_skipped_not_fatal() {
 #[test]
 fn failed_scan_keeps_previous_output() {
     use std::os::unix::fs::PermissionsExt;
-    let s = Setup::new();
+    let s = Dirs::fixture();
     build(&s.vault(), &s.out()).unwrap();
     fs::set_permissions(s.vault(), fs::Permissions::from_mode(0o000)).unwrap();
-    if fs::read_dir(s.vault()).is_ok() {
-        fs::set_permissions(s.vault(), fs::Permissions::from_mode(0o755)).unwrap();
-        return; // Running as root: permissions cannot make a folder unreadable.
-    }
+    assert!(
+        fs::read_dir(s.vault()).is_err(),
+        "run as non-root: root reads any folder"
+    );
     let result = build(&s.vault(), &s.out());
     fs::set_permissions(s.vault(), fs::Permissions::from_mode(0o755)).unwrap();
     assert!(result.is_err());
@@ -284,7 +252,7 @@ fn failed_scan_keeps_previous_output() {
 
 #[test]
 fn upper_case_asset_extension_is_published() {
-    let s = Setup::new();
+    let s = Dirs::fixture();
     fs::copy(
         s.vault().join("img/dot.png"),
         s.vault().join("img/photo.PNG"),
@@ -306,7 +274,7 @@ fn clashes(summary: &Summary) -> Vec<&Path> {
 
 #[test]
 fn case_clash_keeps_first() {
-    let s = Setup::new();
+    let s = Dirs::fixture();
     fs::write(s.vault().join("a.MD"), "upper").unwrap();
     fs::write(s.vault().join("a.md"), "lower").unwrap();
     let summary = build(&s.vault(), &s.out()).unwrap();
@@ -320,7 +288,7 @@ fn case_clash_keeps_first() {
 
 #[test]
 fn note_shadowing_html_page_is_a_clash() {
-    let s = Setup::new();
+    let s = Dirs::fixture();
     fs::write(s.vault().join("maps/route.html.md"), "# shadow").unwrap();
     let summary = build(&s.vault(), &s.out()).unwrap();
     assert_eq!(clashes(&summary), [Path::new("maps/route.html.md")]);
@@ -333,7 +301,7 @@ fn note_shadowing_html_page_is_a_clash() {
 
 #[test]
 fn note_and_folder_page_clash_is_skipped() {
-    let s = Setup::new();
+    let s = Dirs::fixture();
     fs::write(s.vault().join("x.md"), "# x").unwrap();
     fs::create_dir(s.vault().join("x.html")).unwrap();
     fs::write(s.vault().join("x.html/y.md"), "# y").unwrap();
@@ -344,7 +312,7 @@ fn note_and_folder_page_clash_is_skipped() {
 
 #[test]
 fn no_temp_files_remain() {
-    let s = Setup::new();
+    let s = Dirs::fixture();
     build(&s.vault(), &s.out()).unwrap();
     build(&s.vault(), &s.out()).unwrap();
     let hidden: Vec<_> = files_under(&s.out())

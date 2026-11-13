@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::path::Path;
+mod common;
 
 use tachylite::build::build;
 use tachylite::links::Index;
@@ -9,10 +9,7 @@ use tachylite::render::{
 };
 
 fn fixture(name: &str) -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/vault")
-        .join(name);
-    std::fs::read_to_string(path).unwrap()
+    std::fs::read_to_string(common::fixture().join(name)).unwrap()
 }
 
 /// A page with no links to resolve and no backlinks.
@@ -32,8 +29,7 @@ fn welcome() -> String {
 /// Builds the fixture vault and returns the page for `key`.
 fn built(key: &str) -> String {
     let tmp = tempfile::tempdir().unwrap();
-    let vault = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/vault");
-    build(&vault, &tmp.path().join("out")).unwrap();
+    build(&common::fixture(), &tmp.path().join("out")).unwrap();
     std::fs::read_to_string(tmp.path().join(format!("out/pages/{key}.html"))).unwrap()
 }
 
