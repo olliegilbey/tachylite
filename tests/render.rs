@@ -756,7 +756,12 @@ fn html_embed_renders_a_sandboxed_iframe() {
 
 #[test]
 fn html_embed_snapshot() {
-    let body = embed("a.md", "before ![[route.html]] after\n", &[], &["maps/route.html"]);
+    let body = embed(
+        "a.md",
+        "before ![[route.html]] after\n",
+        &[],
+        &["maps/route.html"],
+    );
     insta::assert_snapshot!(body.html);
 }
 
