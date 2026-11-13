@@ -11,7 +11,7 @@ check:
 	cargo machete
 	cargo deny check
 	cargo test
-	BUDGET_SCALE=$(BUDGET_SCALE) cargo test --release --test budgets -- --ignored
+	BUDGET_SCALE=$(BUDGET_SCALE) cargo test --release --test budgets -- --ignored --test-threads=1
 	$(MAKE) browser
 
 # The browser seam: Playwright drives headless Chromium against a real server.
@@ -22,7 +22,7 @@ browser:
 
 # Timed budgets at 1x, for the reference host.
 budget:
-	BUDGET_SCALE=1 cargo test --release --test budgets -- --ignored --nocapture
+	BUDGET_SCALE=1 cargo test --release --test budgets -- --ignored --nocapture --test-threads=1
 
 # A static glibc build: musl's allocator serialises the render threads.
 size:
