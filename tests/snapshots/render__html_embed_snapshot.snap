@@ -1,0 +1,8 @@
+---
+source: tests/render.rs
+expression: body.html
+---
+<p>before</p>
+<iframe class="embed-html" sandbox="allow-scripts" src="/maps/route.html" loading="lazy"></iframe>
+<p class="embed-open"><a href="/maps/route.html">Open route.html full screen</a></p>
+<p>after</p>
