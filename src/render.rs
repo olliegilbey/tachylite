@@ -223,6 +223,8 @@ fn embed(
             };
             let markdown = String::from_utf8_lossy(bytes);
             seen.insert(target.to_string());
+            // `seen` grows by one per embed, so its size numbers the embeds on the page.
+            let prefix = format!("e{}.", seen.len() - 1);
             let inner = render(&target, &markdown, index, sources, (depth + 1, seen));
             body.missing.extend(inner.missing);
             let title = front::meta(&markdown)
@@ -233,13 +235,21 @@ fn embed(
             Embed::Block(format!(
                 "<div class=\"embed\"><a class=\"embed-link\" href=\"{src}\">{}</a>\n{}</div>\n",
                 escape(&title),
-                inner.html
+                scope_ids(&inner.html, &prefix)
             ))
         }
         _ => return link(body),
     };
     body.targets.insert(target);
     html
+}
+
+/// An embedded body with `prefix` on every id and on every link within the page, so its
+/// heading and footnote ids cannot collide with the host's. Heading slugs never hold a `.`.
+/// Text and code escape their quotes, so only a tag holds `id="` or `href="#`.
+fn scope_ids(html: &str, prefix: &str) -> String {
+    html.replace(" id=\"", &format!(" id=\"{prefix}"))
+        .replace(" href=\"#", &format!(" href=\"#{prefix}"))
 }
 
 /// The notes `markdown`'s embeds may read, without parsing it. It over-matches, in code

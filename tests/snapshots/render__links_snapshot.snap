@@ -10,7 +10,7 @@ expression: "built(\"notes/links\")"
 <meta name="color-scheme" content="dark light">
 <link rel="manifest" href="/.tachylite/app.webmanifest">
 <link rel="stylesheet" href="/.tachylite/style.css">
-<meta name="tachylite-version" content="59de1cb7b23d4d12">
+<meta name="tachylite-version" content="164fa4cf359f383b">
 <title>links</title>
 <script src="/.tachylite/live.js" defer></script>
 </head>
@@ -32,9 +32,9 @@ expression: "built(\"notes/links\")"
 <li>Markdown: <a href="/people/Jane%20Doe">Jane</a>, <a href="/welcome#a-table">table</a> and <a href="https://example.com">example</a></li>
 <li>Broken: <a class="broken-link">nobody</a> and <a class="broken-link">gone</a></li>
 <li>Embed: <div class="embed"><a class="embed-link" href="/welcome">Welcome</a>
-<h1 id="welcome-to-the-sample-vault">Welcome to the sample vault</h1>
+<h1 id="e1.welcome-to-the-sample-vault">Welcome to the sample vault</h1>
 <p>This vault is synthetic. It exists to test rendering.</p>
-<h2 id="a-table">A table</h2>
+<h2 id="e1.a-table">A table</h2>
 <table>
 <thead>
 <tr>
@@ -53,13 +53,13 @@ expression: "built(\"notes/links\")"
 </tr>
 </tbody>
 </table>
-<h2 id="tasks">Tasks</h2>
+<h2 id="e1.tasks">Tasks</h2>
 <ul>
 <li><input type="checkbox" disabled="" /> Water the fern</li>
 <li><input type="checkbox" checked="" disabled="" /> Sweep the porch</li>
 </ul>
-<h2 id="notes">Notes</h2>
-<p>A coffee here costs $5 or $10, depending on the cup.<sup class="footnote-ref"><a href="#fn-cup" id="fnref-cup" data-footnote-ref>1</a></sup></p>
+<h2 id="e1.notes">Notes</h2>
+<p>A coffee here costs $5 or $10, depending on the cup.<sup class="footnote-ref"><a href="#e1.fn-cup" id="e1.fnref-cup" data-footnote-ref>1</a></sup></p>
 <p><del>This line is struck out.</del></p>
 <p>Read more at <a href="https://example.com/guide">https://example.com/guide</a> today.</p>
 <pre><code class="language-rust">fn main() {
@@ -69,8 +69,8 @@ expression: "built(\"notes/links\")"
 
 <section class="footnotes" data-footnotes>
 <ol>
-<li id="fn-cup">
-<p>Large cups cost more. <a href="#fnref-cup" class="footnote-backref" data-footnote-backref data-footnote-backref-idx="1" aria-label="Back to reference 1">↩</a></p>
+<li id="e1.fn-cup">
+<p>Large cups cost more. <a href="#e1.fnref-cup" class="footnote-backref" data-footnote-backref data-footnote-backref-idx="1" aria-label="Back to reference 1">↩</a></p>
 </li>
 </ol>
 </section>

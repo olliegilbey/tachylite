@@ -694,7 +694,7 @@ fn note_embed_transcludes_the_body() {
     );
     assert!(
         body.html.contains(
-            "<div class=\"embed\"><a class=\"embed-link\" href=\"/b\">Bee</a>\n<h1 id=\"b\">B</h1>"
+            "<div class=\"embed\"><a class=\"embed-link\" href=\"/b\">Bee</a>\n<h1 id=\"e1.b\">B</h1>"
         ),
         "{}",
         body.html
@@ -967,5 +967,40 @@ proptest::proptest! {
         let html = render_body("a.md", &md, &Index::new(["a.md"]), &Sources::new()).html;
         let text = outside_code(&html);
         proptest::prop_assert!(!text.contains("zebra"), "md={md:?}\nhtml={html}");
+    }
+}
+
+/// Every `attr="…"` value in `html`.
+fn attrs<'a>(html: &'a str, attr: &str) -> Vec<&'a str> {
+    let pat = format!(" {attr}=\"");
+    html.match_indices(&pat)
+        .map(|(at, _)| {
+            let rest = &html[at + pat.len()..];
+            &rest[..rest.find('"').unwrap()]
+        })
+        .collect()
+}
+
+#[test]
+fn embedded_ids_stay_unique_and_their_links_stay_inside() {
+    let note = "# Top\n\nText[^1] and [[#Top]].\n\n[^1]: A note.\n";
+    let body = embed(
+        "a.md",
+        &format!("{note}\n![[b]]\n"),
+        &[("b.md", &format!("{note}\n![[c]]\n")), ("c.md", note)],
+        &[],
+    );
+    let ids = attrs(&body.html, "id");
+    let unique: std::collections::BTreeSet<_> = ids.iter().collect();
+    assert_eq!(unique.len(), ids.len(), "{ids:?}");
+    assert_eq!(ids.len(), 9, "{ids:?}");
+    for href in attrs(&body.html, "href") {
+        if let Some(fragment) = href.strip_prefix('#') {
+            assert!(ids.contains(&fragment), "{href} targets no id in {}", body.html);
+        }
+    }
+    // The host's own ids keep their plain names.
+    for id in ["top", "fn-1", "fnref-1"] {
+        assert!(ids.contains(&id), "{id} not in {ids:?}");
     }
 }
