@@ -171,8 +171,13 @@ pub struct Site {
     exclude: Exclude,
     /// Every readable, publishable file, winner or not.
     entries: BTreeMap<String, Kind>,
-    /// Vault paths whose output is written.
-    winners: BTreeSet<String>,
+    /// Vault paths whose output is written. Shared, so an apply that lists no new path
+    /// reuses them without a copy.
+    winners: Arc<BTreeSet<String>>,
+    /// The claims that lost to them, with why.
+    lost: Vec<(String, SkipReason)>,
+    /// Whether a path joined or left `entries` since the winners were last worked out.
+    relist: bool,
     /// The version of each winning note's written page.
     /// Sorted, so the manifest is written in one pass.
     versions: BTreeMap<String, String>,
@@ -389,9 +394,14 @@ impl Site {
             touched.remove(path);
         }
 
-        // A loser promoted by this change was not read yet. Read it; if that fails, it
-        // leaves the entries and the winners are recomputed.
+        // Winners depend only on the listed paths, so a save that lists none new keeps them.
+        // A loser promoted by this change was not read yet. Read it, and recompute: if the
+        // read failed, it left the entries.
         let (won, lost) = loop {
+            if !self.relist {
+                break (Arc::clone(&self.winners), self.lost.clone());
+            }
+            self.relist = false;
             let (won, lost) = winners(&self.entries);
             let unread: Vec<String> = won
                 .iter()
@@ -403,21 +413,23 @@ impl Site {
                 .cloned()
                 .collect();
             if unread.is_empty() {
-                break (won, lost);
+                break (Arc::new(won), lost);
             }
             for path in &unread {
                 self.probe(path, source, &mut fresh, &mut report.skipped);
             }
+            self.relist = true;
         };
 
-        for (path, reason) in lost {
-            if touched.contains(&path) || self.winners.contains(&path) {
+        for (path, reason) in &lost {
+            if touched.contains(path) || self.winners.contains(path) {
                 report.skipped.push(Skipped {
                     path: PathBuf::from(path),
-                    reason,
+                    reason: *reason,
                 });
             }
         }
+        self.lost = lost;
 
         let (own, deps) = self.link(&won, &fresh);
 
@@ -461,7 +473,7 @@ impl Site {
             &mut changed,
             &mut report.broken,
         );
-        for path in &won {
+        for path in won.iter() {
             let kind = self.entries.get(path).copied().unwrap_or(Kind::Asset);
             match kind {
                 Kind::Note => {
@@ -1142,7 +1154,7 @@ impl Site {
     ) -> bool {
         let Some(kind) = classify(path, &self.exclude) else {
             // Excluded since it was listed, or never publishable.
-            self.entries.remove(path);
+            self.relist |= self.entries.remove(path).is_some();
             return false;
         };
         let result = match kind {
@@ -1154,15 +1166,15 @@ impl Site {
         };
         match result {
             Ok(()) => {
-                self.entries.insert(path.to_string(), kind);
+                self.relist |= self.entries.insert(path.to_string(), kind).is_none();
             }
             // An unpublished path has nothing to keep; its save adds it.
             Err(ReadError::MidSave) if self.winners.contains(path) => return true,
             Err(ReadError::Missing | ReadError::MidSave) => {
-                self.entries.remove(path);
+                self.relist |= self.entries.remove(path).is_some();
             }
             Err(ReadError::Skip(reason)) => {
-                self.entries.remove(path);
+                self.relist |= self.entries.remove(path).is_some();
                 skipped.push(Skipped {
                     path: PathBuf::from(path),
                     reason,
