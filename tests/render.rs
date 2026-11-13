@@ -167,6 +167,7 @@ fn markdown_heading_links_use_heading_ids() {
         2,
         "{html}"
     );
+    assert!(plain("[top](#)").contains("<a href=\"#\">top</a>"));
 }
 
 #[test]
@@ -540,6 +541,16 @@ fn an_escape_never_hides_a_comment() {
     let html = plain("<div>\n```\n</div>\n\n\\%%zebra\n```\n");
     assert!(html.contains("comment-error"), "{html}");
     assert!(!html.contains("zebra"), "{html}");
+}
+
+#[test]
+fn only_spaces_and_tabs_indent() {
+    // U+3000 is text, so the next line opens a fence, as the parser reads it.
+    let html = plain("\u{3000}```\n```\nx %%a\n%%b%%\n```\n");
+    assert!(
+        html.contains("<pre><code>x %%a\n%%b%%\n</code></pre>"),
+        "{html}"
+    );
 }
 
 #[test]
@@ -937,6 +948,22 @@ fn outside_code(html: &str) -> String {
     out
 }
 
+/// The parser's own reading of a note, comments and all, with Tachylite's extensions.
+fn raw_html(md: &str) -> String {
+    let mut options = comrak::Options::default();
+    options.extension.strikethrough = true;
+    options.extension.table = true;
+    options.extension.autolink = true;
+    options.extension.tasklist = true;
+    options.extension.footnotes = true;
+    options.extension.wikilinks_title_after_pipe = true;
+    options.extension.ofm_callouts = true;
+    options.extension.highlight = true;
+    options.parse.escaped_char_spans = true;
+    options.render.r#unsafe = true;
+    comrak::markdown_to_html(md, &options)
+}
+
 /// Block and inline syntax that moves where code starts and ends.
 const SYNTAX: &[&str] = &[
     "```",
@@ -1004,18 +1031,28 @@ proptest::proptest! {
         proptest::prop_assert!(!text.contains("%%"), "md={md:?}\nhtml={html}");
     }
 
-    /// In a note whose every `%%` pairs into a comment, no comment text reaches the page
-    /// outside code.
+    /// In a note whose every `%%` outside code pairs into a comment, no comment text reaches
+    /// the page outside code.
     #[test]
     fn no_comment_text_outside_code(
         parts in proptest::collection::vec(
             proptest::sample::select(
-                [SYNTAX, &["%%zebra%%", "%%zebra%%", "\n\n%%\nzebra\n%%\n\n"]].concat()
+                [SYNTAX, &[
+                    "%%zebra%%", "%%zebra%%", "\n\n%%\nzebra\n%%\n\n",
+                    // `%%` in code: if the stripper reads it as text, the pairs shift.
+                    "\n```\nx %%d\n```\n", "`%%d`", "\n\n    %%d\n\n",
+                ]].concat()
             ),
             0..60,
         )
     ) {
         let md = format!("\n{}", parts.concat());
+        // A `%%d` that its neighbours took out of code opens a comment, so its pairs differ.
+        let raw = raw_html(&md);
+        let in_code = raw.matches("%%d").count() - outside_code(&raw).matches("%%d").count();
+        if in_code != md.matches("%%d").count() {
+            return Ok(());
+        }
         let html = render_body("a.md", &md, &Index::new(["a.md"]), &Sources::new()).html;
         let text = outside_code(&html);
         proptest::prop_assert!(!text.contains("zebra"), "md={md:?}\nhtml={html}");

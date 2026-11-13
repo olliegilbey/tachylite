@@ -351,8 +351,12 @@ fn render(
     sources: &Sources,
     (depth, seen): (usize, &mut HashSet<String>),
 ) -> Body {
-    let (yaml, markdown) = front::split(markdown);
-    let (markdown, unclosed) = strip_comments(markdown);
+    let (yaml, raw) = front::split(markdown);
+    let Stripped {
+        text: markdown,
+        unclosed,
+        openers,
+    } = strip_comments(raw);
     let mut body = Body::default();
     // An embedded note shows its body only.
     let props = match yaml {
@@ -364,7 +368,7 @@ fn render(
     let root = parse_document(&arena, &markdown, &options);
     // The stripper and the parser disagree on what is code. Withhold the text rather than
     // risk a comment.
-    if markdown.contains("%%") && unstripped(root) {
+    if (markdown.contains("%%") && unstripped(root)) || opened_in_code(raw, &openers) {
         body.html = "<p class=\"comment-error\">This note has a comment Tachylite could not \
                      place, so its text is withheld.</p>\n"
             .to_string();
@@ -437,7 +441,7 @@ fn render(
                 let (path, heading) = split(&link.url);
                 decode(path).map(|path| (path, heading.and_then(decode)))
             }
-            NodeValue::Link(link) if link.url.starts_with('#') => {
+            NodeValue::Link(link) if link.url.starts_with('#') && link.url.len() > 1 => {
                 decode(&link.url[1..]).map(|heading| (String::new(), Some(heading)))
             }
             _ => None,
@@ -605,6 +609,34 @@ fn unstripped<'a>(root: &'a AstNode<'a>) -> bool {
     })
 }
 
+/// True when the parser reads any of `openers`, the byte offsets where the stripper opened
+/// a comment, as code. The stripper then took code for text, and its `%%` pairs may have
+/// shifted, which would publish a comment's text with no `%%` left to find. Each opener
+/// becomes a mark the parser treats as plain text, as it does `%%`, so code ends where it
+/// did. comrak's inline source positions drift after a link title that spans lines, so
+/// the mark, not a position, says where each opener landed.
+fn opened_in_code(md: &str, openers: &[usize]) -> bool {
+    const MARK: &str = "\u{E000}\u{E000}";
+    if openers.is_empty() {
+        return false;
+    }
+    let mut marked = String::with_capacity(md.len() + openers.len() * 4);
+    let mut last = 0;
+    for &at in openers {
+        marked.push_str(&md[last..at]);
+        marked.push_str(MARK);
+        last = at + 2;
+    }
+    marked.push_str(&md[last..]);
+    let arena = Arena::new();
+    let root = parse_document(&arena, &marked, &options());
+    root.descendants().any(|n| match &n.data().value {
+        NodeValue::Code(code) => code.literal.contains(MARK),
+        NodeValue::CodeBlock(block) => block.literal.contains(MARK) || block.info.contains(MARK),
+        _ => false,
+    })
+}
+
 /// The column after `prefix`, with tab stops every 4 columns.
 fn columns(prefix: &str) -> usize {
     prefix.bytes().fold(0, |col, b| match b {
@@ -714,7 +746,7 @@ fn fence_close(line: &str, Fence(c, n, col): Fence) -> bool {
 /// A line without its leading whitespace, quote markers and list markers.
 fn strip_containers(mut line: &str) -> &str {
     loop {
-        let trimmed = line.trim_start();
+        let trimmed = line.trim_start_matches([' ', '\t']);
         let marker = trimmed.strip_prefix('>').or_else(|| {
             let digits = trimmed.bytes().take_while(u8::is_ascii_digit).count();
             let rest = &trimmed[digits..];
@@ -735,9 +767,8 @@ fn strip_containers(mut line: &str) -> &str {
 /// Where a run of `n` backticks from `from` closes a code span: the next run of exactly `n`
 /// on this line, or on a later line of the same paragraph. A blank line, a fence or a heading
 /// ends a paragraph, and a heading is one line.
-fn span_close(md: &str, from: usize, n: usize) -> Option<usize> {
+fn span_close(md: &str, line_start: usize, from: usize, n: usize) -> Option<usize> {
     let bytes = md.as_bytes();
-    let line_start = md[..from].rfind('\n').map_or(0, |i| i + 1);
     let mut heading = atx(&md[line_start..]);
     let mut i = from;
     while i < bytes.len() {
@@ -819,7 +850,7 @@ impl Blocks {
                 let token = line[at..]
                     .find(char::is_whitespace)
                     .map_or(line.len(), |e| at + e);
-                at = line.len() - line[token..].trim_start().len();
+                at = line.len() - line[token..].trim_start_matches([' ', '\t']).len();
             }
         }
         if let Some(fence) = fence_open(line) {
@@ -830,21 +861,35 @@ impl Blocks {
     }
 }
 
+/// A note's Markdown without its comments.
+pub struct Stripped<'a> {
+    pub text: Cow<'a, str>,
+    /// The last comment runs to the end of the note.
+    pub unclosed: bool,
+    /// The byte offset of each `%%` that opened a comment.
+    pub openers: Vec<usize>,
+}
+
 /// Removes `%%comments%%` from a note's Markdown, in note order, before it is parsed. A
 /// comment runs to the next `%%`, or to the end of the note. Fenced code, indented code and
 /// code spans keep their `%%`, unless a comment holds them. Newlines in a comment stay, so
-/// lines keep their places. The flag is true when the last comment runs to the end.
-pub fn strip_comments(md: &str) -> (Cow<'_, str>, bool) {
+/// lines keep their places.
+pub fn strip_comments(md: &str) -> Stripped<'_> {
+    let mut stripped = Stripped {
+        text: Cow::Borrowed(md),
+        unclosed: false,
+        openers: Vec::new(),
+    };
     if !md.contains("%%") {
-        return (Cow::Borrowed(md), false);
+        return stripped;
     }
     let bytes = md.as_bytes();
     let mut out = String::with_capacity(md.len());
     let mut blocks = Blocks::default();
-    let (mut i, mut kept, mut start) = (0, 0, true);
+    let (mut i, mut kept, mut start, mut line) = (0, 0, true, 0);
     while i < bytes.len() {
         if start {
-            start = false;
+            (start, line) = (false, i);
             let end = md[i..].find('\n').map_or(md.len(), |e| i + e + 1);
             if blocks.code(&md[i..end]) {
                 blocks.paragraph = false;
@@ -869,10 +914,15 @@ pub fn strip_comments(md: &str) -> (Cow<'_, str>, bool) {
             }
             b'`' => {
                 let n = bytes[i..].iter().take_while(|&&b| b == b'`').count();
-                i = span_close(md, i + n, n).unwrap_or(i + n);
+                let end = span_close(md, line, i + n, n).unwrap_or(i + n);
+                if let Some(nl) = md[i..end].rfind('\n') {
+                    line = i + nl + 1;
+                }
+                i = end;
             }
             b'%' if bytes.get(i + 1) == Some(&b'%') => {
                 out.push_str(&md[kept..i]);
+                stripped.openers.push(i);
                 let body = i + 2;
                 let close = md[body..].find("%%").map(|at| body + at);
                 let inside = &md[body..close.unwrap_or(md.len())];
@@ -880,7 +930,9 @@ pub fn strip_comments(md: &str) -> (Cow<'_, str>, bool) {
                 match close {
                     Some(at) => (i, kept) = (at + 2, at + 2),
                     None => {
-                        return (Cow::Owned(out), true);
+                        stripped.unclosed = true;
+                        stripped.text = Cow::Owned(out);
+                        return stripped;
                     }
                 }
             }
@@ -888,7 +940,8 @@ pub fn strip_comments(md: &str) -> (Cow<'_, str>, bool) {
         }
     }
     out.push_str(&md[kept.min(md.len())..]);
-    (Cow::Owned(out), false)
+    stripped.text = Cow::Owned(out);
+    stripped
 }
 
 /// A Mermaid fence becomes `<pre class="mermaid">`, which the client draws.

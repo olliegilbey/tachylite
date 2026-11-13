@@ -547,6 +547,14 @@ fn comments_the_stripper_misreads_reach_no_output() {
             "u9.md",
             "<div>\n```\n</div>\n\n%%zebra ten%%\n```\n\nText %%zebra%% more\n",
         ),
+        // Code the stripper reads as text: its `%%` must not pair with a real comment's.
+        ("s1.md", "- ```\n  code\n```\nx %%a\n%%zebra s1%%\n```\n"),
+        ("s2.md", "> ```\n> code\n```\nx %%a\n%%zebra s2%%\n```\n"),
+        ("s3.md", "para\n    ```\n```\nx %%a\n%%zebra s3%%\n```\n"),
+        ("s5.md", "a `x\n    # h\n%%` b\n%%zebra s5%%\n"),
+        ("s6.md", "a `x\n    ```\n    ```\n%%` b\n%%zebra s6%%\n"),
+        ("s7.md", "para\n    - item\n\n        %%x\n%%zebra s7%%\n"),
+        ("s8.md", "-\n\n  foo\n\n     %%x\n%%zebra s8%%\n"),
     ]);
     let out = vault.path().join("out");
     build(&vault.path().join("vault"), &out).unwrap();
