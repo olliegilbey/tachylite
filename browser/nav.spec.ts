@@ -121,6 +121,25 @@ test("a wide table does not widen the page", async ({ page }) => {
   expect(scroll).toBeLessThanOrEqual(client);
 });
 
+test("a long property value does not widen the page", async ({ page }) => {
+  note("hash", `---\nchecksum: ${"0123456789abcdef".repeat(4)}\n---\n# Hash\n`);
+  await expect.poll(async () => (await page.request.get(base + "/hash")).status()).toBe(200);
+  await page.goto(base + "/hash");
+  const [scroll, client] = await page.evaluate(() => [
+    document.documentElement.scrollWidth,
+    document.documentElement.clientWidth,
+  ]);
+  expect(scroll).toBeLessThanOrEqual(client);
+});
+
+test("a tap beside a title in an index list opens the note", async ({ page }) => {
+  await page.goto(base + "/.tachylite/folders/garden");
+  const row = page.locator("main ul.notes li").first();
+  const box = (await row.boundingBox())!;
+  await page.mouse.click(box.x + box.width - 4, box.y + 4);
+  await expect(page).toHaveURL(base + "/garden/Fern%20care");
+});
+
 test("a folded callout opens on a tap", async ({ page }) => {
   note("fold", "# Fold\n\n> [!tip]- Folded\n> hidden body\n");
   await expect.poll(async () => (await page.request.get(base + "/fold")).status()).toBe(200);

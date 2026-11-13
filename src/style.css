@@ -32,6 +32,8 @@
   }
 }
 * { box-sizing: border-box; }
+/* A `#heading` link lands below the sticky header. */
+html { scroll-padding-top: 3.5rem; }
 body { margin: 0; background: var(--bg); color: var(--fg); overflow-wrap: break-word; }
 main { max-width: 44rem; margin: 0 auto; padding: 0.5rem 1rem 4rem; }
 a { color: var(--link); text-decoration: none; }
@@ -78,9 +80,11 @@ th { background: var(--raise); }
 
 li:has(> input[type="checkbox"]) { list-style: none; margin-left: -1.4em; }
 input[type="checkbox"] { margin-right: 0.4em; }
+/* A loose list wraps each task's text in a paragraph. */
+li > input[type="checkbox"] + p { display: inline; }
 
 .properties {
-  display: grid; grid-template-columns: max-content 1fr; gap: 0.15rem 1rem; margin: 0 0 1rem;
+  display: grid; grid-template-columns: fit-content(40%) minmax(0, 1fr); gap: 0.15rem 1rem; margin: 0 0 1rem;
   padding: 0.5rem 0.75rem; background: var(--raise); border-radius: 6px; font-size: 0.9rem;
 }
 .properties dt { color: var(--dim); }
@@ -108,7 +112,11 @@ input[type="checkbox"] { margin-right: 0.4em; }
 .backlinks h2 { font-size: 1rem; color: var(--dim); }
 
 ul.folders, ul.notes, ul.recent { padding-left: 0; list-style: none; }
-ul.folders li, ul.notes li, ul.recent li { padding: 0.3rem 0; border-bottom: 1px solid var(--line); }
+ul.folders li, ul.notes li, ul.recent li { border-bottom: 1px solid var(--line); }
+/* The whole row is the tap target. */
+ul:is(.folders, .notes, .recent) a { display: block; padding: 0.3rem 0; }
+ul.recent a { padding-bottom: 0; }
+ul.recent .meta { padding-bottom: 0.3rem; }
 ul.folders a::before { content: "▸ "; color: var(--dim); }
 .meta { display: block; color: var(--dim); font-size: 0.85rem; }
 
