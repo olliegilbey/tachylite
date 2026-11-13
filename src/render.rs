@@ -566,11 +566,9 @@ fn render(
 /// whitespace, and `tag_key` takes it.
 fn tags(text: &str, at_start: bool) -> Vec<(usize, usize)> {
     let mut found = Vec::new();
-    let mut prev: Option<char> = None;
-    for (i, c) in text.char_indices() {
-        let boundary = prev.map_or(at_start, char::is_whitespace);
-        prev = Some(c);
-        if c != '#' || !boundary {
+    for (i, _) in text.match_indices('#') {
+        let boundary = text[..i].chars().next_back().map_or(at_start, char::is_whitespace);
+        if !boundary {
             continue;
         }
         let rest = &text[i + 1..];
