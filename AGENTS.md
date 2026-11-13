@@ -25,11 +25,11 @@ The smallest thing that works, made fast, beats the clever thing. Fight scope cr
 
 - **vault**: the folder of Markdown that Tachylite reads.
 - **note**: one `.md` file in the vault.
-- **page**: HTML that Tachylite renders: a note page or an index page. The manifest's `pages` lists each one with its version, beside the switcher list. Clients cache every page for offline use.
+- **page**: a note page or an index page. The manifest's `pages` lists each one with its version, and the switcher list `notes.json` too. Clients cache every page for offline use.
 - **note page**: the page rendered from one note.
 - **html page**: an `.html` file from the vault, served with its content unchanged and a sandbox header.
 - **index page**: a page generated from many notes: a tag page, a folder index, recent notes, the board. Index pages live under the reserved prefix `/.tachylite/`, except the home page at `/`.
-- **asset**: an image or PDF from the vault. The manifest's `files` lists each asset and html page, with no version. A client fetches it on first open and keeps it cached. The JS, CSS and icons built into the binary are client assets, a separate thing.
+- **asset**: an image or PDF from the vault. The manifest's `files` lists each asset and html page, with no version. A client fetches it on first open and keeps it cached. The files built into the binary, such as the JS and CSS, are client assets, a separate thing.
 - **output**: the directory Tachylite writes. It lives outside the vault.
 - **manifest**: the list of every page with its content hash. Clients sync against it.
 - **push**: new page HTML sent to open clients over Server-Sent Events.
