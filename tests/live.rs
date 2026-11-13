@@ -346,6 +346,10 @@ fn resume(server: &Server) {
     kill_process(pid(server), Signal::CONT).unwrap();
 }
 
+/// How long an overflow's resync may take: a debug server renders some 10,000 new notes,
+/// and a loaded host can take far longer than the usual wait.
+const RESYNC: Duration = Duration::from_secs(60);
+
 /// Stops the server and writes enough new notes to overflow its inotify queue. Returns the
 /// queue limit.
 fn overflow(d: &Dirs, server: &Server) -> usize {
@@ -392,7 +396,7 @@ fn queue_overflow_reloads_the_config() {
     // The kernel drops this save's events: the queue is already full.
     fs::write(d.vault().join("tachylite.toml"), "exclude = [\"p\"]\n").unwrap();
     resume(&server);
-    hidden.expect("gone");
+    hidden.expect_within("gone", RESYNC);
     assert_eq!(server.get("/p/x").status, 404);
 }
 
@@ -408,12 +412,16 @@ fn queue_overflow_resyncs_the_vault() {
     resume(&server);
     assert!(
         server
-            .wait_line(|l| l.contains("overflowed"), Duration::from_secs(10))
+            .wait_line(|l| l.contains("overflowed"), RESYNC)
             .is_some(),
         "the queue did not overflow"
     );
-    gone.expect("gone");
-    assert!(late.expect("page").data.contains("\">late</h1>"));
+    gone.expect_within("gone", RESYNC);
+    assert!(
+        late.expect_within("page", RESYNC)
+            .data
+            .contains("\">late</h1>")
+    );
     assert_eq!(server.get(&format!("/n{}", limit / 2)).status, 200);
 }
 
