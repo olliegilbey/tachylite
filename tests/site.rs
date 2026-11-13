@@ -71,10 +71,22 @@ fn fold(out: &mut Out, delta: &Delta, mem: &Mem) {
 
 const HOME: &str = "pages/.tachylite/home.html";
 
+/// The URL key of a page under `pages/`; the inverse of `page_out`.
+fn page_key(out: &str) -> &str {
+    if out == HOME {
+        return "";
+    }
+    let page = &out["pages/".len()..];
+    page.strip_suffix("/.index.html")
+        .unwrap_or(&page[..page.len() - ".html".len()])
+}
+
 /// Where a pushed page's key is written.
 fn page_out(key: &str) -> String {
     if key.is_empty() {
         HOME.into()
+    } else if key.starts_with(".tachylite/folders/") {
+        format!("pages/{key}/.index.html")
     } else {
         format!("pages/{key}.html")
     }
@@ -688,7 +700,7 @@ proptest! {
             }
         }
         for path in expected.keys().filter(|p| p.starts_with("pages/")) {
-            let key = if path == HOME { "" } else { &path["pages/".len()..path.len() - ".html".len()] };
+            let key = page_key(path);
             prop_assert!(last_push.contains_key(key), "{key} was published without a push");
         }
     }
@@ -1010,7 +1022,7 @@ fn deleting_a_folders_last_note_deletes_its_index() {
     assert!(
         delta
             .deletes
-            .contains(&"pages/.tachylite/folders/d.html".to_string())
+            .contains(&"pages/.tachylite/folders/d/.index.html".to_string())
     );
     assert!(delta.pushes.contains(&Push::Gone {
         key: ".tachylite/folders/d".into()
@@ -1206,7 +1218,13 @@ fn embed_after_failed_read(fail: ReadError, touch_b: bool) -> Delta {
     if touch_b {
         changes.push(touch("b.md"));
     }
-    site.apply(changes, &mut Flaky { mem: &mem, failing: &failing });
+    site.apply(
+        changes,
+        &mut Flaky {
+            mem: &mem,
+            failing: &failing,
+        },
+    );
     mem.0.insert("b.md".into(), b"bee two".to_vec());
     site.apply(vec![touch("b.md")], &mut mem)
 }

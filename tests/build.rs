@@ -343,6 +343,18 @@ fn note_and_folder_page_clash_is_skipped() {
 }
 
 #[test]
+fn a_folder_named_like_a_folder_index_builds() {
+    let dir = bare(&[("a/x.md", "# x"), ("a.html/b/y.md", "# y")]);
+    let (vault, out) = (dir.path().join("vault"), dir.path().join("out"));
+    let summary = build(&vault, &out).unwrap();
+    assert!(summary.skipped.is_empty(), "{:?}", summary.skipped);
+    for folder in ["a", "a.html", "a.html/b"] {
+        let index = out.join(format!("pages/.tachylite/folders/{folder}/.index.html"));
+        assert!(index.is_file(), "{folder}");
+    }
+}
+
+#[test]
 fn no_temp_files_remain() {
     let s = Setup::new();
     build(&s.vault(), &s.out()).unwrap();

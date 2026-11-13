@@ -103,14 +103,19 @@ pub fn generated(out: &str) -> bool {
     out.starts_with("pages/.tachylite/") || out.starts_with("files/.tachylite/")
 }
 
-/// Where a generated page's key is written in the output.
+/// Where a generated page's key is written in the output. A folder index is a dot name
+/// inside its folder's path, so no folder name can clash with it.
 fn generated_out(key: &str) -> String {
     match key {
         "" => "pages/.tachylite/home.html".into(),
         NOTES_JSON => format!("files/{key}"),
+        _ if key.starts_with(FOLDERS) => format!("pages/{key}/.index.html"),
         _ => format!("pages/{key}.html"),
     }
 }
+
+/// The URL key prefix of the folder indexes.
+const FOLDERS: &str = ".tachylite/folders/";
 
 /// Where the manifest lives in the output: `/.tachylite/manifest.json`.
 pub const MANIFEST: &str = "files/.tachylite/manifest.json";
@@ -545,10 +550,7 @@ impl Site {
                 let (key, page) = if path.is_empty() {
                     (String::new(), indexes::home(SITE, &recent, &folder))
                 } else {
-                    (
-                        format!(".tachylite/folders/{path}"),
-                        indexes::folder(&folder),
-                    )
+                    (format!("{FOLDERS}{path}"), indexes::folder(&folder))
                 };
                 built.push((key, page.version, page.html));
             }
