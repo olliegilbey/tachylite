@@ -551,6 +551,8 @@ fn comments_the_stripper_misreads_reach_no_output() {
         ("s1.md", "- ```\n  code\n```\nx %%a\n%%zebra s1%%\n```\n"),
         ("s2.md", "> ```\n> code\n```\nx %%a\n%%zebra s2%%\n```\n"),
         ("s3.md", "para\n    ```\n```\nx %%a\n%%zebra s3%%\n```\n"),
+        // A fence line inside an HTML block is no fence.
+        ("s9.md", "<div>\n```\n\n```\nx %%a\n%%zebra s9%%\n```\n"),
         ("s5.md", "a `x\n    # h\n%%` b\n%%zebra s5%%\n"),
         ("s6.md", "a `x\n    ```\n    ```\n%%` b\n%%zebra s6%%\n"),
         ("s7.md", "para\n    - item\n\n        %%x\n%%zebra s7%%\n"),

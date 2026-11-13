@@ -365,10 +365,12 @@ fn render(
     };
     let arena = Arena::new();
     let options = options();
+    // Before the main parse, so the two trees are never in memory at once.
+    let shifted = opened_in_code(raw, &openers);
     let root = parse_document(&arena, &markdown, &options);
     // The stripper and the parser disagree on what is code. Withhold the text rather than
     // risk a comment.
-    if (markdown.contains("%%") && unstripped(root)) || opened_in_code(raw, &openers) {
+    if shifted || (markdown.contains("%%") && unstripped(root)) {
         body.html = "<p class=\"comment-error\">This note has a comment Tachylite could not \
                      place, so its text is withheld.</p>\n"
             .to_string();
@@ -617,7 +619,10 @@ fn unstripped<'a>(root: &'a AstNode<'a>) -> bool {
 /// the mark, not a position, says where each opener landed.
 fn opened_in_code(md: &str, openers: &[usize]) -> bool {
     const MARK: &str = "\u{E000}\u{E000}";
-    if openers.is_empty() {
+    let Some(&last) = openers.last() else {
+        return false;
+    };
+    if plain_fences(&md[..last]) {
         return false;
     }
     let mut marked = String::with_capacity(md.len() + openers.len() * 4);
@@ -635,6 +640,37 @@ fn opened_in_code(md: &str, openers: &[usize]) -> bool {
         NodeValue::CodeBlock(block) => block.literal.contains(MARK) || block.info.contains(MARK),
         _ => false,
     })
+}
+
+/// True when the only code in `md` is fences at column 0, which the stripper reads exactly
+/// as the parser does: no other backtick or tilde, no tab, no four-space run, and no HTML
+/// block.
+fn plain_fences(md: &str) -> bool {
+    let mut fence = None;
+    for line in md.split_inclusive('\n') {
+        let bytes = line.as_bytes();
+        let run = |c: u8| bytes.iter().take_while(|&&b| b == c).count();
+        if let Some((c, n)) = fence {
+            if run(c) >= n && line[run(c)..].trim().is_empty() {
+                fence = None;
+            }
+            continue;
+        }
+        if let Some(&c @ (b'`' | b'~')) = bytes.first()
+            && run(c) >= 3
+            && !(c == b'`' && line[run(c)..].contains('`'))
+        {
+            fence = Some((c, run(c)));
+            continue;
+        }
+        if line.contains(['`', '~', '\t'])
+            || line.contains("    ")
+            || line.trim_start_matches(' ').starts_with('<')
+        {
+            return false;
+        }
+    }
+    true
 }
 
 /// The column after `prefix`, with tab stops every 4 columns.
