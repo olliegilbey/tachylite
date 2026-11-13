@@ -27,7 +27,7 @@ Slice 7b brings the rest of #9: `/.tachylite/today`, `/.tachylite/recent/<folder
   - the winners;
   - the titles;
   - each note's modified time.
-  It compares each page's version with the last one, writes and pushes only the pages that changed, and deletes the pages of folders that are gone. That costs O(notes) per apply and needs no dependency tracking, which is exactly what keeps it correct incrementally. It runs after the note pages' pushes, so the push budget for the changed note is untouched. The cost is measured. Gating it on what changed waits until a number asks for it.
+  It compares each page's version with the last one, writes and pushes only the pages that changed, and deletes the pages of folders that are gone. That costs O(notes) per apply and needs no dependency tracking, which is exactly what keeps it correct incrementally. It runs after the note pages' pushes, so the push budget for the changed note is untouched. The cost is measured. Gating it on what changed waits until a number asks for it. Tag pages, added later, are gated: an apply rebuilds only the pages of the tags that changed.
 - **The pages:**
   - `/`: the 10 most recent notes with a link to all recent, then the root's folders, notes and html pages.
   - `/.tachylite/folders/<folder>`: the folder's subfolders, notes and html pages, sorted by title, ignoring case.
