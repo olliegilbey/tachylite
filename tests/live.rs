@@ -666,6 +666,71 @@ fn a_save_by_link_is_published() {
     assert!(page.contains("\">linked</h1>"), "{page}");
 }
 
+/// Permission bits do not bind root, so the permission tests skip there.
+fn root() -> bool {
+    rustix::process::geteuid().is_root()
+}
+
+#[test]
+fn a_note_made_unreadable_and_readable_again_follows() {
+    use std::os::unix::fs::PermissionsExt;
+    if root() {
+        return;
+    }
+    let (d, server) = with_notes(&[("a.md", "# a")]);
+    let mut events = server.subscribe("/a", &version(&server, "/a"), None);
+    let note = d.vault().join("a.md");
+    fs::set_permissions(&note, fs::Permissions::from_mode(0o000)).unwrap();
+    events.expect("gone");
+    fs::set_permissions(&note, fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(events.expect("page").data.contains("\">a</h1>"));
+}
+
+#[test]
+fn a_folder_made_readable_is_published() {
+    use std::os::unix::fs::PermissionsExt;
+    if root() {
+        return;
+    }
+    let (d, server) = with_notes(&[("bar.md", "# b0")]);
+    let mut events = server.subscribe("/d/n", "", None);
+    let mut barrier = server.subscribe("/bar", &version(&server, "/bar"), None);
+    let folder = d.vault().join("d");
+    stop(&server);
+    fs::create_dir(&folder).unwrap();
+    fs::write(folder.join("n.md"), "# n").unwrap();
+    fs::set_permissions(&folder, fs::Permissions::from_mode(0o000)).unwrap();
+    fs::write(d.vault().join("bar.md"), "# b1").unwrap();
+    resume(&server);
+    barrier.expect("page");
+    assert_eq!(server.get("/d/n").status, 404);
+    fs::set_permissions(&folder, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(next_page(&mut events).contains("\">n</h1>"));
+}
+
+fn set_times(path: &std::path::Path, at: std::time::SystemTime) {
+    let times = fs::FileTimes::new().set_accessed(at).set_modified(at);
+    fs::File::open(path).unwrap().set_times(times).unwrap();
+}
+
+#[test]
+fn copied_times_reorder_recent_notes() {
+    use std::time::SystemTime;
+    let d = Dirs::empty();
+    fs::write(d.vault().join("older.md"), "# older").unwrap();
+    fs::write(d.vault().join("newer.md"), "# newer").unwrap();
+    let day = Duration::from_secs(86_400);
+    set_times(&d.vault().join("newer.md"), SystemTime::now() - day);
+    let server = Server::start(&d.vault(), &d.out());
+    let home = server.get("/").text();
+    assert!(home.find("/older\"") < home.find("/newer\""), "{home}");
+    let mut events = server.subscribe("/", &version_of(&home), None);
+    // `cp -p` and `rsync -t` set both times after the close, with no save event.
+    set_times(&d.vault().join("newer.md"), SystemTime::now() + day);
+    let page = next_page(&mut events);
+    assert!(page.find("/newer\"") < page.find("/older\""), "{page}");
+}
+
 #[test]
 fn exchanged_folders_stay_watched() {
     use rustix::fs::{CWD, RenameFlags, renameat_with};

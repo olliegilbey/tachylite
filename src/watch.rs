@@ -29,6 +29,7 @@ pub struct Live {
 }
 
 const MASK: WatchFlags = WatchFlags::CLOSE_WRITE
+    .union(WatchFlags::ATTRIB)
     .union(WatchFlags::MOVED_TO)
     .union(WatchFlags::MOVED_FROM)
     .union(WatchFlags::CREATE)
@@ -257,7 +258,7 @@ impl Watcher {
             if self.site.exclude().path(&path) {
                 continue;
             }
-            // The last event decides.
+            // The last event decides. An attribute change rereads the path as it stands.
             if event
                 .flags
                 .intersects(ReadFlags::CLOSE_WRITE | ReadFlags::MOVED_TO)
