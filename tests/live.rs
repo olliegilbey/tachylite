@@ -522,7 +522,7 @@ fn finish(mut file: fs::File, text: &str) {
 #[test]
 fn a_config_save_during_a_config_reload_is_kept() {
     use rustix::event::{PollFd, PollFlags, Timespec, poll};
-    use rustix::fs::inotify::{self, CreateFlags, WatchFlags};
+    use rustix::fs::inotify::{self, CreateFlags, ReadFlags, WatchFlags};
     use std::mem::MaybeUninit;
     // Many folders make a config reload's rewatch long.
     let notes: Vec<(String, &str)> = (0..300).map(|i| (format!("f{i}/n.md"), "# f")).collect();
@@ -532,7 +532,10 @@ fn a_config_save_during_a_config_reload_is_kept() {
     let (d, server) = with_notes(&notes);
     let toml = d.vault().join("tachylite.toml");
     let opens = inotify::init(CreateFlags::CLOEXEC).unwrap();
-    inotify::add_watch(&opens, &toml, WatchFlags::OPEN).unwrap();
+    // inotify merges an event into an equal one still queued. Each open is followed by
+    // its close, so two opens never sit together and none is merged away.
+    let mask = WatchFlags::OPEN | WatchFlags::CLOSE_WRITE | WatchFlags::CLOSE_NOWRITE;
+    inotify::add_watch(&opens, &toml, mask).unwrap();
     let mut buf = vec![MaybeUninit::<u8>::uninit(); 4096];
     // Awaits one open of the config: ours, then the server's reload.
     // One read can return several opens, so count them all.
@@ -544,8 +547,9 @@ fn a_config_save_during_a_config_reload_is_kept() {
             assert_eq!(poll(&mut fds, Some(&timeout)).unwrap(), 1, "no open");
             let mut reader = inotify::Reader::new(&opens, &mut buf);
             loop {
-                reader.next().unwrap();
-                seen += 1;
+                if reader.next().unwrap().events().contains(ReadFlags::OPEN) {
+                    seen += 1;
+                }
                 if reader.is_buffer_empty() {
                     break;
                 }
