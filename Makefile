@@ -1,5 +1,7 @@
 BUDGET_SCALE ?= 3
 TARGET ?= x86_64-unknown-linux-gnu
+# CI passes --with-deps: a fresh runner lacks Chromium's system libraries.
+PLAYWRIGHT_INSTALL ?=
 SIZE_LIMIT := 5000000
 
 .PHONY: check browser budget size upgrade mermaid
@@ -17,7 +19,7 @@ check:
 # The browser seam: Playwright drives headless Chromium against a real server.
 browser:
 	cargo build --release
-	cd browser && npm ci && npx playwright install --only-shell chromium && \
+	cd browser && npm ci && npx playwright install $(PLAYWRIGHT_INSTALL) --only-shell chromium && \
 	BUDGET_SCALE=$(BUDGET_SCALE) npx playwright test
 
 # Timed budgets at 1x, for the reference host.

@@ -1,14 +1,13 @@
-import { expect, test, type Page } from "@playwright/test";
-import type { ChildProcess } from "node:child_process";
+import type { Page } from "@playwright/test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { serve, stop } from "./server";
+import { expect, lost, run, test } from "./fixture";
+import { serve, stop, type Server } from "./server";
 
 // Each test runs its own server, so it can take the network away by stopping it.
-const port = 7433;
-const base = `http://127.0.0.1:${port}`;
+let base = "";
 let dir = "";
-let server: ChildProcess | null = null;
+let server: Server | null = null;
 
 function note(name: string, body: string) {
   writeFileSync(join(dir, "vault", `${name}.md`), body);
@@ -28,13 +27,15 @@ async function visit(page: Page, path: string) {
   await page.waitForFunction(() => navigator.serviceWorker.controller !== null);
 }
 
-test.beforeEach(async ({}, info) => {
-  dir = join(__dirname, ".tmp", `offline-${info.title.replace(/\W+/g, "-")}-${info.project.name}`);
+test.beforeEach(async ({ allowedErrors }, info) => {
+  allowedErrors.push(lost);
+  dir = join(run, `offline-${info.title.replace(/\W+/g, "-")}-${info.project.name}`);
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(join(dir, "vault"), { recursive: true });
   note("a", "# A\n\naye text\n");
   note("b", "# B\n\nbee text\n");
-  server = await serve(dir, port);
+  server = await serve(dir);
+  base = server.base;
 });
 
 test.afterEach(async () => {
@@ -66,7 +67,7 @@ test("an edit made while away arrives on reconnect", async ({ page }) => {
   await expect.poll(() => cached(page, "/b")).toContain("bee text");
   await stop(server!);
   note("b", "# B\n\nnew text\n");
-  server = await serve(dir, port);
+  server = await serve(dir, server!.port);
   await expect.poll(() => cached(page, "/b"), { timeout: 15_000 }).toContain("new text");
   await stop(server);
   await page.goto(base + "/b");
@@ -78,7 +79,7 @@ test("a deleted page leaves the cache", async ({ page }) => {
   await expect.poll(() => cached(page, "/b")).toContain("bee text");
   await stop(server!);
   rmSync(join(dir, "vault", "b.md"));
-  server = await serve(dir, port);
+  server = await serve(dir, server!.port);
   await expect.poll(() => cached(page, "/b"), { timeout: 15_000 }).toBeNull();
   expect(await cached(page, "/a")).toContain("aye text");
 });
@@ -94,12 +95,12 @@ test("a page whose sync failed still leaves the cache once deleted", async ({ pa
   });
   await stop(server!);
   note("b", "# B\n\nnew text\n");
-  server = await serve(dir, port);
+  server = await serve(dir, server!.port);
   await expect.poll(() => refused, { timeout: 15_000 }).toBeGreaterThan(0);
   await context.unroute(/\/b$/);
   await stop(server);
   rmSync(join(dir, "vault", "b.md"));
-  server = await serve(dir, port);
+  server = await serve(dir, server!.port);
   await expect.poll(() => cached(page, "/b"), { timeout: 15_000 }).toBeNull();
 });
 
@@ -116,7 +117,7 @@ test("a sync records the version it fetched, not the one listed", async ({ page,
   await expect.poll(() => cached(page, "/b")).toContain("raced text");
   await context.unroute(/\/b$/);
   await stop(server!);
-  server = await serve(dir, port);
+  server = await serve(dir, server!.port);
   await expect.poll(() => cached(page, "/b"), { timeout: 15_000 }).toContain("bee text");
 });
 
@@ -140,7 +141,7 @@ test("an image opened once loads offline", async ({ page }) => {
   writeFileSync(join(dir, "vault", "dot.gif"), gif);
   note("pic", "# Pic\n\n![[dot.gif]]\n");
   await stop(server!);
-  server = await serve(dir, port);
+  server = await serve(dir, server!.port);
   await visit(page, "/a");
   await page.goto(base + "/pic");
   await expect.poll(() => cached(page, "/dot.gif")).not.toBeNull();
