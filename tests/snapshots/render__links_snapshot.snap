@@ -9,8 +9,9 @@ expression: "built(\"notes/links\")"
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark light">
 <link rel="manifest" href="/.tachylite/app.webmanifest">
+<link rel="icon" href="/.tachylite/icon.svg">
 <link rel="stylesheet" href="/.tachylite/style.css">
-<meta name="tachylite-version" content="97f3a238f26b3303">
+<meta name="tachylite-version" content="676ebcc40ecbd062">
 <title>links</title>
 <script src="/.tachylite/live.js" defer></script>
 </head>
