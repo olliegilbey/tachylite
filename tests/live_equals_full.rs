@@ -124,17 +124,21 @@ fn apply(vault: &Path, op: &Op) {
     }
 }
 
+/// Every file under `root` with its bytes. A file removed during the walk is left out.
 fn tree(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     let mut found = BTreeMap::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        for item in fs::read_dir(&dir).unwrap() {
-            let path = item.unwrap().path();
+        let Ok(items) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for item in items.flatten() {
+            let path = item.path();
             if path.is_dir() {
                 stack.push(path);
-            } else {
+            } else if let Ok(bytes) = fs::read(&path) {
                 let rel = path.strip_prefix(root).unwrap().to_path_buf();
-                found.insert(rel, fs::read(&path).unwrap());
+                found.insert(rel, bytes);
             }
         }
     }
@@ -145,7 +149,7 @@ fn cases() -> u32 {
     std::env::var("LIVE_CASES")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(8)
+        .unwrap_or(256)
 }
 
 proptest! {
@@ -155,7 +159,8 @@ proptest! {
     fn live_output_equals_full_build(ops in prop::collection::vec((op(), any::<bool>()), 1..12)) {
         let d = Dirs::empty();
         fs::write(d.vault().join("zz-barrier.md"), "# 0").unwrap();
-        let server = Server::start(&d.vault(), &d.out());
+        // A short hold, so a case does not wait out a second for a note in a new folder.
+        let server = Server::start_with(&d.vault(), &d.out(), &[("TACHYLITE_HOLD_MS", "20")]);
         let mut barrier = server.subscribe("/zz-barrier", "", None);
         barrier.expect("page");
         // inotify keeps order and batches apply in order, so once the barrier's push
@@ -166,7 +171,7 @@ proptest! {
             loop {
                 let event = barrier.expect("page");
                 if event.data.contains(&heading) {
-                    return event.id.unwrap_or_default();
+                    return;
                 }
             }
         };
@@ -178,23 +183,23 @@ proptest! {
                 settle(&format!("s{i}"));
             }
         }
-        // The manifest follows the apply's pushes, so wait for it to list the last barrier.
-        let last = format!("\"/zz-barrier\":\"{}\"", settle("done"));
-        let manifest = d.out().join(tachylite::site::MANIFEST);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while !fs::read_to_string(&manifest).is_ok_and(|m| m.contains(&last)) {
-            prop_assert!(std::time::Instant::now() < deadline, "no manifest lists {}", last);
-            std::thread::yield_now();
-        }
-
+        settle("done");
         let fresh = d.tmp.path().join("fresh");
         tachylite::build::build(&d.vault(), &fresh).unwrap();
-        let live = tree(&d.out());
+        // The last pushes may precede their writes, and a path held as mid-save is read
+        // when its hold ends, so wait for the live output to match.
         let full = tree(&fresh);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut live = tree(&d.out());
+        while live != full && std::time::Instant::now() < deadline {
+            std::thread::yield_now();
+            live = tree(&d.out());
+        }
         prop_assert_eq!(
             live.keys().collect::<Vec<_>>(),
             full.keys().collect::<Vec<_>>()
         );
-        prop_assert!(live == full, "same files, different bytes");
+        let differs = live.iter().find(|(path, bytes)| full.get(*path) != Some(*bytes));
+        prop_assert!(differs.is_none(), "{:?} differs", differs.map(|(path, _)| path));
     }
 }
