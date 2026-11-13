@@ -199,7 +199,8 @@ fn idle_cpu() {
         "an idle server pushed"
     );
     let used = cpu_ticks(pid) - before;
-    let woken = wakeups(pid) - woke;
+    // A thread that exits takes its counts with it, so this can shrink.
+    let woken = wakeups(pid).saturating_sub(woke);
     println!("idle CPU over 5 s: {used} ticks (limit 2), {woken} wakeups (limit 5)");
     assert!(used <= 2);
     assert!(woken <= 5, "an idle server woke {woken} times");

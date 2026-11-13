@@ -13,11 +13,15 @@ export function serve(dir: string, port = 0): Promise<Server> {
   const child = spawn(binary, ["serve", join(dir, "vault"), join(dir, "out"), "--port", `${port}`]);
   return new Promise((resolve, reject) => {
     let log = "";
-    child.stderr!.on("data", (chunk: Buffer) => {
+    const read = (chunk: Buffer) => {
       log += chunk.toString();
       const at = /serving (http:\/\/127\.0\.0\.1:(\d+))/.exec(log);
-      if (at) resolve({ child, port: Number(at[2]), base: at[1] });
-    });
+      if (!at) return;
+      // Keep draining stderr, but stop holding it.
+      child.stderr!.off("data", read).resume();
+      resolve({ child, port: Number(at[2]), base: at[1] });
+    };
+    child.stderr!.on("data", read);
     child.on("exit", (code) => reject(new Error(`serve exited with ${code}: ${log}`)));
   });
 }

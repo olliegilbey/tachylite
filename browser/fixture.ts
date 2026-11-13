@@ -1,7 +1,8 @@
 import { expect, test as base } from "@playwright/test";
 
 /** The run's directory, and the shared server's address, from `global-setup.ts`. */
-export const run = process.env.TACHYLITE_RUN!;
+// Empty when a tool loads the specs without running the global setup, as `--list` does.
+export const run = process.env.TACHYLITE_RUN ?? "";
 
 /** What a browser logs when a test stops the server: a cut stream and refused retries. */
 export const lost = /net::ERR_(INCOMPLETE_CHUNKED_ENCODING|CONNECTION_REFUSED)/;
