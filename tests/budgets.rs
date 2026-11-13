@@ -39,6 +39,8 @@ fn cold_full_build_2000_notes() {
 mod common;
 
 use std::fs;
+use std::os::unix::fs::MetadataExt;
+use std::path::Path;
 
 use common::{Server, version_of};
 
@@ -78,6 +80,63 @@ fn cpu_ticks(pid: u32) -> u64 {
     fields[11].parse::<u64>().unwrap() + fields[12].parse::<u64>().unwrap()
 }
 
+/// Prints a timed budget's spread, then asserts its median within `limit` and its 90th
+/// percentile within twice that: the tail absorbs a scheduler hiccup, not a regression.
+fn assert_timed(what: &str, mut times: Vec<Duration>, limit: Duration) {
+    times.sort();
+    let at = |q: f64| times[((times.len() - 1) as f64 * q).round() as usize];
+    let (median, p90) = (at(0.5), at(0.9));
+    println!(
+        "{what}: min {} µs, q1 {} µs, median {} µs, p90 {} µs, max {} µs \
+         (limit {} ms, p90 limit {} ms)",
+        times[0].as_micros(),
+        at(0.25).as_micros(),
+        median.as_micros(),
+        p90.as_micros(),
+        times[times.len() - 1].as_micros(),
+        limit.as_millis(),
+        (2 * limit).as_millis()
+    );
+    assert!(median <= limit, "{what}: median over the limit");
+    assert!(p90 <= 2 * limit, "{what}: p90 over twice the limit");
+}
+
+fn push_limit() -> Duration {
+    Duration::from_secs_f64(0.010 * scale())
+}
+
+fn dependents_limit() -> Duration {
+    Duration::from_secs_f64(0.250 * scale())
+}
+
+/// Waits until the manifest in `out` lists `url` at `version`. The manifest is written
+/// last, so every page of its apply is written by then.
+fn await_manifest(out: &Path, url: &str, version: &str) {
+    let manifest = out.join("files/.tachylite/manifest.json");
+    let needle = format!("\"{url}\":\"{version}\"");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    // It is replaced by rename, so it is reread only when its inode, size or time moves.
+    let mut seen = None;
+    loop {
+        let stamp = fs::metadata(&manifest)
+            .ok()
+            .map(|m| (m.ino(), m.len(), m.mtime_nsec()));
+        if stamp != seen {
+            seen = stamp;
+            if fs::read_to_string(&manifest).is_ok_and(|m| m.contains(&needle)) {
+                return;
+            }
+        }
+        assert!(Instant::now() < deadline, "the manifest never listed {url}");
+        std::thread::yield_now();
+    }
+}
+
+/// The page event's version.
+fn version(event: &common::SseEvent) -> String {
+    event.id.clone().expect("a page event has an id")
+}
+
 #[test]
 #[ignore = "budget: run with make budget or make check"]
 fn push_latency() {
@@ -95,17 +154,10 @@ fn push_latency() {
         let event = events.expect("page");
         times.push(start.elapsed());
         assert!(event.data.contains(&format!("edit {i}")));
+        // Each save starts once the last apply is done, as a person's next save would.
+        await_manifest(&dir.path().join("out"), &page, &version(&event));
     }
-    times.sort();
-    let median = times[times.len() / 2];
-    let limit = Duration::from_secs_f64(0.010 * scale());
-    println!(
-        "file event to push, budget vault: median {} µs, max {} µs (limit {} ms)",
-        median.as_micros(),
-        times[times.len() - 1].as_micros(),
-        limit.as_millis()
-    );
-    assert!(median <= limit);
+    assert_timed("file event to push, budget vault", times, push_limit());
 }
 
 /// The budget vault's note with the most inbound links, by its links as the site resolves them.
@@ -132,13 +184,14 @@ fn most_linked() -> String {
 fn dependent_push_latency() {
     let dir = tempfile::tempdir().unwrap();
     let (server, _) = budget_server(dir.path());
+    let out = dir.path().join("out");
     let target = most_linked();
     let page = url(&target);
     let mut events = server.subscribe(&page, &version_of(&server.get(&page).text()), None);
     let linker = dir.path().join("vault/linker.md");
     let mut created = server.subscribe("/linker", "", None);
     fs::write(&linker, "no link yet").unwrap();
-    created.expect("page");
+    await_manifest(&out, "/linker", &version(&created.expect("page")));
 
     let link = format!("[[{}]]", &target[..target.len() - ".md".len()]);
     let backlink = "<li><a href=\"/linker\">linker</a></li>";
@@ -153,19 +206,162 @@ fn dependent_push_latency() {
         fs::write(&linker, body).unwrap();
         let start = Instant::now();
         let event = events.expect("page");
-        times.push(start.elapsed());
         assert_eq!(event.data.contains(backlink), adds, "round {i}");
+        await_manifest(&out, &page, &version(&event));
+        times.push(start.elapsed());
     }
-    times.sort();
-    let median = times[times.len() / 2];
-    let limit = Duration::from_secs_f64(0.250 * scale());
-    println!(
-        "link edit to the target's push, budget vault: median {} µs, max {} µs (limit {} ms)",
-        median.as_micros(),
-        times[times.len() - 1].as_micros(),
-        limit.as_millis()
+    assert_timed(
+        "link edit to the target's push and manifest, budget vault",
+        times,
+        dependents_limit(),
     );
-    assert!(median <= limit);
+}
+
+/// Every `step`th budget-vault note path, up to `n` of them.
+fn spread(n: usize, step: usize) -> Vec<String> {
+    tachylite::budget_vault::generate(1, 2000)
+        .into_iter()
+        .map(|(path, _)| path)
+        .filter(|p| p.ends_with(".md"))
+        .step_by(step)
+        .take(n)
+        .collect()
+}
+
+#[test]
+#[ignore = "budget: run with make budget or make check"]
+fn embedded_push_latency() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = dir.path().join("vault");
+    let out = dir.path().join("out");
+    tachylite::budget_vault::write(&vault, 1, 2000).unwrap();
+    let embedded = vault.join("embedded.md");
+    fs::write(&embedded, "# embedded").unwrap();
+    // A hundred budget-vault notes, each at its own size, embed it.
+    let embedders = spread(100, 19);
+    for path in &embedders {
+        let mut text = fs::read_to_string(vault.join(path)).unwrap();
+        text.push_str("\n\n![[embedded]]\n");
+        fs::write(vault.join(path), text).unwrap();
+    }
+    let server = Server::start(&vault, &out);
+    let mut own = server.subscribe(
+        "/embedded",
+        &version_of(&server.get("/embedded").text()),
+        None,
+    );
+    let last = url(embedders.iter().max().unwrap());
+    let mut dependent = server.subscribe(&last, &version_of(&server.get(&last).text()), None);
+
+    let (mut pushes, mut dependents) = (Vec::new(), Vec::new());
+    for i in 0..30 {
+        fs::write(&embedded, format!("# embedded\n\nedit {i}\n")).unwrap();
+        let start = Instant::now();
+        let event = own.expect("page");
+        pushes.push(start.elapsed());
+        assert!(event.data.contains(&format!("edit {i}")));
+        let event = dependent.expect("page");
+        assert!(event.data.contains(&format!("edit {i}")), "round {i}");
+        await_manifest(&out, &last, &version(&event));
+        dependents.push(start.elapsed());
+    }
+    assert_timed(
+        "file event to push, note embedded by 100 notes",
+        pushes,
+        push_limit(),
+    );
+    assert_timed(
+        "file event to the embedders' push and manifest, 100 embedders",
+        dependents,
+        dependents_limit(),
+    );
+}
+
+#[test]
+#[ignore = "budget: run with make budget or make check"]
+fn fan_out_latency() {
+    let dir = tempfile::tempdir().unwrap();
+    let (server, _) = budget_server(dir.path());
+    let out = dir.path().join("out");
+    let targets = spread(500, 4);
+    let links: String = targets
+        .iter()
+        .map(|t| format!("[[{}]]\n", &t[..t.len() - ".md".len()]))
+        .collect();
+    let last = url(targets.iter().max().unwrap());
+    let mut target = server.subscribe(&last, &version_of(&server.get(&last).text()), None);
+    let fan = dir.path().join("vault/fan.md");
+
+    // Each round creates the note, retitles it twice, then deletes it.
+    let mut times = Vec::new();
+    for i in 0..24 {
+        let (body, backlink) = match i % 4 {
+            3 => (None, None),
+            r => {
+                let title = format!("fan {i}");
+                let body = match r {
+                    0 => links.clone(),
+                    _ => format!("---\ntitle: {title}\n---\n{links}"),
+                };
+                let shown = if r == 0 { "fan".to_string() } else { title };
+                (Some(body), Some(format!("<a href=\"/fan\">{shown}</a>")))
+            }
+        };
+        match &body {
+            Some(body) => fs::write(&fan, body).unwrap(),
+            None => fs::remove_file(&fan).unwrap(),
+        }
+        let start = Instant::now();
+        let event = target.expect("page");
+        match &backlink {
+            Some(b) => assert!(event.data.contains(b), "round {i}"),
+            None => assert!(!event.data.contains("href=\"/fan\""), "round {i}"),
+        }
+        await_manifest(&out, &last, &version(&event));
+        times.push(start.elapsed());
+    }
+    assert_timed(
+        "note with 500 links created, retitled or deleted, to the targets' push and manifest",
+        times,
+        dependents_limit(),
+    );
+}
+
+#[test]
+#[ignore = "budget: run with make budget or make check"]
+fn burst_latency() {
+    let dir = tempfile::tempdir().unwrap();
+    let (server, _) = budget_server(dir.path());
+    let out = dir.path().join("out");
+    let notes = spread(20, 97);
+    let vault = dir.path().join("vault");
+    let bases: Vec<String> = notes
+        .iter()
+        .map(|n| fs::read_to_string(vault.join(n)).unwrap())
+        .collect();
+    let last = url(&notes[notes.len() - 1]);
+    let mut events = server.subscribe(&last, &version_of(&server.get(&last).text()), None);
+
+    let mut times = Vec::new();
+    for i in 0..10 {
+        let start = Instant::now();
+        for (note, base) in notes.iter().zip(&bases) {
+            fs::write(vault.join(note), format!("{base}\n\nburst {i}\n")).unwrap();
+        }
+        let event = loop {
+            let event = events.expect("page");
+            if event.data.contains(&format!("burst {i}")) {
+                break event;
+            }
+        };
+        await_manifest(&out, &last, &version(&event));
+        times.push(start.elapsed());
+    }
+    assert_timed(
+        "burst of 20 saves to the last push and manifest",
+        times,
+        dependents_limit(),
+    );
 }
 
 /// Context switches summed over every thread: each wakeup costs one.

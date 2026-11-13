@@ -323,8 +323,13 @@ impl Events {
     }
 
     pub fn expect(&mut self, name: &str) -> SseEvent {
+        self.expect_within(name, Duration::from_secs(10))
+    }
+
+    /// Like `expect`, for an event behind slow work, such as a debug build's resync.
+    pub fn expect_within(&mut self, name: &str, within: Duration) -> SseEvent {
         let event = self
-            .next(Duration::from_secs(10))
+            .next(within)
             .unwrap_or_else(|| panic!("no {name} event"));
         assert_eq!(event.name, name, "{event:?}");
         event

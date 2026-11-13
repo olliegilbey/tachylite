@@ -58,7 +58,8 @@ pub fn build(vault: &Path, out: &Path) -> Result<Summary, Error> {
     output::prepare(&out)?;
 
     let mut writer = Writer::new(&out, &dir, |_| {});
-    let report = Site::new(config.exclude).apply_to(
+    let mut site = Site::new(config.exclude);
+    let report = site.apply_to(
         vec![Change::Sync {
             under: String::new(),
             entries: scan.entries,
@@ -66,6 +67,7 @@ pub fn build(vault: &Path, out: &Path) -> Result<Summary, Error> {
         &mut &dir,
         &mut writer,
     );
+    site.derive_to(&mut writer);
     let (notes, copies) = (writer.pages, writer.copies);
     let failed = writer.finish()?;
     let mut skipped = scan.skipped;
