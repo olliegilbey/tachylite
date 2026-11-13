@@ -53,9 +53,11 @@ impl Source for &VaultDir {
     }
 }
 
-/// Where `Site::apply_to` sends output, as it makes it: deletes first, then gone pushes,
-/// then writes, each page's write followed by its push. Paths are relative to the output
-/// directory. Streaming means a full sync never holds every page at once.
+/// Where `Site::apply_to` sends output, as it makes it. Removed vault files come first: their
+/// deletes, then their gone pushes. Then the vault files' writes, then the index pages'
+/// deletes and gone pushes, then their writes, then the manifest last. Each page's write is
+/// followed by its push. Paths are relative to the output directory. Streaming means a full
+/// sync never holds every page at once.
 pub trait Sink {
     fn delete(&mut self, out: String);
     fn write(&mut self, write: Write);
