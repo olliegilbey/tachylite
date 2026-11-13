@@ -57,3 +57,83 @@ fn a_pattern_that_names_nothing_is_an_error() {
         assert!(Exclude::new(&[glob.to_string()]).is_err(), "{glob:?}");
     }
 }
+
+use tachylite::config::{ConfigError, parse};
+
+#[test]
+fn exclusion_ignores_case_like_the_publish_list() {
+    let e = with(&["journal/*.md", "Private"]);
+    assert!(e.path("journal/Day.MD"));
+    assert!(e.path("JOURNAL/day.md"));
+    assert!(e.path("private/a.md"));
+}
+
+#[test]
+fn an_unknown_key_is_refused() {
+    for (text, key) in [
+        ("excludes = [\"private\"]\n", "excludes"),
+        ("Exclude = [\"private\"]\n", "Exclude"),
+        ("[private]\n", "private"),
+    ] {
+        assert_eq!(
+            parse(text).unwrap_err(),
+            ConfigError::UnknownKey(key.into()),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn the_designed_keys_are_accepted() {
+    let text = "exclude = [\"private\"]\ntitle = \"Notes\"\npins = [\"[[a]]\"]\n\
+                hosts = [\"box.example.ts.net\"]\n[daily]\nfolder = \"journal\"\n";
+    let config = parse(text).unwrap();
+    assert!(config.exclude.path("private/a.md"));
+    assert_eq!(config.hosts, Some(vec!["box.example.ts.net".to_string()]));
+    assert_eq!(parse("").unwrap().hosts, None);
+}
+
+#[test]
+fn exclude_inside_a_table_is_refused() {
+    for text in [
+        "[daily]\nfolder = \"journal\"\n\nexclude = [\"private\"]\n",
+        "daily = { exclude = [\"private\"] }\n",
+        "[daily.deep]\nexclude = [\"private\"]\n",
+    ] {
+        assert!(
+            matches!(parse(text), Err(ConfigError::Nested { .. })),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn exclude_and_hosts_must_be_lists_of_strings() {
+    for text in ["exclude = \"private\"\n", "hosts = [1]\n"] {
+        assert!(
+            matches!(parse(text), Err(ConfigError::NotStrings(_))),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn a_pattern_with_a_parent_segment_is_an_error() {
+    for glob in ["../vault/private", "a/../b"] {
+        assert!(
+            matches!(
+                Exclude::new(&[glob.to_string()]),
+                Err(ConfigError::ParentGlob(_))
+            ),
+            "{glob}"
+        );
+    }
+}
+
+#[test]
+fn a_pattern_that_matched_nothing_is_named() {
+    let e = with(&["private", " private"]);
+    assert!(e.path("private/a.md"));
+    assert!(!e.path("public/a.md"));
+    assert_eq!(e.unmatched(), vec![" private"]);
+}

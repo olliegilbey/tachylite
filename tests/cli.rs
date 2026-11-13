@@ -79,3 +79,73 @@ fn build_error_exits_1() {
     assert_eq!(run.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&run.stderr).starts_with("error: "));
 }
+
+fn build_with_config(config: &str) -> (std::process::Output, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = dir.path().join("vault");
+    std::fs::create_dir_all(vault.join("private")).unwrap();
+    std::fs::write(vault.join("private/secret.md"), "# secret").unwrap();
+    std::fs::write(vault.join("journal.MD"), "# journal").unwrap();
+    std::fs::write(vault.join("a.md"), "# a").unwrap();
+    std::fs::write(vault.join("tachylite.toml"), config).unwrap();
+    let run = Command::new(env!("CARGO_BIN_EXE_tachylite"))
+        .args([
+            "build".as_ref(),
+            vault.as_os_str(),
+            dir.path().join("out").as_os_str(),
+        ])
+        .output()
+        .unwrap();
+    (run, dir)
+}
+
+#[test]
+fn a_misplaced_or_mistyped_exclude_stops_the_build_with_one_line() {
+    for config in [
+        "excludes = [\"private\"]\n",
+        "[daily]\nfolder = \"journal\"\n\nexclude = [\"private\"]\n",
+        "exclude = [\"../vault/private\"]\n",
+    ] {
+        let (run, dir) = build_with_config(config);
+        assert_eq!(run.status.code(), Some(1), "{config}");
+        let stderr = String::from_utf8_lossy(&run.stderr);
+        assert_eq!(stderr.lines().count(), 1, "{stderr}");
+        assert!(stderr.starts_with("error: tachylite.toml: "), "{stderr}");
+        assert!(!dir.path().join("out").exists(), "{config}");
+    }
+}
+
+#[test]
+fn an_exclude_pattern_that_matches_nothing_is_named() {
+    let (run, dir) = build_with_config("exclude = [\"private\", \" private\", \"*.md\"]\n");
+    assert_eq!(run.status.code(), Some(0));
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        stderr.contains("exclude \" private\" matched no path"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("exclude \"private\" matched"), "{stderr}");
+    // `*.md` ignores case, as the publish list does.
+    assert!(!dir.path().join("out/pages/journal.html").exists());
+}
+
+#[test]
+fn an_unreadable_config_names_the_reason_in_words() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = dir.path().join("vault");
+    std::fs::create_dir(&vault).unwrap();
+    std::fs::write(dir.path().join("real.toml"), "exclude = []\n").unwrap();
+    std::os::unix::fs::symlink("../real.toml", vault.join("tachylite.toml")).unwrap();
+    let run = Command::new(env!("CARGO_BIN_EXE_tachylite"))
+        .args([
+            "build".as_ref(),
+            vault.as_os_str(),
+            dir.path().join("out").as_os_str(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&run.stderr),
+        "error: tachylite.toml: symlink\n"
+    );
+}
