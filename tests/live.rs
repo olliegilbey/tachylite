@@ -662,7 +662,8 @@ fn a_config_saved_then_truncated_in_one_batch_publishes_nothing() {
 
 #[test]
 fn a_config_truncated_after_its_reload_was_queued_publishes_nothing() {
-    // Each filler save queues three events of 32 bytes: more than the server reads at once.
+    // Each filler save queues CREATE, MODIFY and CLOSE_WRITE, 32 bytes each, as the root's
+    // watch takes MODIFY: some 190 KB, more than the server's 64 KiB read.
     config_read_mid_save_publishes_nothing(2_000);
 }
 

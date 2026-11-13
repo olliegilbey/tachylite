@@ -198,10 +198,24 @@ pub fn load(vault: &VaultDir) -> Result<Config, Error> {
             .flatten()
             .filter_map(|item| item.file_name().into_string().ok())
             .filter(|name| name != FILE && name.eq_ignore_ascii_case(FILE))
+            .filter(|name| !same_file(vault, name))
             .collect();
         crate::report::misnamed(&misnamed);
     }
     reload(vault).map(Option::unwrap_or_default)
+}
+
+/// Whether `name` is the config itself, as on a file system that folds case.
+fn same_file(vault: &VaultDir, name: &str) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let ino = |n: &str| {
+        vault
+            .root()
+            .join(n)
+            .symlink_metadata()
+            .map(|m| (m.dev(), m.ino()))
+    };
+    matches!((ino(name), ino(FILE)), (Ok(a), Ok(b)) if a == b)
 }
 
 /// Reads the config like `load`, but `None` when the file is missing or mid-save. A running

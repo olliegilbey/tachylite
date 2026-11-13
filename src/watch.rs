@@ -346,10 +346,19 @@ impl Watcher {
             }
             paths.insert(path);
         }
-        if reload && self.reload_config()? == Reload::Loaded {
-            let resync = self.resync(removed);
-            report::unmatched(&self.site.exclude().unmatched());
-            return resync;
+        if reload {
+            let previous = self.site.exclude().clone();
+            if self.reload_config()? == Reload::Loaded {
+                let (changes, removed) = self.resync(removed)?;
+                // A write's event lands a moment after its bytes, so a writer stalled in
+                // between got past the first check. The scan gave it time to queue.
+                if self.config_written()? {
+                    self.site.set_exclude(previous);
+                    return self.resync(removed);
+                }
+                report::unmatched(&self.site.exclude().unmatched());
+                return Ok((changes, removed));
+            }
         }
 
         // The folders as they stand now, each once: a parent's sync covers its children.
@@ -397,8 +406,8 @@ impl Watcher {
     /// Rereads `tachylite.toml`. A missing, broken or mid-save file keeps the previous config.
     fn reload_config(&mut self) -> Result<Reload, Error> {
         let read = config::reload(&self.vault);
-        // The kernel queues IN_MODIFY for each truncate and write as it lands. One queued
-        // after the read means the read may have seen the file empty or half written.
+        // The kernel queues IN_MODIFY for each truncate and write just after it lands. One
+        // queued after the read means the read may have seen the file empty or half written.
         if self.config_written()? {
             return Ok(Reload::MidSave);
         }
@@ -453,7 +462,11 @@ impl Watcher {
             | ReadFlags::MOVED_FROM;
         loop {
             let since = &self.pending[from..];
-            let last = since.iter().rev().find(|e| self.names_config(e));
+            // An attribute change says nothing about a save in progress.
+            let last = since
+                .iter()
+                .rev()
+                .find(|e| !e.flags.contains(ReadFlags::ATTRIB) && self.names_config(e));
             if last.is_some_and(|e| e.flags.intersects(closed))
                 || since
                     .iter()
@@ -718,6 +731,20 @@ mod tests {
         watcher.await_config_close(from).unwrap();
         assert_eq!(watcher.reload_config().unwrap(), Reload::Loaded);
         assert!(watcher.site.exclude().path("e/n.md"));
+    }
+
+    #[test]
+    fn start_up_takes_a_save_followed_by_an_attribute_change_as_closed() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_tmp, vault) = vault();
+        let toml = vault.join(config::FILE);
+        fs::write(&toml, "exclude = []\n").unwrap();
+        let mut watcher = watcher(&vault);
+        let from = watcher.pending.len();
+        fs::write(&toml, "exclude = [\"d\"]\n").unwrap();
+        fs::set_permissions(&toml, fs::Permissions::from_mode(0o644)).unwrap();
+        // Hangs if the attribute change hides the close.
+        watcher.await_config_close(from).unwrap();
     }
 
     #[test]
