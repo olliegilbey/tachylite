@@ -78,9 +78,10 @@ pub struct Report {
     pub skipped: Vec<Skipped>,
     /// The broken links of every note rendered for its own change or a link target's.
     pub broken: Vec<Broken>,
-    /// Whether the apply unpublished a path the config now excludes. Its index entries
-    /// must go at once, so the caller derives without waiting for its queue to drain.
-    pub excluded: bool,
+    /// Whether the apply unpublished a path. It may be excluded now, or moved into an
+    /// excluded folder, so the caller derives at once rather than wait for its queue to
+    /// drain, and no index page keeps it.
+    pub unpublished: bool,
 }
 
 /// All of an apply's output and its report, collected.
@@ -218,6 +219,8 @@ pub struct Site {
     listed: bool,
     /// Whether an apply changed what the manifest lists since it was written.
     unlisted: bool,
+    /// Whether an apply ran since the last derive.
+    due: bool,
 }
 
 /// One note's outgoing links.
@@ -367,6 +370,7 @@ impl Site {
         source: &mut impl Source,
         sink: &mut impl Sink,
     ) -> Report {
+        self.due = true;
         let mut report = Report::default();
         let mut touched = BTreeSet::new();
         for change in changes {
@@ -457,7 +461,7 @@ impl Site {
             let kind = classify(path, &Exclude::default()).unwrap_or(Kind::Asset);
             let (_, out) = claim(path, kind);
             sink.delete(out);
-            report.excluded |= self.exclude.path(path);
+            report.unpublished = true;
             self.unlisted |= kind != Kind::Note;
             if kind == Kind::Note {
                 self.unlisted |= self.versions.remove(path).is_some();
@@ -593,6 +597,10 @@ impl Site {
     /// since the last derive changed what they show. The watcher calls it once its queue is
     /// empty, so a burst of saves pays it once; a full build calls it after its one apply.
     pub fn derive_to(&mut self, sink: &mut impl Sink) {
+        if !self.due && self.listed {
+            return;
+        }
+        self.due = false;
         let won = std::mem::take(&mut self.winners);
         self.unlisted |= self.indexes(&won, sink);
         if self.unlisted || !self.listed {

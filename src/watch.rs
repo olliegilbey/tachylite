@@ -44,6 +44,9 @@ const MASK: WatchFlags = WatchFlags::CLOSE_WRITE
 /// none, and neither does a note closed before its new folder's watch existed.
 const HOLD: Duration = Duration::from_secs(1);
 
+/// The longest a burst of events holds back the index pages and the manifest.
+const DERIVE_MAX: Duration = Duration::from_secs(1);
+
 /// Sets the hold in milliseconds, so property tests do not wait out a second per case.
 const HOLD_ENV: &str = "TACHYLITE_HOLD_MS";
 
@@ -64,6 +67,8 @@ pub struct Watcher {
     /// Paths that may be mid-save, each with the time it is read as saved anyway.
     held: HashMap<String, Instant>,
     hold: Duration,
+    /// When index pages were last derived.
+    derived: Instant,
 }
 
 fn join(dir: &str, name: &str) -> String {
@@ -133,6 +138,7 @@ impl Watcher {
                 .ok()
                 .and_then(|ms| ms.parse().ok())
                 .map_or(HOLD, Duration::from_millis),
+            derived: Instant::now(),
         };
         watcher.watch_tree("")?;
         // A config saved before the root watch existed sent no event.
@@ -151,10 +157,11 @@ impl Watcher {
         loop {
             let result = self.read_batch(&mut buf).and_then(|(events, drained)| {
                 let (changes, removed) = self.changes(events)?;
-                let excluded = self.apply(changes, removed)?;
+                let unpublished = self.apply(changes, removed)?;
                 // Index pages wait until no event is queued, so a burst derives them once.
-                // A newly excluded note leaves them at once.
-                if drained || excluded {
+                // An unpublished page leaves them at once, and a long burst still derives
+                // them every `DERIVE_MAX`.
+                if drained || unpublished || self.derived.elapsed() >= DERIVE_MAX {
                     self.derive()?;
                 }
                 if drained {
@@ -442,7 +449,7 @@ impl Watcher {
         Ok(())
     }
 
-    /// Applies a batch. Returns whether it unpublished a path the config now excludes.
+    /// Applies a batch. Returns whether it unpublished a path.
     fn apply(&mut self, changes: Vec<Change>, removed: HashSet<String>) -> Result<bool, Error> {
         if changes.is_empty() {
             return Ok(false);
@@ -458,13 +465,15 @@ impl Watcher {
         report::skipped(&report.skipped);
         report::skipped(&failed);
         report::broken(&report.broken);
-        Ok(report.excluded)
+        Ok(report.unpublished)
     }
 
     /// Writes the index pages and the manifest that the applies since the last left due.
     fn derive(&mut self) -> Result<(), Error> {
+        self.derived = Instant::now();
         let mut writer = writer(&self.out, &self.vault, &self.live);
         self.site.derive_to(&mut writer);
+        // A derive copies no vault file, so it skips none.
         writer.finish().map(|_| ())
     }
 }

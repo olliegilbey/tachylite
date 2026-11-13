@@ -115,12 +115,14 @@ fn await_manifest(out: &Path, url: &str, version: &str) {
     let manifest = out.join("files/.tachylite/manifest.json");
     let needle = format!("\"{url}\":\"{version}\"");
     let deadline = Instant::now() + Duration::from_secs(10);
-    // It is replaced by rename, so a new inode means a new manifest.
+    // It is replaced by rename, so it is reread only when its inode, size or time moves.
     let mut seen = None;
     loop {
-        let ino = fs::metadata(&manifest).ok().map(|m| m.ino());
-        if ino != seen {
-            seen = ino;
+        let stamp = fs::metadata(&manifest)
+            .ok()
+            .map(|m| (m.ino(), m.len(), m.mtime_nsec()));
+        if stamp != seen {
+            seen = stamp;
             if fs::read_to_string(&manifest).is_ok_and(|m| m.contains(&needle)) {
                 return;
             }

@@ -420,16 +420,16 @@ fn synced(mem: &mut Mem, exclude: Exclude) -> (Site, Delta) {
 }
 
 #[test]
-fn an_apply_says_when_it_unpublished_an_excluded_note() {
+fn an_apply_says_when_it_unpublished_a_page() {
     let mut mem = Mem::with(&[("a.md", "# a"), ("d/n.md", "# n")]);
     let (mut site, _) = synced(&mut mem, Exclude::default());
-    mem.0.remove("a.md");
+    mem.0.insert("a.md".into(), b"# a2".to_vec());
     let mut delta = Delta::default();
     let report = site.apply_to(vec![touch("a.md")], &mut mem.clone(), &mut delta);
-    assert!(!report.excluded, "a delete is not an exclusion");
+    assert!(!report.unpublished, "an edit unpublishes nothing");
     site.set_exclude(Exclude::new(&["d".to_string()]).unwrap());
     let report = site.apply_to(vec![sync_all(&mem)], &mut mem.clone(), &mut delta);
-    assert!(report.excluded);
+    assert!(report.unpublished);
 }
 
 #[test]
