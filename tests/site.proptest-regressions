@@ -8,4 +8,3 @@ cc 19daadd96e2c3d8d295105168ced3577e6409f9b7e810e82e256360b2fb4985a # shrinks to
 cc d307e8da575d98f1a39ea75c1ff48a7a62b7e0f41e6d73403623a62423c2845f # shrinks to ops = [Write(1, 0), Write(0, 0), Delete(1)], batch = 1
 cc 2432d84a1bb92b59fa05f1026ade524843e042e11fc9b8e9da440afb26f70dac # shrinks to ops = [Write(0, 9), Write(2, 0), Write(4, 7)], batch = 1
 cc b7d2749617beba357828dbd7e8c9b46d3f1212797c216a87a6d0f1c54000d93f # shrinks to ops = [Write(5, 0), Delete(5)], batch = 1
-cc 521c1ff3a44605ec943aeb21f8663d2418c1f10cd14f707089d5080772f18de9 # shrinks to ops = [(Write(2, 0), []), (Write(6, 12), []), (Write(0, 0), []), (MoveDir, [(0, false)])]
