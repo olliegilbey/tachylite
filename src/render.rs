@@ -197,14 +197,14 @@ enum Embed {
     Link(String),
 }
 
-/// `![[raw]]` from `from`, at `depth` levels of embedding, with `label` as its text.
-/// `seen` holds the notes already on the page; each is transcluded once.
+/// `![[raw]]` from `from`, at `depth` levels of embedding, with `label` as its text. Without
+/// `block` room it is no `Embed::Block`. `seen` holds the notes already on the page; each is
+/// transcluded once.
 fn embed(
     body: &mut Body,
     (from, index, sources): (&str, &Index, &Sources),
     (depth, seen): (usize, &mut HashSet<String>),
-    raw: &str,
-    label: &str,
+    (raw, label, block): (&str, &str, bool),
 ) -> Embed {
     let (path, heading) = split(raw);
     let path = path.trim();
@@ -234,13 +234,13 @@ fn embed(
         }
         // The frame is network-only, as the worker never sees an opaque origin's requests.
         // Opened full screen, the page is cached and works offline.
-        Some(Kind::Html) => Embed::Block(format!(
+        Some(Kind::Html) if block => Embed::Block(format!(
             "<iframe class=\"embed-html\" sandbox=\"allow-scripts\" src=\"{src}\" \
              loading=\"lazy\"></iframe>\n\
              <p class=\"embed-open\"><a href=\"{src}\">Open {} full screen</a></p>\n",
             escape(target.rsplit('/').next().unwrap_or(&target))
         )),
-        Some(Kind::Note) if depth < EMBED_DEPTH && !seen.contains(&*target) => {
+        Some(Kind::Note) if block && depth < EMBED_DEPTH && !seen.contains(&*target) => {
             let Some(bytes) = sources.get(&*target) else {
                 body.missing.insert(target);
                 return link(body);
@@ -573,12 +573,20 @@ fn render(
     }
     for (node, raw) in embeds {
         let label = node.collect_text();
+        // A block fits in a paragraph, which it splits, or in a table cell. Inline text and
+        // a title hold none, so there it is a link.
+        let block = node.parent().is_some_and(|p| match p.data().value {
+            NodeValue::TableCell => true,
+            NodeValue::Paragraph => !p
+                .parent()
+                .is_some_and(|t| matches!(t.data().value, NodeValue::CalloutTitle)),
+            _ => false,
+        });
         match embed(
             &mut body,
             (from, index, sources),
             (depth, &mut *seen),
-            &raw,
-            &label,
+            (&raw, &label, block),
         ) {
             Embed::Inline(html) => replace(&arena, node, html),
             Embed::Block(html) => {

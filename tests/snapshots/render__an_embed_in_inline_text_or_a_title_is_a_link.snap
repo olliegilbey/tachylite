@@ -1,0 +1,39 @@
+---
+source: tests/render.rs
+expression: body.html
+---
+<p><em><a href="/b">b</a></em></p>
+<p><strong>x <a href="/b">b</a> y</strong></p>
+<h1 id="b"><a href="/b">b</a></h1>
+<h1 id="b-1"><a href="/b">b</a></h1>
+<details class="callout" data-callout="note">
+<summary class="callout-title"><a href="/b">b</a></summary>
+<div class="callout-content">
+<p>body</p>
+</div>
+</details>
+<div class="callout" data-callout="tip" data-callout-fold="none">
+<div class="callout-title">
+<a href="/b">b</a>
+</div>
+<div class="callout-content">
+<p>body</p>
+</div>
+</div>
+<h2 id="routehtml"><a href="/maps/route.html">route.html</a></h2>
+<p><em><img src="/img/dot.png" alt="dot.png" loading="lazy"></em></p>
+<table>
+<thead>
+<tr>
+<th>t</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><div class="embed"><a class="embed-link" href="/b">b</a>
+<p>Bee</p>
+</div>
+</td>
+</tr>
+</tbody>
+</table>

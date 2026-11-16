@@ -1324,3 +1324,116 @@ fn a_link_in_alt_text_links_nothing() {
         body.html
     );
 }
+
+/// Panics where a block element opens inside one that holds phrasing content only.
+fn assert_nests(html: &str) {
+    const BLOCK: &[&str] = &[
+        "div",
+        "p",
+        "ul",
+        "ol",
+        "li",
+        "pre",
+        "table",
+        "details",
+        "blockquote",
+        "dl",
+        "section",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "hr",
+    ];
+    const PHRASING: &[&str] = &[
+        "p", "h1", "h2", "h3", "h4", "h5", "h6", "em", "strong", "del", "mark", "a", "span",
+        "summary", "code",
+    ];
+    const VOID: &[&str] = &["img", "br", "hr", "input"];
+    let mut open: Vec<&str> = Vec::new();
+    for piece in html.split('<').skip(1) {
+        let tag = &piece[..piece.find([' ', '>', '\n']).unwrap()];
+        if let Some(name) = tag.strip_prefix('/') {
+            assert_eq!(open.pop(), Some(name), "misnested in {html}");
+            continue;
+        }
+        if BLOCK.contains(&tag)
+            && let Some(outer) = open.iter().find(|t| PHRASING.contains(t))
+        {
+            panic!("<{tag}> inside <{outer}> in {html}");
+        }
+        if !VOID.contains(&tag) {
+            open.push(tag);
+        }
+    }
+    assert!(open.is_empty(), "{open:?} left open in {html}");
+}
+
+#[test]
+fn an_embed_in_inline_text_or_a_title_is_a_link() {
+    let body = embed(
+        "a.md",
+        "*![[b]]*\n\n**x ![[b]] y**\n\n# ![[b]]\n\n![[b]]\n===\n\n> [!note]- ![[b]]\n> body\n\n\
+         > [!tip] ![[b]]\n> body\n\n## ![[route.html]]\n\n*![[dot.png]]*\n\n| t |\n|---|\n| ![[b]] |\n",
+        &[("b.md", "Bee")],
+        &["maps/route.html", "img/dot.png"],
+    );
+    assert_nests(&body.html);
+    assert_eq!(
+        body.html.matches("<a href=\"/b\">b</a>").count(),
+        6,
+        "{}",
+        body.html
+    );
+    assert_eq!(
+        body.html.matches("<p>Bee</p>").count(),
+        1,
+        "the table cell transcludes"
+    );
+    assert_eq!(paths(&body.embeds), ["b.md"]);
+    insta::assert_snapshot!(body.html);
+}
+
+#[test]
+fn an_excluded_note_embedded_in_a_title_reaches_no_output() {
+    let tmp = tempfile::tempdir().unwrap();
+    let vault = tmp.path().join("vault");
+    for (path, text) in [
+        ("tachylite.toml", "exclude = [\"private\"]\n"),
+        ("private/secret.md", "# zebra-secret"),
+        (
+            "a.md",
+            "*![[secret]]*\n\n# ![[private/secret]]\n\n> [!note]- ![[secret]]\n> body\n",
+        ),
+    ] {
+        let path = vault.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    build(&vault, &tmp.path().join("out")).unwrap();
+    let page = std::fs::read_to_string(tmp.path().join("out/pages/a.html")).unwrap();
+    assert_eq!(
+        page.matches("<a class=\"broken-link\">").count(),
+        3,
+        "{page}"
+    );
+    for file in walk(&tmp.path().join("out")) {
+        let text = String::from_utf8_lossy(&std::fs::read(&file).unwrap()).into_owned();
+        assert!(!text.contains("zebra"), "an excluded note reached {file:?}");
+    }
+}
+
+fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            files.extend(walk(&path));
+        } else {
+            files.push(path);
+        }
+    }
+    files
+}
