@@ -212,6 +212,7 @@ test.describe("the Today tab", () => {
     rmSync(join(dir, "vault", "days", `${iso(-1)}.md`));
     rmSync(join(dir, "vault", "days", `${iso(-3)}.md`));
     await expect.poll(async () => (await page.request.get(base + TODAY)).text()).not.toContain(iso(-1));
+    await expect.poll(async () => (await page.request.get(base + TODAY)).text()).not.toContain(iso(-3));
     await page.goto(base + TODAY);
     await expect(page.locator("main [data-date]")).toHaveText([iso(2)]);
     await expect(page.locator("main [data-date]")).toBeVisible();
@@ -324,6 +325,20 @@ test.describe("a swipe", () => {
     await shows(page, "Today");
   });
 
+  test("joined by a second finger does nothing", async ({ page }) => {
+    await page.goto(base + "/");
+    await shows(page, "Home");
+    const cdp = await page.context().newCDPSession(page);
+    const touch = (type: string, ...touchPoints: { x: number; y: number; id: number }[]) =>
+      cdp.send("Input.dispatchTouchEvent", { type: type as "touchStart", touchPoints });
+    await touch("touchStart", { x: 320, y: 500, id: 0 });
+    await touch("touchStart", { x: 320, y: 500, id: 0 }, { x: 330, y: 300, id: 1 });
+    await touch("touchMove", { x: 90, y: 500, id: 0 }, { x: 100, y: 300, id: 1 });
+    await touch("touchEnd");
+    await settled(page);
+    await shows(page, "Home");
+  });
+
   test("does nothing while the switcher is open", async ({ page }) => {
     await page.goto(base + TODAY);
     await shows(page, "Today");
@@ -365,6 +380,8 @@ test.describe("a swipe", () => {
     await page.goto(base + "/");
     await synced(page, "/", TODAY, RECENT, latest);
     await live(page, "/");
+    // `queue` is the chain of jobs in `src/sw.js`. Once it settles, the first sync is over.
+    await page.context().serviceWorkers()[0].evaluate("queue");
     const cdp = await page.context().newCDPSession(page);
     await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
     const round = [
@@ -502,21 +519,58 @@ test("a copy held ahead is read again after a sync, so a tab opens fresh offline
   await shows(page, "Today");
   await synced(page, "/", TODAY, RECENT, latest);
   await live(page, latest);
+  // `queue` is the chain of jobs in `src/sw.js`. It settles when the first sync has told the page.
+  await context.serviceWorkers()[0].evaluate("queue");
   await rested(page);
   await setHidden(page, true);
   note("fresh", "# Fresh\n\nfresh text\n");
   await expect.poll(async () => (await page.request.get(base + RECENT)).text()).toContain("fresh");
-  // Visible again, the stream opens and the worker syncs the Recent page.
+  await page.evaluate(() => {
+    const told = new Promise((r) => navigator.serviceWorker.addEventListener("message", () => r(1), { once: true }));
+    (window as any).told = told;
+  });
+  // Visible again, the stream opens, the worker syncs the Recent page and tells the page.
   await setHidden(page, false);
-  await expect.poll(() => cached(page, RECENT)).toContain("fresh");
-  // `queue` is the chain of jobs in `src/sw.js`. It settles when the sync has told the page.
-  await context.serviceWorkers()[0].evaluate("queue");
-  await cached(page, RECENT);
-  await rested(page);
+  await page.evaluate(() => (window as any).told);
+  expect(await cached(page, RECENT)).toContain("fresh");
   await stop(server!);
   await page.locator("header > a", { hasText: "Recent" }).click();
   await shows(page, "Recent");
   await expect(page.locator("main ul.recent").last()).toContainText("fresh");
+});
+
+test("a switch to the tab beside this one reads nothing: its copy is held", async ({ page }) => {
+  await page.addInitScript(() => {
+    const reads: string[] = ((window as any).reads = []);
+    const match = caches.match.bind(caches);
+    caches.match = (request: RequestInfo | URL, options?: MultiCacheQueryOptions) => {
+      reads.push(String(request));
+      return match(request, options);
+    };
+  });
+  await page.goto(base + "/");
+  await synced(page, "/", TODAY, RECENT, latest);
+  await live(page, "/");
+  await rested(page);
+  expect(await page.evaluate(() => (window as any).reads)).toEqual(expect.arrayContaining([TODAY, latest]));
+  await page.evaluate(() => ((window as any).reads.length = 0));
+  await page.locator("header > a", { hasText: "Today" }).click();
+  await shows(page, "Today");
+  // After the switch it reads the tabs now beside it, and neither page it has just shown.
+  const reads: string[] = await page.evaluate(() => (window as any).reads);
+  expect(reads.filter((url) => url === TODAY || url === latest)).toEqual([]);
+});
+
+test("a vault with no daily settings swipes between its two tabs", async ({ page, hasTouch }) => {
+  test.skip(!hasTouch, "a swipe takes a finger");
+  writeFileSync(join(dir, "vault", "tachylite.toml"), "");
+  await expect.poll(async () => (await page.request.get(base + "/")).text()).not.toContain(TODAY);
+  await page.goto(base + "/");
+  await expect(page.locator("header > a")).toHaveText(["Home", "Recent"]);
+  await left(page);
+  await shows(page, "Recent");
+  await right(page);
+  await shows(page, "Home");
 });
 
 test("the Today tab picks its note when it opens, not when its copy was read ahead", async ({ page }) => {

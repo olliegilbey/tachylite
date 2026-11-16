@@ -298,14 +298,15 @@ pub fn recent_in<'a>(header: &str, folder: &str, rows: impl IntoIterator<Item = 
 
 /// `/.tachylite/today`: the daily notes as `(date, title, url)`, newest first. Each link
 /// carries its ISO date, so the client shows the newest dated on or before its own today in
-/// place of the list. The list sits in `.pick`, which the stylesheet hides while a script
-/// can run, so the list never paints before the note.
+/// place of the list. The list sits in `[data-pick]`, which the stylesheet hides while a
+/// script can run, so the list never paints before the note. A note's raw HTML cannot carry
+/// that attribute.
 pub fn today(header: &str, days: &[(&str, &str, String)]) -> Page {
     let mut main = String::new();
     if days.is_empty() {
         main.push_str("<h1>Daily notes</h1>\n<p>No daily notes yet.</p>\n");
     } else {
-        main.push_str("<div class=\"pick\">\n<h1>Daily notes</h1>\n<ul class=\"notes\">");
+        main.push_str("<div data-pick>\n<h1>Daily notes</h1>\n<ul class=\"notes\">");
         for (date, title, url) in days {
             main.push_str(&format!(
                 "<li><a href=\"{url}\" data-date=\"{date}\">{}</a></li>",

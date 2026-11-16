@@ -164,7 +164,7 @@
     const shown = document.querySelector("main");
     if (!main || !shown) return;
     // The Today list is on screen only when it has no note to show.
-    main.querySelector(".pick")?.removeAttribute("class");
+    main.querySelector("[data-pick]")?.removeAttribute("data-pick");
     shown.replaceWith(main);
     // A config change moves the header: the tabs and the pins.
     const header = next.querySelector("header");
@@ -285,9 +285,13 @@
     }
     // A cached list can predate a note made since the last sync, so the network's list
     // follows, and its pick replaces an older one.
-    if (older && !cache) open(url, "no-cache").catch(() => {});
+    if (older && !cache && mine === turn) open(url, "no-cache").catch(() => {});
   };
-  const go = (url) => open(url).catch(() => location.replace(url));
+  // A switch that cannot read its page navigates to it, unless a later switch took over.
+  const go = (url) => {
+    const mine = turn + 1;
+    open(url).catch(() => mine === turn && location.replace(url));
+  };
   // From one tab page to another, a tap replaces the history entry as a swipe does, so Back
   // never walks through tabs. A modified click keeps the browser's own meaning.
   document.addEventListener("click", (e) => {
@@ -307,11 +311,12 @@
       const t = e.touches[0];
       // An edge swipe is the system's Back. Pinched in, a sideways move pans the page.
       let free = e.touches.length === 1 && t.clientX > 32 && t.clientX < innerWidth - 32;
-      free &&= !dialog?.open && !(visualViewport?.scale > 1) && tabs().some(current);
+      free &&= !dialog?.open && !(window.visualViewport?.scale > 1) && tabs().some(current);
       // A sideways scroller keeps its touches: the pins row, a wide code block or table.
       for (let n = e.target; free && n instanceof Element; n = n.parentElement)
         free = n.scrollWidth <= n.clientWidth || getComputedStyle(n).overflowX === "visible";
-      down = free ? t : null;
+      // The numbers, not the touch: old Safari reuses the object for the next event.
+      down = free ? [t.clientX, t.clientY] : null;
     },
     { passive: true },
   );
@@ -320,8 +325,8 @@
     const from = down;
     down = null;
     if (!from) return;
-    const dx = e.changedTouches[0].clientX - from.clientX;
-    const dy = e.changedTouches[0].clientY - from.clientY;
+    const dx = e.changedTouches[0].clientX - from[0];
+    const dy = e.changedTouches[0].clientY - from[1];
     // A long press that selected text is no swipe.
     if (Math.abs(dx) < 60 || Math.abs(dx) < 2 * Math.abs(dy) || !getSelection().isCollapsed) return;
     const all = tabs();
@@ -339,7 +344,7 @@
     open(TODAY, undefined, document)
       .catch(() => {})
       .then(() => {
-        document.querySelector(".pick")?.removeAttribute("class");
+        document.querySelector("[data-pick]")?.removeAttribute("data-pick");
         events || (connect(), prepare());
       });
   else {
