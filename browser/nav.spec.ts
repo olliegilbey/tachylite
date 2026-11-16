@@ -189,3 +189,70 @@ test("the arrow keys move through the switcher's results", async ({ page, isMobi
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(base + second);
 });
+
+/** The device's local date, `offset` days from now, as `YYYY-MM-DD`. */
+function iso(offset: number): string {
+  const d = new Date(Date.now() + offset * 864e5);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+/** Adds daily notes around today and a config with a daily folder and five pins. */
+async function daily(page: Page) {
+  note(`days/${iso(-3)}`, "# older\n");
+  note(`days/${iso(-1)}`, "# latest\n\nyesterday's plan\n");
+  note(`days/${iso(2)}`, "# planned\n");
+  writeFileSync(
+    join(dir, "vault", "tachylite.toml"),
+    'daily = { folder = "days" }\n' +
+      'pins = ["garden", "a.md|Aye", "garden/Rose.md", "garden/Fern care.md|Ferns", "days|Journal"]\n',
+  );
+  await expect
+    .poll(async () => (await page.request.get(base + "/.tachylite/today")).text())
+    .toContain(iso(2));
+}
+
+test("Today opens the newest daily note up to today, and Back skips the list", async ({ page }) => {
+  await daily(page);
+  await page.goto(base + "/a");
+  await page.locator("header a", { hasText: "Today" }).click();
+  await expect(page).toHaveURL(base + `/days/${iso(-1)}`);
+  await expect(page.locator("main")).toContainText("yesterday's plan");
+  await page.goBack();
+  await expect(page).toHaveURL(base + "/a");
+});
+
+test("Today opens offline", async ({ page }) => {
+  await daily(page);
+  await synced(page, "/a", "/.tachylite/today");
+  await expect
+    .poll(() => page.evaluate(async (p) => (await caches.match(p)) !== undefined, `/days/${iso(-1)}`), {
+      timeout: 15_000,
+    })
+    .toBe(true);
+  await stop(server!);
+  await page.goto(base + "/.tachylite/today");
+  await expect(page).toHaveURL(base + `/days/${iso(-1)}`);
+  await expect(page.locator("main")).toContainText("yesterday's plan");
+});
+
+test("five pins keep the header on its lines and the page its width", async ({ page }) => {
+  await daily(page);
+  await page.goto(base + "/a");
+  await expect(page.locator("header .pins a")).toHaveText(["garden", "Aye", "Rose", "Ferns", "Journal"]);
+  const tops = await page.locator("header > a, header > button").evaluateAll((els) =>
+    els.map((e) => { const r = e.getBoundingClientRect(); return Math.round(r.top + r.height / 2); }),
+  );
+  expect(new Set(tops).size, "the first line wrapped").toBe(1);
+  const pins = await page.locator("header .pins a").evaluateAll((els) =>
+    els.map((e) => { const r = e.getBoundingClientRect(); return Math.round(r.top + r.height / 2); }),
+  );
+  expect(new Set(pins).size, "the pins wrapped").toBe(1);
+  const [scroll, client] = await page.evaluate(() => [
+    document.documentElement.scrollWidth,
+    document.documentElement.clientWidth,
+  ]);
+  expect(scroll).toBeLessThanOrEqual(client);
+  await page.locator("header .pins a", { hasText: "Aye" }).click();
+  await expect(page).toHaveURL(base + "/a");
+});

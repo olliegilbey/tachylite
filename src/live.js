@@ -1,5 +1,15 @@
 // Live updates: swap in pushed pages, catch up after a lost connection.
 (() => {
+  // The Today page lists daily notes newest first, each with its date. Only this device knows
+  // its own today, so it opens the newest dated on or before it. Back skips the list.
+  if (location.pathname === "/.tachylite/today") {
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, "0");
+    const today = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+    const a = [...document.querySelectorAll("main a[data-date]")].find((a) => a.dataset.date <= today);
+    if (a) return location.replace(a.href);
+  }
+
   // Mermaid loads only once a page shows a diagram, and draws again after each swap.
   let mermaid = null;
   const diagrams = () => {
@@ -181,6 +191,9 @@
       const open = new Map(fold(current).map(([k, d]) => [k, d.open]));
       for (const [k, d] of fold(main)) if (open.has(k)) d.open = open.get(k);
       current.replaceWith(main);
+      // A config change moves the header: the site name, Today and the pins.
+      const header = next.querySelector("header");
+      if (header) document.querySelector("header")?.replaceWith(header);
       document.title = next.title;
       meta.content = e.lastEventId;
       diagrams();

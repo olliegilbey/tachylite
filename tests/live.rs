@@ -1048,3 +1048,76 @@ fn a_name_or_path_too_long_for_the_output_leaves_the_server_serving() {
     assert!(event.data.contains("still serving"), "{}", event.data);
     assert_eq!(server.get("/").status, 200);
 }
+
+#[test]
+fn a_new_daily_note_reaches_the_open_today_page() {
+    let (d, server) = with_notes(&[
+        ("tachylite.toml", "daily = { folder = \"j\" }\n"),
+        ("j/2026-11-02.md", "a"),
+    ]);
+    let mut events = server.subscribe(
+        "/.tachylite/today",
+        &version(&server, "/.tachylite/today"),
+        None,
+    );
+    fs::write(d.vault().join("j/2026-11-03.md"), "b").unwrap();
+    let html = events.expect("page").data;
+    assert!(html.contains("data-date=\"2026-11-03\""), "{html}");
+}
+
+#[test]
+fn obsidian_daily_settings_take_effect_on_save() {
+    let (d, server) = with_notes(&[
+        (
+            ".obsidian/daily-notes.json",
+            "{\"folder\":\"a\",\"format\":\"YYYY-MM-DD\"}",
+        ),
+        ("a/2026-11-02.md", "a"),
+        ("b/02.11.2026.md", "b"),
+    ]);
+    assert!(
+        server
+            .get("/.tachylite/today")
+            .text()
+            .contains("/a/2026-11-02")
+    );
+    assert_eq!(server.get("/.obsidian/daily-notes.json").status, 404);
+    let mut events = server.subscribe(
+        "/.tachylite/today",
+        &version(&server, "/.tachylite/today"),
+        None,
+    );
+    fs::write(
+        d.vault().join(".obsidian/daily-notes.json"),
+        "{\"autorun\": false, \"folder\": \"b\", \"format\": \"DD.MM.YYYY\", \"template\": \"\"}",
+    )
+    .unwrap();
+    let html = events.expect("page").data;
+    assert!(
+        html.contains("/b/02.11.2026") && !html.contains("/a/"),
+        "{html}"
+    );
+
+    // Removing the settings takes the Today link from every page.
+    let mut events = server.subscribe("/a/2026-11-02", &version(&server, "/a/2026-11-02"), None);
+    fs::remove_file(d.vault().join(".obsidian/daily-notes.json")).unwrap();
+    let html = events.expect("page").data;
+    assert!(!html.contains("/.tachylite/today"), "{html}");
+    assert_eq!(server.get("/.tachylite/today").status, 404);
+}
+
+#[test]
+fn a_pin_saved_to_config_reaches_open_pages() {
+    let (d, server) = with_notes(&[("a.md", "# a"), ("p/b.md", "# b")]);
+    let mut events = server.subscribe("/a", &version(&server, "/a"), None);
+    fs::write(
+        d.vault().join("tachylite.toml"),
+        "pins = [\"p|Projects\"]\n",
+    )
+    .unwrap();
+    let html = events.expect("page").data;
+    assert!(
+        html.contains("<nav class=\"pins\"><a href=\"/.tachylite/folders/p\">Projects</a></nav>"),
+        "{html}"
+    );
+}

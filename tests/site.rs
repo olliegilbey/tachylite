@@ -1920,3 +1920,342 @@ fn a_full_build_past_the_held_bodies_equals_small_applies() {
         assert!(got.get(path) == Some(html), "{path} differs");
     }
 }
+
+fn daily(folder: &str, format: &str) -> tachylite::config::Daily {
+    tachylite::config::parse(&format!(
+        "daily = {{ folder = {folder:?}, format = {format:?} }}"
+    ))
+    .unwrap()
+    .nav
+    .daily
+    .unwrap()
+}
+
+fn nav(text: &str) -> tachylite::config::Nav {
+    tachylite::config::parse(text).unwrap().nav
+}
+
+fn page_text(out: &Out, path: &str) -> String {
+    String::from_utf8_lossy(out.get(path).map_or(&[][..], Vec::as_slice)).into_owned()
+}
+
+const TODAY: &str = "pages/.tachylite/today.html";
+
+/// The dates the Today page lists, in its order.
+fn days(out: &Out) -> Vec<String> {
+    let html = page_text(out, TODAY);
+    html.match_indices("data-date=\"")
+        .map(|(at, m)| html[at + m.len()..at + m.len() + 10].to_string())
+        .collect()
+}
+
+#[test]
+fn the_today_page_lists_daily_notes_newest_first() {
+    let mut mem = Mem::with(&[
+        ("journal/2026/2026-11-02.md", "a"),
+        ("journal/2026/2026-11-10.md", "b"),
+        ("journal/2025/2025-12-31.md", "c"),
+        ("journal/2026/2026-11-10 copy.md", "not a date"),
+        ("journal/2026/2026-13-01.md", "no month 13"),
+        ("journal/2026/private.md", "not a date"),
+        ("2026-11-11.md", "outside the folder"),
+    ]);
+    let mut site = Site::new(Exclude::default());
+    site.set_obsidian(Some(daily("journal", "YYYY/YYYY-MM-DD")));
+    let mut out = Out::new();
+    fold(&mut out, &site.apply(vec![sync_all(&mem)], &mut mem), &mem);
+    assert_eq!(days(&out), ["2026-11-10", "2026-11-02", "2025-12-31"]);
+    assert!(page_text(&out, TODAY).contains("href=\"/journal/2026/2026-11-10\""));
+    assert!(manifest_urls(&out).contains("/.tachylite/today"));
+    // Every page links to it.
+    assert!(page_text(&out, "pages/journal/2026/2026-11-02.html").contains("/.tachylite/today"));
+
+    // Create, rename and delete each move it.
+    mem.0
+        .insert("journal/2026/2026-11-12.md".into(), b"d".to_vec());
+    fold(
+        &mut out,
+        &site.apply(vec![touch("journal/2026/2026-11-12.md")], &mut mem),
+        &mem,
+    );
+    assert_eq!(days(&out)[0], "2026-11-12");
+    let body = mem.0.remove("journal/2026/2026-11-12.md").unwrap();
+    mem.0.insert("journal/2026/2026-11-13.md".into(), body);
+    let changes = vec![
+        touch("journal/2026/2026-11-12.md"),
+        touch("journal/2026/2026-11-13.md"),
+    ];
+    fold(&mut out, &site.apply(changes, &mut mem), &mem);
+    assert_eq!(days(&out)[..2], ["2026-11-13", "2026-11-10"]);
+    mem.0.remove("journal/2026/2026-11-13.md");
+    fold(
+        &mut out,
+        &site.apply(vec![touch("journal/2026/2026-11-13.md")], &mut mem),
+        &mem,
+    );
+    assert_eq!(days(&out)[0], "2026-11-10");
+}
+
+#[test]
+fn an_excluded_daily_note_is_not_on_the_today_page() {
+    let mut mem = Mem::with(&[
+        ("d/2026-11-02.md", "a"),
+        ("d/2026-11-03.secret.md", HUSHED),
+        ("private/2026-11-04.md", HUSHED),
+    ]);
+    let mut site = Site::new(hush());
+    site.set_obsidian(Some(daily("", "YYYY-MM-DD")));
+    let delta = site.apply(vec![sync_all(&mem)], &mut mem);
+    assert!(!leaks(&delta));
+    let mut site = Site::new(hush());
+    site.set_obsidian(Some(daily("private", "YYYY-MM-DD")));
+    let delta = site.apply(vec![sync_all(&mem)], &mut mem);
+    assert!(!leaks(&delta));
+}
+
+#[test]
+fn the_today_page_keeps_the_newest_sixty() {
+    let files: Vec<(String, &str)> = (1..=28)
+        .flat_map(|d| (1..=3).map(move |m| (format!("2026-{m:02}-{d:02}.md"), "x")))
+        .collect();
+    let files: Vec<(&str, &str)> = files.iter().map(|(p, c)| (p.as_str(), *c)).collect();
+    let mut mem = Mem::with(&files);
+    let mut site = Site::new(Exclude::default());
+    site.set_nav(nav("daily = { format = \"YYYY-MM-DD\" }"));
+    let mut out = Out::new();
+    fold(&mut out, &site.apply(vec![sync_all(&mem)], &mut mem), &mem);
+    let listed = days(&out);
+    assert_eq!(listed.len(), 60);
+    assert_eq!(
+        (listed[0].as_str(), listed[59].as_str()),
+        ("2026-03-28", "2026-01-25")
+    );
+}
+
+#[test]
+fn no_daily_config_means_no_today_page_or_link() {
+    let mut mem = Mem::with(&[("2026-11-02.md", "a")]);
+    let (out, _) = full(&mem);
+    assert!(!out.contains_key(TODAY));
+    assert!(!page_text(&out, "pages/2026-11-02.html").contains("today"));
+
+    // A format with a token Tachylite does not read is no config, and says why.
+    let mut site = Site::new(Exclude::default());
+    site.set_nav(nav("daily = { format = \"dddd, MMMM Do YYYY\" }"));
+    let delta = site.apply(vec![sync_all(&mem)], &mut mem);
+    let mut out = Out::new();
+    fold(&mut out, &delta, &mem);
+    assert!(!out.contains_key(TODAY));
+    assert_eq!(delta.notices.len(), 1, "{:?}", delta.notices);
+    assert!(delta.notices[0].contains("\"dddd\""), "{:?}", delta.notices);
+}
+
+#[test]
+fn the_config_daily_overrides_obsidian_and_a_change_takes_effect() {
+    let mut mem = Mem::with(&[("a/2026-11-02.md", "a"), ("b/02.11.2026.md", "b")]);
+    let mut site = Site::new(Exclude::default());
+    site.set_obsidian(Some(daily("a", "YYYY-MM-DD")));
+    let mut out = Out::new();
+    fold(&mut out, &site.apply(vec![sync_all(&mem)], &mut mem), &mem);
+    assert!(page_text(&out, TODAY).contains("/a/2026-11-02"));
+    site.set_nav(nav("daily = { folder = \"b/\", format = \"DD.MM.YYYY\" }"));
+    fold(&mut out, &site.apply(vec![sync_all(&mem)], &mut mem), &mem);
+    assert!(page_text(&out, TODAY).contains("/b/02.11.2026"));
+    assert!(!page_text(&out, TODAY).contains("/a/"));
+    // Losing the daily config takes the page and every page's link with it.
+    site.set_nav(nav(""));
+    site.set_obsidian(None);
+    let mut kept = Kept {
+        delta: Delta::default(),
+        out: &out,
+    };
+    site.apply_to(vec![sync_all(&mem)], &mut mem.clone(), &mut kept);
+    site.derive_to(&mut kept.delta);
+    let delta = kept.delta;
+    fold(&mut out, &delta, &mem);
+    assert!(!out.contains_key(TODAY));
+    assert!(
+        out.values()
+            .all(|page| !String::from_utf8_lossy(page).contains("/.tachylite/today"))
+    );
+    assert!(
+        delta
+            .pushes
+            .iter()
+            .any(|p| matches!(p, Push::Gone { key } if key == ".tachylite/today"))
+    );
+}
+
+#[test]
+fn a_folder_recent_page_lists_its_newest_notes_at_any_depth() {
+    let mut mem = Mem::with(&[
+        ("m/a.md", "a"),
+        ("m/x/b.md", "b"),
+        ("m/x/y/c.md", "c"),
+        ("other/d.md", "d"),
+        ("m/x/e.secret.md", HUSHED),
+    ]);
+    for (i, path) in ["m/a.md", "m/x/b.md", "m/x/y/c.md", "other/d.md"]
+        .iter()
+        .enumerate()
+    {
+        mem.1.insert(path.to_string(), i as i64 * 100);
+    }
+    let mut site = Site::new(hush());
+    let mut out = Out::new();
+    let delta = site.apply(vec![sync_all(&mem)], &mut mem);
+    assert!(!leaks(&delta));
+    fold(&mut out, &delta, &mem);
+    let order = |out: &Out, page: &str| -> Vec<String> {
+        let html = page_text(out, page);
+        let main = &html[html.find("<ul class=\"recent\">").unwrap()..];
+        main.match_indices("<li><a href=\"")
+            .map(|(at, m)| main[at + m.len()..].split('"').next().unwrap().to_string())
+            .collect()
+    };
+    let m = "pages/.tachylite/recent/m/.index.html";
+    assert_eq!(order(&out, m), ["/m/x/y/c", "/m/x/b", "/m/a"]);
+    assert_eq!(
+        order(&out, "pages/.tachylite/recent/m/x/.index.html"),
+        ["/m/x/y/c", "/m/x/b"]
+    );
+    assert!(manifest_urls(&out).contains("/.tachylite/recent/m/x/y"));
+    assert!(
+        page_text(&out, "pages/.tachylite/folders/m/.index.html")
+            .contains("href=\"/.tachylite/recent/m\"")
+    );
+
+    // A save moves its note to the top of each folder above it, and of no other.
+    mem.1.insert("m/a.md".into(), 1000);
+    mem.0.insert("m/a.md".into(), b"a2".to_vec());
+    let delta = site.apply(vec![touch("m/a.md")], &mut mem);
+    fold(&mut out, &delta, &mem);
+    assert_eq!(order(&out, m), ["/m/a", "/m/x/y/c", "/m/x/b"]);
+    let pushed: Vec<&str> = delta
+        .pushes
+        .iter()
+        .filter_map(|p| match p {
+            Push::Page { key, .. } => Some(key.as_str()),
+            Push::Gone { .. } => None,
+        })
+        .collect();
+    assert!(pushed.contains(&".tachylite/recent/m"), "{pushed:?}");
+    assert!(
+        !pushed
+            .iter()
+            .any(|k| k.starts_with(".tachylite/recent/m/x")),
+        "{pushed:?}"
+    );
+
+    // A folder with no note left loses its page.
+    mem.0.remove("other/d.md");
+    let delta = site.apply(vec![touch("other/d.md")], &mut mem);
+    assert!(
+        delta
+            .deletes
+            .contains(&"pages/.tachylite/recent/other/.index.html".to_string())
+    );
+}
+
+#[test]
+fn a_folder_recent_page_keeps_the_newest_fifty() {
+    let files: Vec<String> = (0..120).map(|i| format!("f/{i:03}.md")).collect();
+    let pairs: Vec<(&str, &str)> = files.iter().map(|p| (p.as_str(), "x")).collect();
+    let mut mem = Mem::with(&pairs);
+    for (i, path) in files.iter().enumerate() {
+        mem.1.insert(path.clone(), i as i64);
+    }
+    let (out, _) = full(&mem);
+    let html = page_text(&out, "pages/.tachylite/recent/f/.index.html");
+    assert_eq!(html.matches("<li>").count(), 50);
+    assert!(html.contains("/f/119\"") && html.contains("/f/070\"") && !html.contains("/f/069\""));
+}
+
+#[test]
+fn pins_come_from_config_alone() {
+    let mut mem = Mem::with(&[
+        ("people/Jane Doe.md", "---\ntitle: Jane\n---\nx"),
+        ("maps/route.html", "<p>map</p>"),
+        ("a.md", "a"),
+        ("private/p.md", HUSHED),
+    ]);
+    let mut site = Site::new(hush());
+    site.set_nav(nav(
+        "title = \"Notes & co\"\npins = [\"people/Jane Doe.md\", \"people/|Team\", \"maps/route.html\", \"private/p.md\", \"gone.md\"]",
+    ));
+    let mut out = Out::new();
+    let delta = site.apply(vec![sync_all(&mem)], &mut mem);
+    assert!(!leaks(&delta), "an excluded pin reached the output");
+    fold(&mut out, &delta, &mem);
+    let page = page_text(&out, "pages/a.html");
+    assert!(page.contains(">Notes &amp; co</a>"), "{page}");
+    assert!(
+        page.contains(
+            "<nav class=\"pins\"><a href=\"/people/Jane%20Doe\">Jane Doe</a>\
+         <a href=\"/.tachylite/folders/people\">Team</a>\
+         <a href=\"/maps/route.html\">route</a><a href=\"/gone\">gone</a></nav>"
+        ),
+        "{page}"
+    );
+    assert!(page_text(&out, HOME).contains("<title>Notes &amp; co</title>"));
+    let notices = delta.notices.join("\n");
+    assert!(
+        notices.contains("\"private/p.md\" is excluded"),
+        "{notices}"
+    );
+    assert!(
+        notices.contains("\"gone.md\" matches no published"),
+        "{notices}"
+    );
+    assert_eq!(delta.notices.len(), 2, "{notices}");
+
+    // Retitling a pinned note changes its own page, and no other note's.
+    mem.0.insert(
+        "people/Jane Doe.md".into(),
+        b"---\ntitle: J. Doe\n---\nx".to_vec(),
+    );
+    let delta = site.apply(vec![touch("people/Jane Doe.md")], &mut mem);
+    let notes: Vec<_> = pushed(&delta)
+        .into_iter()
+        .filter(|k| !k.is_empty() && !k.starts_with(".tachylite"))
+        .collect();
+    assert_eq!(notes, ["people/Jane Doe"]);
+    assert!(delta.notices.is_empty());
+}
+
+#[test]
+fn a_nav_change_rewrites_every_page_with_the_new_header() {
+    let mem = Mem::with(&[("a.md", "#t [[b]]"), ("d/b.md", "#t/u b")]);
+    let mut site = Site::new(Exclude::default());
+    let mut out = Out::new();
+    fold(
+        &mut out,
+        &site.apply(vec![sync_all(&mem)], &mut mem.clone()),
+        &mem,
+    );
+    let pages_before = out.keys().filter(|k| k.starts_with("pages/")).count();
+    site.set_nav(nav("pins = [\"d\"]"));
+    let mut kept = Kept {
+        delta: Delta::default(),
+        out: &out,
+    };
+    site.apply_to(vec![sync_all(&mem)], &mut mem.clone(), &mut kept);
+    site.derive_to(&mut kept.delta);
+    let delta = kept.delta;
+    fold(&mut out, &delta, &mem);
+    let written = delta
+        .writes
+        .iter()
+        .filter(|w| matches!(w, Write::Page { out, .. } if out.starts_with("pages/")))
+        .count();
+    assert_eq!(written, pages_before);
+    let mut expected_site = Site::new(Exclude::default());
+    expected_site.set_nav(nav("pins = [\"d\"]"));
+    let mut expected = Out::new();
+    fold(
+        &mut expected,
+        &expected_site.apply(vec![sync_all(&mem)], &mut mem.clone()),
+        &mem,
+    );
+    assert_eq!(out, expected);
+}
