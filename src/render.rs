@@ -444,7 +444,10 @@ fn render(
     let mut raw = Vec::new();
     let mut callouts = Vec::new();
     let mut blanks = Vec::new();
+    // Set at the first image. Nodes come in document order, so none before it is in alt text.
+    let mut alt = false;
     for node in root.descendants() {
+        alt |= matches!(node.data().value, NodeValue::Image(_));
         match &node.data().value {
             NodeValue::Callout(c) if c.fold != CalloutFold::None => {
                 callouts.push(node);
@@ -469,7 +472,7 @@ fn render(
                 continue;
             }
             // Alt text is plain text, so a link or image in it points nowhere.
-            NodeValue::Image(_) | NodeValue::Link(_) if in_alt(node) => continue,
+            NodeValue::Image(_) | NodeValue::Link(_) if alt && in_alt(node) => continue,
             NodeValue::Image(link) if local(&link.url) => {
                 images.push((node, link.url.clone()));
                 continue;
