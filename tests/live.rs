@@ -941,3 +941,23 @@ fn start_up_with_a_config_lists_each_folder_twice() {
     // Once to watch it and once to scan it. A config the start reads unchanged moves no watch.
     assert_eq!(folder_opens(&opens, "d"), 2);
 }
+
+#[test]
+fn an_embedder_catches_up_when_a_note_rewritten_in_place_closes() {
+    use std::io::Write;
+    let (d, server) = with_notes(&[("x.md", "![[b]]"), ("b.md", "# b")]);
+    let mut x = server.subscribe("/x", &version(&server, "/x"), None);
+    // Rewritten in place, as `tool > b.md` does: no CREATE, so the path is not held.
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(d.vault().join("b.md"))
+        .unwrap();
+    file.write_all(b"# b\n\nhalf").unwrap();
+    // `x` renders while `b.md` is still open.
+    fs::write(d.vault().join("x.md"), "![[b]] again").unwrap();
+    next_page(&mut x);
+    finish(file, " and the rest");
+    let page = next_page(&mut x);
+    assert!(page.contains("half and the rest"), "{page}");
+}
