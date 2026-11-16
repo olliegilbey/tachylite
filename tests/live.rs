@@ -703,9 +703,13 @@ fn a_dependent_rerender_waits_for_an_open_note() {
     fs::write(d.vault().join("bar.md"), "# b1").unwrap();
     resume(&server);
     barrier.expect("page");
-    // A new link to `b` re-renders its page in a later batch, while `b.md` is still open.
+    // A new link to `b` changes its page in a later batch, while `b.md` is still open. The
+    // backlink goes around the published body; the half note never shows.
     fs::write(d.vault().join("a.md"), "see [[b]]").unwrap();
     a.expect("page");
+    let page = next_page(&mut events);
+    assert!(page.contains("<h2>Backlinks</h2>"), "{page}");
+    assert!(!page.contains("half"), "{page}");
     finish(file, " and the rest");
     let page = next_page(&mut events);
     assert!(page.contains("half and the rest"), "{page}");
@@ -904,4 +908,39 @@ fn a_tag_page_is_served_pushed_and_gone_with_its_last_note() {
         }
     }
     assert_eq!(server.get(page).status, 404);
+}
+
+// Names the output cannot hold.
+
+#[test]
+fn a_name_or_path_too_long_for_the_output_leaves_the_server_serving() {
+    let (d, server) = with_notes(&[("a.md", "# a")]);
+    let mut events = server.subscribe("/a", &version(&server, "/a"), None);
+    // 255 bytes, the most a name holds: its page name, `<stem>.html`, is 257.
+    let long = format!("{}.md", "l".repeat(252));
+    fs::write(d.vault().join(&long), "# long").unwrap();
+    server
+        .wait_line(
+            |l| l.starts_with("skipped") && l.contains(&long),
+            Duration::from_secs(10),
+        )
+        .expect("no skipped line for the long name");
+    // The output's path is longer than the vault's, so a note near the 4,096-byte path
+    // limit in the vault has a page path past it: its write fails.
+    let base = d.vault().as_os_str().len() + 1;
+    let folders = (4092 - base - 100) / 101;
+    let deep = vec!["d".repeat(100); folders].join("/");
+    let name = "n".repeat(4092 - base - folders * 101 - ".md".len());
+    fs::create_dir_all(d.vault().join(&deep)).unwrap();
+    fs::write(d.vault().join(&deep).join(format!("{name}.md")), "# deep").unwrap();
+    server
+        .wait_line(
+            |l| l.starts_with("skipped") && l.contains(&name),
+            Duration::from_secs(10),
+        )
+        .expect("no skipped line for the deep note");
+    fs::write(d.vault().join("a.md"), "# still serving").unwrap();
+    let event = events.expect("page");
+    assert!(event.data.contains("still serving"), "{}", event.data);
+    assert_eq!(server.get("/").status, 200);
 }
