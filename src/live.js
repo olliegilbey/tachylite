@@ -8,18 +8,21 @@
     mermaid ??= new Promise((resolve, reject) => {
       const script = document.createElement("script");
       script.src = "/.tachylite/mermaid.js";
-      script.onload = () => {
-        const dark = matchMedia("(prefers-color-scheme: dark)").matches;
-        window.mermaid.initialize({ startOnLoad: false, theme: dark ? "dark" : "default" });
-        resolve(window.mermaid);
-      };
+      script.onload = () => resolve(window.mermaid);
       script.onerror = reject;
       document.head.append(script);
     });
-    mermaid.then(
-      (m) => m.run({ nodes, suppressErrors: true }),
-      () => (mermaid = null),
-    );
+    // A script that failed to load is fetched again. A failed draw leaves its source as text.
+    mermaid
+      .then(
+        (m) => {
+          const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+          m.initialize({ startOnLoad: false, theme: dark ? "dark" : "default" });
+          return m.run({ nodes, suppressErrors: true });
+        },
+        () => (mermaid = null),
+      )
+      .catch(() => {});
   };
   diagrams();
 
