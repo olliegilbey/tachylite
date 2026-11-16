@@ -42,6 +42,10 @@ The smallest thing that works, made fast, beats the clever thing. Fight scope cr
 - **task**: one checkbox line in a note, with one of four statuses: todo, doing, done, cancelled. Avoid "todo" and "ticket" as synonyms.
 - **task list**: the tasks in one note, in line order.
 - **board**: the `/.tachylite/tasks` view, grouped by status.
+- **tab**: a top-level page linked from the header: Home, Today, Recent. Tasks joins when the board is built.
+- **tab bar**: the row of tabs in the header.
+- **tab page**: the page a tab opens.
+- **browser tab**: the browser's own tab. Never plain "tab".
 
 ## The four ways to hurt yourself
 
