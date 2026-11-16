@@ -113,7 +113,7 @@ Look at a visual change before you call it done. A purely visual change, such as
 5. Read each PNG and look at it. Iterate until the after capture reads well.
 6. Stop the server by its PID.
 
-- A harness with a built-in browser can drive the same server interactively. Close any tab you opened.
+- A harness with a built-in browser can drive the same server interactively. Close any browser tab you opened.
 - Page weight and the timed budgets are tests: `make check` and `make budget`. To time a reader's action on a slow phone, run `make bench`. It times scenarios in headless Chromium on the budget vault, at full CPU speed and at a quarter of it. Add a scenario when a change raises a new question: `browser/bench/README.md` says how.
 - Never commit captures or traces. Show them to the maintainer in chat, and describe them in the PR.
 

@@ -28,7 +28,7 @@ export const test = base.extend<{ allowedErrors: RegExp[] }>({
 
 export { expect };
 
-/** Hides or shows the page as a phone does on a tab switch. Headless tabs stay visible. */
+/** Hides or shows the page as a phone does when the reader leaves the browser tab. A headless browser tab stays visible. */
 export function setHidden(page: Page, hidden: boolean): Promise<void> {
   return page.evaluate((h) => {
     Object.defineProperty(document, "hidden", { value: h, configurable: true });

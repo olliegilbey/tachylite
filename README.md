@@ -24,10 +24,11 @@ Tachylite renders the vault into `<out>`, watches it, and serves the site on `ht
 ## Find your way
 
 - Every page has a tab bar at the top: Home, Today and Recent. A tab page marks its own tab.
+- On a phone, a swipe left or right on a tab page opens the tab beside it. Back never walks through tabs: it returns to the page you opened before them.
 - Home lists the five newest notes, then the vault's top folders. It leaves out the three newest daily notes, which Today and Recent show.
 - Each folder has an index page, and each note links to its folders at the top. Notes whose title starts with an ISO date, such as daily notes, list newest first.
 - Recent lists the three newest daily notes, then the 50 newest other notes. Each folder's index links to its own recent list, which takes in its subfolders.
-- Today opens the newest daily note dated on or before the phone's today, offline too. It reads Obsidian's daily-notes settings, or `daily` in the config below. A vault with no daily settings has no Today tab.
+- Today shows the newest daily note dated on or before the phone's today, offline too. The note shows under the tab's own address, so Today is a tab like the others. It reads Obsidian's daily-notes settings, or `daily` in the config below. A vault with no daily settings has no Today tab.
 - A daily note links to the daily note before it and the one after it.
 - Each `#tag` links to a page of the notes with that tag, or with a tag nested under it.
 - Find, or Ctrl-K, Cmd-K or `/`, opens a fuzzy switcher over titles, aliases and paths. It works offline.

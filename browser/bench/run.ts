@@ -47,6 +47,8 @@ test("client bench", async ({ browser }) => {
   try {
     const vault = join(dir, "vault");
     execFileSync(join(repo, "target", "release", "examples", "budget_vault"), [vault], { stdio: ["ignore", "ignore", "pipe"] });
+    // The budget vault has daily notes and no settings for them. With these it has a Today tab.
+    writeFileSync(join(vault, "tachylite.toml"), 'daily = { folder = "daily" }\n');
     const result = await bench(browser, {
       dir: join(dir, "serve"),
       vault,

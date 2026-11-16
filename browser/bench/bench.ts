@@ -32,6 +32,8 @@ const MANIFEST = "/.tachylite/manifest.json";
 const CLIENT = ["live.js", "sw.js", "style.css"];
 /** Where the clock's start crosses a navigation. */
 const KEY = "tachylite-bench";
+/** Set while a tab switch is timed, so a document the switch opens watches its own `<main>`. */
+const SWITCHING = "tachylite-bench-tab";
 
 type Session = {
   label: string;
@@ -195,6 +197,10 @@ async function open(browser: Browser, profile: Profile, label: string, base: str
   context.on("requestfailed", end);
   const quiet = () => (flying.size ? new Promise<void>((resolve) => (landed = resolve)) : Promise.resolve());
 
+  // A sandboxed frame has no storage to read.
+  await context.addInitScript({
+    content: `try { if (sessionStorage.getItem(${JSON.stringify(SWITCHING)})) (${watchMain})(); } catch {}`,
+  });
   const page = await context.newPage();
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
@@ -250,6 +256,71 @@ async function act(run: (vars: Vars) => void, vars: Vars, key: string, jitter: n
   if (jitter) await new Promise((r) => setTimeout(r, Math.random() * jitter));
   sessionStorage.setItem(key, String(performance.timeOrigin + performance.now()));
   run(vars);
+}
+
+/** In the page: one finger across the middle of `<main>`, as the touch events a swipe sends. */
+function swipe(type: "touchstart" | "touchend", by: number) {
+  const main = document.querySelector("main")!;
+  const touch = new Touch({ identifier: 1, target: main, clientX: innerWidth / 2 + by, clientY: innerHeight / 2 });
+  const touches = type === "touchend" ? [] : [touch];
+  main.dispatchEvent(new TouchEvent(type, { bubbles: true, touches, changedTouches: [touch] }));
+}
+
+/**
+ * In the page: `window.benchTab` resolves at the first paint of text or an image inside a
+ * `<main>`, or part of one, that enters the document from now on. A tab's content can come
+ * with a new document or be put in place, and this times both the same way.
+ */
+function watchMain() {
+  const old = new Set(document.querySelectorAll("main, main *"));
+  let dom = 0;
+  // Element Timing reports a paint on an element that carried the attribute before it painted.
+  const mark = () => {
+    for (const e of document.querySelectorAll("main, main *")) {
+      if (old.has(e)) continue;
+      old.add(e);
+      dom ||= performance.timeOrigin + performance.now();
+      e.setAttribute("elementtiming", "bench");
+    }
+  };
+  new MutationObserver(mark).observe(document, { childList: true, subtree: true });
+  (window as any).benchTab = new Promise((resolve) => {
+    new PerformanceObserver((list, observer) => {
+      const first = list.getEntries().find((e) => (e as any).identifier === "bench");
+      if (!first) return;
+      observer.disconnect();
+      resolve({ painted: performance.timeOrigin + (first as any).renderTime, dom });
+    }).observe({ type: "element" });
+  });
+}
+
+/** In the page: watches `<main>`, lands the finger if `before` does, starts the clock, then acts. */
+async function actOnTab(run: () => void, before: (() => void) | null, watch: () => void, keys: string[], jitter: number) {
+  sessionStorage.setItem(keys[1], "1");
+  watch();
+  if (jitter) await new Promise((r) => setTimeout(r, Math.random() * jitter));
+  before?.();
+  sessionStorage.setItem(keys[0], String(performance.timeOrigin + performance.now()));
+  run();
+}
+
+/** In the page that shows the tab: its milestones, in ms from the stored start. */
+async function tabArrived(keys: string[]) {
+  const at: { painted: number; dom: number } = await (window as any).benchTab;
+  const start = Number(sessionStorage.getItem(keys[0]));
+  sessionStorage.removeItem(keys[1]);
+  const nav = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming;
+  // A document that began after the clock did came by navigation.
+  const navigated = performance.timeOrigin > start;
+  return {
+    ms: at.painted - start,
+    dom: at.dom - start,
+    navigated,
+    responseEnd: navigated ? performance.timeOrigin + nav.responseEnd - start : undefined,
+    deliveryType: (nav as any).deliveryType as string,
+    transferSize: nav.transferSize,
+    workerStart: nav.workerStart,
+  };
 }
 
 /** In the page: starts the clock, acts, and times the first paint inside a new match of `selector`. */
@@ -352,8 +423,16 @@ async function warm(s: Session, scenario: Warm, vars: Vars, jitter: number): Pro
   const { page } = s;
   const action = scenario.action;
   const until: Until | undefined = scenario.until ?? ("go" in action ? { navigation: action.go } : undefined);
-  if (!until) throw new Error(`${scenario.name}: a \`run\` action needs an \`until\``);
-  const run = "go" in action ? `() => location.assign(${JSON.stringify(fill(action.go, vars))})` : `${action.run}`;
+  if (!until) throw new Error(`${scenario.name}: only a \`go\` action can leave \`until\` out`);
+  const by = "swipe" in action ? (action.swipe === "left" ? -100 : 100) : 0;
+  const run =
+    "go" in action
+      ? `() => location.assign(${JSON.stringify(fill(action.go, vars))})`
+      : "tap" in action
+        ? `() => document.querySelector(${JSON.stringify(`header > a[href="${fill(action.tap, vars)}"]`)}).click()`
+        : "swipe" in action
+          ? `() => (${swipe})("touchend", ${by})`
+          : `${action.run}`;
   if (scenario.before) {
     await load(s, fill(scenario.before, vars));
     if ("restore" in until) await page.evaluate(awaitRestore);
@@ -366,9 +445,28 @@ async function warm(s: Session, scenario: Warm, vars: Vars, jitter: number): Pro
     return { ms: tenth(at.ms), idle: idleSince(from), dom: tenth(at.dom) };
   }
 
-  const to = fill("navigation" in until ? until.navigation : until.restore, vars);
+  const to = fill("navigation" in until ? until.navigation : "tab" in until ? until.tab : until.restore, vars);
   const synced = nextSync(s);
   const from = cpu();
+
+  if ("tab" in until) {
+    const keys = [KEY, SWITCHING];
+    const before = by ? `() => (${swipe})("touchstart", ${-by})` : "null";
+    // A switch in place changes the URL too, and commits at once.
+    const there = ahead(page.waitForURL((url) => url.pathname === to, { waitUntil: "commit" }));
+    await page.evaluate(`(${actOnTab})(${run}, ${before}, ${watchMain}, ${JSON.stringify(keys)}, ${jitter})`).catch((e: Error) => {
+      if (!e.message.includes("context was destroyed")) throw e;
+    });
+    await there;
+    const at = await page.evaluate(tabArrived, keys);
+    const idle = idleSince(from);
+    if (at.navigated && (at.deliveryType !== "cache-storage" || at.transferSize !== 0 || at.workerStart === 0)) {
+      throw new Error(`${scenario.name}: the worker's cache did not answer for ${to}: ${JSON.stringify(at)}`);
+    }
+    await rest(s, synced);
+    return { ms: tenth(at.ms), idle, responseEnd: at.responseEnd === undefined ? undefined : tenth(at.responseEnd), dom: tenth(at.dom) };
+  }
+
   const there = ahead(page.waitForURL((url) => url.pathname === to, { waitUntil: "restore" in until ? "commit" : "load" }));
   // The navigation can take the page away before the call returns.
   await page.evaluate(call(act, run, vars, KEY, jitter)).catch((e: Error) => {

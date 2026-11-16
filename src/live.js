@@ -1,27 +1,5 @@
 // Live updates: swap in pushed pages, catch up after a lost connection.
 (() => {
-  // The Today page lists daily notes newest first, each with its date. Only this device knows
-  // its own today, so it opens the newest dated on or before it. Back skips the list. The
-  // cached list can predate a note made since the last sync, so when it holds no note for
-  // today the network's list comes first, if it answers quickly.
-  if (location.pathname === "/.tachylite/today") {
-    const d = new Date();
-    const p = (n) => String(n).padStart(2, "0");
-    const today = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-    const pick = (doc) =>
-      [...doc.querySelectorAll("main a[data-date]")].find((a) => a.dataset.date <= today);
-    const go = (a) => a && location.replace(a.getAttribute("href"));
-    const held = pick(document);
-    // Today's own note opens at once. An older one waits, briefly, for the network's list.
-    if (held?.dataset.date === today) go(held);
-    else
-      fetch(location.pathname, { cache: "no-cache", signal: AbortSignal.timeout?.(1500) })
-        .then((r) => (r.ok ? r.text() : Promise.reject()))
-        .then((html) => pick(new DOMParser().parseFromString(html, "text/html")))
-        .catch(() => null)
-        .then((a) => go(a ?? held));
-  }
-
   // Mermaid loads only once a page shows a diagram, and draws again after each swap.
   let mermaid = null;
   const diagrams = () => {
@@ -160,22 +138,57 @@
   worker?.register("/.tachylite/sw.js", { scope: "/" }).catch(() => {});
   const sync = () => worker?.ready.then((r) => r.active?.postMessage("sync"));
 
-  const meta = document.querySelector('meta[name="tachylite-version"]');
+  const VERSION = 'meta[name="tachylite-version"]';
+  const meta = document.querySelector(VERSION);
   if (!meta || !window.EventSource) return;
+  const TODAY = "/.tachylite/today";
+  // The page in <main>. On the Today tab it is the daily note, under the tab's URL.
+  let page = location.pathname;
   let retry = 0;
   let wait = 1500;
   let notice = 0;
   let kept = false;
+
+  // A tab page's header marks its tab. A daily note's header marks none, so the client
+  // marks the tab this URL names.
+  const tabs = () => [...document.querySelectorAll("header > a")];
+  const current = (a) => a.hasAttribute("aria-current");
+  const mark = (header) => {
+    for (const a of header.querySelectorAll(":scope > a"))
+      if (a.pathname === location.pathname) a.setAttribute("aria-current", "page");
+      else a.removeAttribute("aria-current");
+  };
+  // Puts a page on screen: its main, its header where that changed, its title and version.
+  const adopt = (next, version = next.querySelector(VERSION)?.content) => {
+    const main = next.querySelector("main");
+    const shown = document.querySelector("main");
+    if (!main || !shown) return;
+    // The Today list is on screen only when it has no note to show.
+    main.querySelector("[data-pick]")?.removeAttribute("data-pick");
+    shown.replaceWith(main);
+    // A config change moves the header: the tabs and the pins.
+    const header = next.querySelector("header");
+    const old = document.querySelector("header");
+    if (header && old) {
+      mark(header);
+      mark(old);
+      if (header.outerHTML !== old.outerHTML) old.replaceWith(header);
+    }
+    document.title = next.title;
+    meta.content = version;
+    diagrams();
+  };
+
   // A network error retries on its own, but an HTTP error, as from a proxy while the
   // server is down, closes the stream for good: retry from 3 s, doubling to a minute. A
-  // hidden tab holds no stream, since a browser allows six HTTP/1.1 connections per origin.
+  // hidden browser tab holds no stream, since a browser allows six HTTP/1.1 connections per origin.
   const connect = () => {
     clearTimeout(retry);
     events?.close();
     if (document.hidden) return;
-    events = new EventSource(
-      "/.tachylite/events?page=" + encodeURIComponent(location.pathname) + "&v=" + meta.content,
-    );
+    // The stream and the worker's cache go by the page shown, which the Today tab's URL does not name.
+    const url = page;
+    events = new EventSource("/.tachylite/events?page=" + encodeURIComponent(url) + "&v=" + meta.content);
     events.onopen = () => {
       wait = 1500;
       sync();
@@ -190,27 +203,17 @@
     events.addEventListener("page", (e) => {
       clearTimeout(notice);
       const next = new DOMParser().parseFromString(e.data, "text/html");
-      const main = next.querySelector("main");
-      const current = document.querySelector("main");
-      if (!main || !current) return;
       // A callout stays as the reader left it, matched by its title and its place among
       // callouts of that title, so one added above it takes nothing from it.
       const fold = (root, n = {}) =>
-        [...root.querySelectorAll("details")].map((d) => {
+        [...root.querySelectorAll("main details")].map((d) => {
           const t = d.querySelector("summary")?.textContent;
           return [t + "\n" + (n[t] = -~n[t]), d];
         });
-      const open = new Map(fold(current).map(([k, d]) => [k, d.open]));
-      for (const [k, d] of fold(main)) if (open.has(k)) d.open = open.get(k);
-      current.replaceWith(main);
-      // A config change moves the header: the site name, Today and the pins.
-      const header = next.querySelector("header");
-      const shown = document.querySelector("header");
-      if (header && shown && header.outerHTML !== shown.outerHTML) shown.replaceWith(header);
-      document.title = next.title;
-      meta.content = e.lastEventId;
-      diagrams();
-      worker?.controller?.postMessage({ url: location.pathname, version: e.lastEventId, html: e.data });
+      const held = new Map(fold(document).map(([k, d]) => [k, d.open]));
+      for (const [k, d] of fold(next)) if (held.has(k)) d.open = held.get(k);
+      adopt(next, e.lastEventId);
+      worker?.controller?.postMessage({ url, version: e.lastEventId, html: e.data });
     });
     // Vim and git save by removing the note first. Their `page` follows within
     // milliseconds and cancels the notice, so the page neither flashes nor loses its scroll.
@@ -225,6 +228,127 @@
       }, 1000);
     });
   };
-  document.addEventListener("visibilitychange", connect);
-  connect();
+
+  // A page as a parsed document, read from the worker's cache directly, so no worker need
+  // be awake. Then the network.
+  const load = (url, cache) =>
+    Promise.resolve(!cache && self.caches?.match(url))
+      .catch(() => {})
+      .then((hit) => hit || fetch(url, { cache }))
+      .then((r) => (r.ok ? r.text() : Promise.reject()))
+      .then((html) => new DOMParser().parseFromString(html, "text/html"));
+  // The pages a switch would show, loaded ahead, so it waits for no read and no parse.
+  let ahead = {};
+  const hold = (url) => (ahead[url] ??= load(url));
+  const get = (url, cache) => (!cache && ahead[url]) || load(url, cache);
+  // The Today page lists daily notes newest first, each with its date. Only this device
+  // knows its own today, so it picks the newest dated on or before it.
+  const pick = (doc) => {
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, "0");
+    const today = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+    const a = [...doc.querySelectorAll("main a[data-date]")].find((a) => a.dataset.date <= today);
+    return a ? [a.pathname, a.dataset.date < today] : [TODAY, true];
+  };
+  // Holds every other tab, and the note Today would show.
+  const prepare = () => {
+    ahead = {};
+    const all = tabs();
+    const at = all.findIndex(current);
+    for (const a of at < 0 ? [] : all)
+      if (!current(a))
+        hold(a.pathname)
+          .then((doc) => a.pathname === TODAY && hold(pick(doc)[0]))
+          .catch(() => {});
+  };
+  // The worker says when a sync has changed its cache, so no copy held is older than it.
+  worker?.addEventListener("message", prepare);
+  // Brings on screen what the tab at `url` shows: its own page, or for Today its pick in
+  // place of the list. `doc` is the tab's page, when the caller holds it. The last call wins.
+  let turn = 0;
+  const open = async (url, cache, doc) => {
+    const mine = ++turn;
+    doc ??= await get(url, cache);
+    const [to, older] = (url === TODAY && pick(doc)) || [url];
+    if (to !== page) {
+      if (to !== url) doc = await get(to);
+      if (mine !== turn) return;
+      clearTimeout(notice);
+      page = to;
+      if (location.pathname !== url) {
+        history.replaceState(null, "", url);
+        scrollTo(0, 0);
+      }
+      adopt(doc);
+      connect();
+      prepare();
+    }
+    // A cached list can predate a note made since the last sync, so the network's list
+    // follows, and its pick replaces an older one.
+    if (older && !cache && mine === turn) open(url, "no-cache").catch(() => {});
+  };
+  // A switch that cannot read its page navigates to it, unless a later switch took over.
+  const go = (url) => {
+    const mine = turn + 1;
+    open(url).catch(() => mine === turn && location.replace(url));
+  };
+  // From one tab page to another, a tap replaces the history entry as a swipe does, so Back
+  // never walks through tabs. A modified click keeps the browser's own meaning.
+  document.addEventListener("click", (e) => {
+    const a = e.target.closest?.("header > a:not([aria-current])");
+    if (!a || !tabs().some(current) || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    go(a.pathname);
+  });
+
+  // A swipe on a tab page opens the tab beside it, in the header's order, with no wrap. It
+  // fires on release, for a sideways move of one finger. The browser keeps every touch: it
+  // still scrolls and zooms, and the listeners only watch.
+  let down = null;
+  addEventListener(
+    "touchstart",
+    (e) => {
+      const t = e.touches[0];
+      // An edge swipe is the system's Back. Pinched in, a sideways move pans the page.
+      let free = e.touches.length === 1 && t.clientX > 32 && t.clientX < innerWidth - 32;
+      free &&= !dialog?.open && !(window.visualViewport?.scale > 1) && tabs().some(current);
+      // A sideways scroller keeps its touches: the pins row, a wide code block or table.
+      for (let n = e.target; free && n instanceof Element; n = n.parentElement)
+        free = n.scrollWidth <= n.clientWidth || getComputedStyle(n).overflowX === "visible";
+      // The numbers, not the touch: old Safari reuses the object for the next event.
+      down = free ? [t.clientX, t.clientY] : null;
+    },
+    { passive: true },
+  );
+  addEventListener("touchcancel", () => (down = null));
+  addEventListener("touchend", (e) => {
+    const from = down;
+    down = null;
+    if (!from) return;
+    const dx = e.changedTouches[0].clientX - from[0];
+    const dy = e.changedTouches[0].clientY - from[1];
+    // A long press that selected text is no swipe.
+    if (Math.abs(dx) < 60 || Math.abs(dx) < 2 * Math.abs(dy) || !getSelection().isCollapsed) return;
+    const all = tabs();
+    const to = all[all.findIndex(current) + (dx < 0 ? 1 : -1)];
+    if (to) go(to.pathname);
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    connect();
+    // A new day moves the Today tab to its note.
+    if (!document.hidden && location.pathname === TODAY) open(TODAY).catch(() => {});
+  });
+  // With no note to show, or none that loads, the list shows.
+  if (page === TODAY)
+    open(TODAY, undefined, document)
+      .catch(() => {})
+      .then(() => {
+        document.querySelector("[data-pick]")?.removeAttribute("data-pick");
+        events || (connect(), prepare());
+      });
+  else {
+    connect();
+    prepare();
+  }
 })();

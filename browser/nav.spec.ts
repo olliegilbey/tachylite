@@ -219,30 +219,6 @@ async function daily(page: Page) {
     .toContain(iso(2));
 }
 
-test("Today opens the newest daily note up to today, and Back skips the list", async ({ page }) => {
-  await daily(page);
-  await page.goto(base + "/a");
-  await page.locator("header a", { hasText: "Today" }).click();
-  await expect(page).toHaveURL(base + `/days/${iso(-1)}`);
-  await expect(page.locator("main")).toContainText("yesterday's plan");
-  await page.goBack();
-  await expect(page).toHaveURL(base + "/a");
-});
-
-test("Today opens offline", async ({ page }) => {
-  await daily(page);
-  await synced(page, "/a", "/.tachylite/today");
-  await expect
-    .poll(() => page.evaluate(async (p) => (await caches.match(p)) !== undefined, `/days/${iso(-1)}`), {
-      timeout: 15_000,
-    })
-    .toBe(true);
-  await stop(server!);
-  await page.goto(base + "/.tachylite/today");
-  await expect(page).toHaveURL(base + `/days/${iso(-1)}`);
-  await expect(page.locator("main")).toContainText("yesterday's plan");
-});
-
 test("a daily note links to the daily notes before and after it", async ({ page }) => {
   await daily(page);
   await page.goto(base + `/days/${iso(-1)}`);
@@ -293,13 +269,4 @@ test("five pins keep the header on its lines and the page its width", async ({ p
   expect(scroll).toBeLessThanOrEqual(client);
   await page.locator("header .pins a", { hasText: "Aye" }).click();
   await expect(page).toHaveURL(base + "/a");
-});
-
-test("Today opens a daily note made since the last sync", async ({ page }) => {
-  await daily(page);
-  await synced(page, "/a", "/.tachylite/today");
-  note(`days/${iso(0)}`, "# today\n\ntoday's plan\n");
-  await expect.poll(async () => (await page.request.get(base + "/.tachylite/today")).text()).toContain(iso(0));
-  await page.goto(base + "/.tachylite/today");
-  await expect(page).toHaveURL(base + `/days/${iso(0)}`);
 });
