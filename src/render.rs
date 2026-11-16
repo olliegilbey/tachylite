@@ -858,11 +858,11 @@ fn parsed_in_code(md: &str, openers: &[usize]) -> bool {
 
 /// True when the only code in `md` is fences at column 0, which the stripper reads exactly
 /// as the parser does: no other backtick or tilde, no tab, no four-space run in a line's
-/// indent and container markers, no lone carriage return, no byte-order mark, and no HTML
-/// block that could hold a fence line. An HTML block that opens with `<!`, `<?`, `<pre`,
-/// `<script`, `<style` or `<textarea` may run past a blank line, so it rules the note out.
-/// Any other ends at a blank line, so it holds no fence line when its lines hold no
-/// backtick or tilde.
+/// indent and container markers or on a footnote definition or callout title line, no lone
+/// carriage return, no byte-order mark, and no HTML block that could hold a fence line. An
+/// HTML block that opens with `<!`, `<?`, `<pre`, `<script`, `<style` or `<textarea` may run
+/// past a blank line, so it rules the note out. Any other ends at a blank line, so it holds
+/// no fence line when its lines hold no backtick or tilde.
 fn plain_fences(md: &str) -> bool {
     const RAW: [&str; 6] = ["<!", "<?", "<pre", "<script", "<style", "<textarea"];
     // A lone `\r` ends a line for the parser but not for this scan, and the parser skips
@@ -922,7 +922,10 @@ fn plain_fences(md: &str) -> bool {
             .iter()
             .take_while(|b| b" >-*+0123456789.)".contains(b))
             .count();
-        if line[..prefix].contains("    ") {
+        // A footnote definition or a callout title may open indented code after its marker,
+        // as a list item does. With no tab, that takes four spaces in a row.
+        let marker = line[prefix..].starts_with("[^") || line[prefix..].starts_with("[!");
+        if line[..prefix].contains("    ") || (marker && line[prefix..].contains("    ")) {
             return false;
         }
         let rest = line.trim_start_matches(' ');
@@ -1482,6 +1485,15 @@ mod tests {
         "%%d",
         "\u{FEFF}",
         "[^1]: ",
+        "[^1]:",
+        "- [ ] ",
+        "> [!note] ",
+        "> [!note]- ",
+        "* ",
+        "+ ",
+        "2) ",
+        "     ",
+        "[",
         "\n",
         "\n",
         "\n\n",
@@ -1519,6 +1531,17 @@ mod tests {
         "x",
         "word ",
     ];
+
+    /// A list item in a footnote, and a callout title, hold indented code the stripper does
+    /// not see.
+    #[test]
+    fn a_footnote_or_callout_title_is_not_plain() {
+        for md in ["[^1]: -     %%\n[^1]: ", "> [!note]     %%"] {
+            let openers = strip_comments(md).openers;
+            assert!(parsed_in_code(md, &openers), "{md:?}");
+            assert!(!plain(md, &openers), "{md:?}");
+        }
+    }
 
     proptest::proptest! {
         #![proptest_config(proptest::prelude::ProptestConfig::with_cases(20_000))]

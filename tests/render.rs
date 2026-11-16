@@ -1448,3 +1448,17 @@ fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     }
     files
 }
+
+#[test]
+fn a_comment_after_code_in_a_footnote_or_callout_title_stays_hidden() {
+    for md in [
+        "Text[^1].\n\nvisible %% zebra %% after\n\n[^1]: -     %% code\n",
+        "Text[^1].\n\n[^1]: -     %% code\n\nvisible %% zebra %% after\n",
+        "> Text[^1].\n>\n> [^1]: -     %% code\n\nvisible %% zebra %% after\n",
+        "> [!note]     %% code\n\nvisible %% zebra %% after\n",
+    ] {
+        let html = plain(md);
+        assert!(!html.contains("zebra"), "{md:?} gave {html}");
+        assert!(html.contains("comment-error"), "{md:?} gave {html}");
+    }
+}
