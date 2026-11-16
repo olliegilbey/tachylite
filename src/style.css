@@ -71,6 +71,8 @@ header .pins a { padding: 0.35rem 0.6rem; color: var(--link); font-size: 0.9rem;
 header button {
   margin-left: auto; padding: 0.5rem 0.7rem; background: none; border: 1px solid var(--line); border-radius: 6px; cursor: pointer;
 }
+/* The Today page's list waits for the script, which shows the daily note in its place. */
+@media (scripting: enabled) { .pick { display: none; } }
 .crumbs { font-size: 0.9rem; color: var(--dim); margin-top: 0.5rem; }
 /* A daily note's neighbours: the previous day at the left edge, the next at the right. */
 .days { display: flex; font-size: 0.9rem; }
