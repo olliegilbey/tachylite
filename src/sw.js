@@ -12,6 +12,10 @@ const PASS = new Set(["/.tachylite/events", "/.tachylite/sw.js", MANIFEST]);
 const NOTES = "/.tachylite/notes.json";
 const MERMAID = "/.tachylite/mermaid.js";
 const KEEP = [...SHELL, MANIFEST, MERMAID];
+const DIAGRAM = '<pre class="mermaid">';
+// A fetch the worker queues for gives up after 30 s, so a hung one cannot hold the queue; the
+// next sync retries it. Six pages share a slow link, so a working one finishes well inside it.
+const get = (url, s = 30) => fetch(url, { signal: AbortSignal.timeout(s * 1e3) });
 
 self.addEventListener("install", (e) => {
   e.waitUntil(
@@ -22,7 +26,23 @@ self.addEventListener("install", (e) => {
   );
 });
 
-self.addEventListener("activate", (e) => e.waitUntil(self.clients.claim()));
+// A worker from before Mermaid was synced may have left diagram pages with no script, so
+// the first sync after an upgrade looks for one.
+self.addEventListener("activate", (e) =>
+  e.waitUntil(
+    Promise.all([
+      self.clients.claim(),
+      later(async () => {
+        const cache = await caches.open(CACHE);
+        const have = await (await cache.match(MANIFEST))?.json();
+        if (have && !(await cache.match(MERMAID))) await cache.put(MANIFEST, json({ ...have, [MERMAID]: "" }));
+      }),
+    ]),
+  ),
+);
+
+// The version of each page a push stored, so a refresh begun before the push keeps off it.
+const pushed = new Map();
 
 // Stale-while-revalidate: the cached copy at once, and a fresh one stored behind it. The
 // switcher asks for its list with `no-cache` while connected, and gets the fresh one first.
@@ -33,8 +53,9 @@ self.addEventListener("fetch", (e) => {
     (async () => {
       const cache = await caches.open(CACHE);
       const hit = await cache.match(url.pathname);
+      const before = pushed.get(url.pathname);
       const fresh = fetch(e.request).then((r) => {
-        if (r.status === 200) e.waitUntil(cache.put(url.pathname, r.clone()).catch(() => {}));
+        if (r.status === 200 && pushed.get(url.pathname) === before) e.waitUntil(cache.put(url.pathname, r.clone()).catch(() => {}));
         // The server binds only after its first build, so a 404 means the file is gone.
         if (r.status === 404) e.waitUntil(cache.delete(url.pathname));
         return r;
@@ -75,6 +96,7 @@ async function store({ url, version, html }) {
   const cache = await caches.open(CACHE);
   const old = await cache.match(url);
   if (!old) return;
+  pushed.set(url, version);
   const headers = new Headers(old.headers);
   headers.delete("content-encoding");
   headers.delete("content-length");
@@ -89,7 +111,7 @@ async function store({ url, version, html }) {
 // again. A cached key the manifest does not list, as page or file, is dropped.
 async function sync() {
   const cache = await caches.open(CACHE);
-  const response = await fetch(MANIFEST).catch(() => null);
+  const response = await get(MANIFEST).catch(() => null);
   if (!response?.ok) return;
   const { pages: want, files = [] } = await response.json();
   const held = (await (await cache.match(MANIFEST))?.json()) ?? {};
@@ -110,10 +132,11 @@ async function sync() {
   const save = () => cache.put(MANIFEST, json(have));
   await save();
   let stored = 0;
+  let drawn = false;
   const workers = Array.from({ length: 6 }, async () => {
     for (let url; (url = stale.shift()); ) {
       try {
-        const r = await fetch(url);
+        const r = await get(url);
         if (r.status === 404) await cache.delete(url);
         if (r.status !== 200) continue;
         // A page may have changed since the manifest was read: record what came. A file
@@ -125,7 +148,10 @@ async function sync() {
           : want[url];
         await cache.put(url, r);
         have[url] = version;
-        if (!cached.has(MERMAID) && text.includes('<pre class="mermaid">')) have[MERMAID] = "";
+        if (!cached.has(MERMAID) && text.includes(DIAGRAM)) {
+          have[MERMAID] = "";
+          drawn = true;
+        }
         if (++stored % 50 === 0) await save();
       } catch {
         // A dropped connection or a full disk: the next sync retries it.
@@ -134,9 +160,18 @@ async function sync() {
   });
   await Promise.all(workers);
   await save();
-  // A diagram draws offline only with the script. It is large, so it comes after the pages.
+  // A diagram draws offline only with the script. It is large, so it comes after the pages,
+  // with time for 760 KB on a slow link. A pending entry with no page fetched this sync to
+  // show a diagram looks through the cached pages.
+  const draws = async () => {
+    for (const url in want) if ((await (await cache.match(url))?.text())?.includes(DIAGRAM)) return true;
+  };
   if (MERMAID in have) {
-    if (!cached.has(MERMAID)) await cache.add(MERMAID);
+    if (!cached.has(MERMAID) && (drawn || (await draws()))) {
+      const r = await get(MERMAID, 120);
+      if (!r.ok) return;
+      await cache.put(MERMAID, r);
+    }
     delete have[MERMAID];
     await save();
   }
