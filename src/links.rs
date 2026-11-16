@@ -104,13 +104,16 @@ fn drop_from(map: &mut HashMap<String, Vec<Arc<str>>>, k: String, path: &str) {
     }
 }
 
-/// Lowercase, with a trailing `.md` dropped.
+/// Lowercase, with a trailing `.md` dropped. The drop comes first, as a final sigma
+/// lowercases by what follows it.
 fn fold(s: &str) -> String {
-    let lower = s.to_lowercase();
-    match lower.strip_suffix(".md") {
-        Some(stem) => stem.to_string(),
-        None => lower,
-    }
+    let n = s.len().saturating_sub(".md".len());
+    let stem = if s.as_bytes()[n..].eq_ignore_ascii_case(b".md") {
+        &s[..n]
+    } else {
+        s
+    };
+    stem.to_lowercase()
 }
 
 /// The lowercase basename with `.md` dropped: the bucket a bare link or a path falls in.

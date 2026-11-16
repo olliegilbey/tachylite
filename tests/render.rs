@@ -1248,3 +1248,79 @@ fn a_byte_order_mark_keeps_the_properties() {
         "{html}"
     );
 }
+
+#[test]
+fn a_link_that_does_not_decode_resolves_as_written() {
+    let index = Index::new(["50%.md", "img/a%z.png", "b.md"]);
+    let body = render_body(
+        "n.md",
+        "[x](50%.md) [y](gone%zz.md) ![i](a%z.png) ![j](no%zz.png) [h](b.md#%zz)\n",
+        &index,
+        &Sources::new(),
+    );
+    for want in [
+        "<a href=\"/50%25\">x</a>",
+        "<a class=\"broken-link\">y</a>",
+        "src=\"/img/a%25z.png\"",
+        "<a href=\"/b#zz\">h</a>",
+    ] {
+        assert!(body.html.contains(want), "{want} not in {}", body.html);
+    }
+    assert_eq!(paths(&body.targets), ["50%.md", "b.md", "img/a%z.png"]);
+    let missing: Vec<&str> = body.broken.iter().map(|b| b.target.as_str()).collect();
+    assert_eq!(missing, ["gone%zz.md", "no%zz.png"]);
+}
+
+#[test]
+fn an_empty_wikilink_stays_text() {
+    let body = render_body(
+        "a.md",
+        "[[]] [[ ]] [[#]] [[ # ]] ![[]] [[|x]] [[#h]]\n",
+        &Index::new(["a.md"]),
+        &Sources::new(),
+    );
+    assert_eq!(
+        body.html, "<p>[[]] [[]] [[#]] [[#]] ![[]] [[|x]] <a href=\"#h\">#h</a></p>\n",
+        "the parser trims a wikilink's spaces"
+    );
+    assert!(body.targets.is_empty() && body.broken.is_empty());
+    let html = plain("---\nup: \"[[#]]\"\n---\n");
+    assert!(html.contains("<dd>[[#]]</dd>"), "{html}");
+}
+
+#[test]
+fn a_markdown_link_keeps_its_title() {
+    let index = Index::new(["b.md"]);
+    let body = render_body(
+        "a.md",
+        "[x](b.md \"Bee <&>\") [y](gone.md 'Gone') [z](https://e.com \"Web\") [n](b.md)\n",
+        &index,
+        &Sources::new(),
+    );
+    for want in [
+        "<a href=\"/b\" title=\"Bee &lt;&amp;&gt;\">x</a>",
+        "<a class=\"broken-link\" title=\"Gone\">y</a>",
+        "<a href=\"https://e.com\" title=\"Web\">z</a>",
+        "<a href=\"/b\">n</a>",
+    ] {
+        assert!(body.html.contains(want), "{want} not in {}", body.html);
+    }
+}
+
+#[test]
+fn a_link_in_alt_text_links_nothing() {
+    let index = Index::new(["b.md", "c.md", "x.png"]);
+    let body = render_body(
+        "a.md",
+        "![see [b](b.md) and [[c]]](x.png) ![w [b](b.md)](https://e.com/w.png) ![g [b](gone.md)](x.png)\n",
+        &index,
+        &Sources::new(),
+    );
+    assert_eq!(paths(&body.targets), ["x.png"]);
+    assert!(body.broken.is_empty(), "{:?}", body.broken);
+    assert!(
+        body.html.contains("alt=\"see b and [[c]]\""),
+        "{}",
+        body.html
+    );
+}

@@ -122,6 +122,24 @@ fn decode(s: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
+/// The percent-decoded path, or the path as written when it does not decode.
+fn decoded(s: &str) -> String {
+    decode(s).unwrap_or_else(|| s.to_string())
+}
+
+/// True for a wikilink with no path and no heading, such as `[[]]` or `[[#]]`.
+fn empty(url: &str) -> bool {
+    let (path, heading) = split(url);
+    path.trim().is_empty() && heading.is_none_or(|h| h.trim().is_empty())
+}
+
+/// True for a node within an image's alt text.
+fn in_alt<'a>(node: &'a AstNode<'a>) -> bool {
+    node.ancestors()
+        .skip(1)
+        .any(|a| matches!(a.data().value, NodeValue::Image(_)))
+}
+
 /// A Markdown link into the vault: no scheme, and not from the site root or within the page.
 fn local(url: &str) -> bool {
     let scheme = url.find(':').is_some_and(|i| {
@@ -337,6 +355,9 @@ fn property(body: &mut Body, from: &str, index: &Index, key: &str, value: &str) 
     if front::one_link(value) {
         let inner = &value[2..value.len() - 2];
         let (target, label) = inner.split_once('|').unwrap_or((inner, inner));
+        if empty(target) {
+            return escape(value);
+        }
         let (path, heading) = split(target);
         let open = open(body, from, index, path.trim(), heading);
         return format!("{open}{}</a>", escape(label));
@@ -422,6 +443,7 @@ fn render(
     let mut scripted = Vec::new();
     let mut raw = Vec::new();
     let mut callouts = Vec::new();
+    let mut blanks = Vec::new();
     for node in root.descendants() {
         match &node.data().value {
             NodeValue::Callout(c) if c.fold != CalloutFold::None => {
@@ -437,10 +459,17 @@ fn render(
                 raw.push(node);
                 continue;
             }
+            // Obsidian shows a link to nothing as the text it is.
+            NodeValue::WikiLink(link) if empty(&link.url) => {
+                blanks.push(node);
+                continue;
+            }
             NodeValue::WikiLink(link) if link.embed => {
                 embeds.push((node, link.url.clone()));
                 continue;
             }
+            // Alt text is plain text, so a link or image in it points nowhere.
+            NodeValue::Image(_) | NodeValue::Link(_) if in_alt(node) => continue,
             NodeValue::Image(link) if local(&link.url) => {
                 images.push((node, link.url.clone()));
                 continue;
@@ -481,7 +510,7 @@ fn render(
             }
             NodeValue::Link(link) if local(&link.url) => {
                 let (path, heading) = split(&link.url);
-                decode(path).map(|path| (path, heading.and_then(decode)))
+                Some((decoded(path), heading.map(decoded)))
             }
             NodeValue::Link(link) if link.url.starts_with('#') && link.url.len() > 1 => {
                 decode(&link.url[1..]).map(|heading| (String::new(), Some(heading)))
@@ -491,7 +520,15 @@ fn render(
         let Some((path, heading)) = link else {
             continue;
         };
-        let tag = open(&mut body, from, index, &path, heading.as_deref());
+        let mut tag = open(&mut body, from, index, &path, heading.as_deref());
+        if let NodeValue::Link(link) = &node.data().value
+            && !link.title.is_empty()
+        {
+            tag.insert_str(
+                tag.len() - 1,
+                &format!(" title=\"{}\"", escape(&link.title)),
+            );
+        }
         rewrites.push((node, tag));
     }
     for node in scripted {
@@ -509,10 +546,21 @@ fn render(
     for (node, open) in rewrites {
         wrap(&arena, node, open, "</a>".to_string());
     }
-    for (node, src) in images {
-        let Some(path) = decode(split(&src).0) else {
+    for node in blanks {
+        let NodeValue::WikiLink(link) = &node.data().value else {
             continue;
         };
+        let (bang, label) = (if link.embed { "!" } else { "" }, node.collect_text());
+        let text = if label == link.url {
+            format!("{bang}[[{label}]]")
+        } else {
+            format!("{bang}[[{}|{label}]]", link.url)
+        };
+        node.insert_before(arena.alloc(AstNode::from(NodeValue::Text(Cow::Owned(text)))));
+        node.detach();
+    }
+    for (node, src) in images {
+        let path = decoded(split(&src).0);
         match resolve(index, from, &path) {
             Resolved::Found(target) => {
                 if let NodeValue::Image(link) = &mut node.data_mut().value {
