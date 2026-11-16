@@ -15,11 +15,12 @@ pub struct Meta {
 }
 
 /// The YAML between a first line of `---` and the next line of `---`, and the body after it.
-/// Without a closing line there is no frontmatter.
+/// Without a closing line there is no frontmatter. A byte-order mark may come before it.
 pub fn split(md: &str) -> (Option<&str>, &str) {
-    let Some(rest) = md
+    let unmarked = md.strip_prefix('\u{FEFF}').unwrap_or(md);
+    let Some(rest) = unmarked
         .strip_prefix("---\n")
-        .or_else(|| md.strip_prefix("---\r\n"))
+        .or_else(|| unmarked.strip_prefix("---\r\n"))
     else {
         return (None, md);
     };
@@ -89,11 +90,10 @@ pub fn parse(yaml: &str) -> Vec<(String, Value)> {
             ">" | ">-" | ">+" => Value::Text(fold(&dedent(block))),
             // YAML reads an unquoted `[[link]]` as a nested list; the author meant a link.
             link if one_link(link) => Value::Text(link.to_string()),
-            flow if flow.starts_with('[') && flow.trim_end().ends_with(']') => {
-                let inner = flow.trim_end();
-                Value::List(items(&inner[1..inner.len() - 1]))
-            }
-            other => Value::Text(scalar(other)),
+            other => match flow(other) {
+                Some(inner) => Value::List(items(inner)),
+                None => Value::Text(scalar(other)),
+            },
         };
         out.push((key, value));
     }
@@ -107,22 +107,58 @@ pub fn one_link(s: &str) -> bool {
         .is_some_and(|inner| !inner.contains("]]") && !inner.contains("[["))
 }
 
-/// `key: rest`, split at the first colon followed by a space, a tab or the line end.
+/// The inside of a flow list, `[a, b]`, which a ` # comment` may follow.
+fn flow(value: &str) -> Option<&str> {
+    let inner = value.strip_prefix('[')?;
+    if let Some(inner) = inner.strip_suffix(']') {
+        return Some(inner);
+    }
+    let close = inner.match_indices(']').find(|&(at, _)| {
+        let after = &inner[at + 1..];
+        after.starts_with([' ', '\t']) && after.trim_start().starts_with('#')
+    })?;
+    Some(&inner[..close.0])
+}
+
+/// `key: rest`, split at the first colon followed by a space, a tab or the line end, and
+/// after a quoted key's closing quote.
 fn key_value(line: &str) -> Option<(String, &str)> {
     let bytes = line.as_bytes();
-    let colon = (0..bytes.len()).find(|&j| {
+    let from = match bytes.first() {
+        Some(&q @ (b'"' | b'\'')) => closing_quote(line, q).map_or(0, |at| at + 1),
+        _ => 0,
+    };
+    let colon = (from..bytes.len()).find(|&j| {
         bytes[j] == b':' && bytes.get(j + 1).is_none_or(|b| matches!(b, b' ' | b'\t'))
     })?;
     let key = scalar(line[..colon].trim());
     (!key.is_empty()).then(|| (key, line[colon + 1..].trim()))
 }
 
-/// A block under an empty value: a list if every line is an item, else raw text.
+/// The offset of the quote that closes the one `line` opens with: `\"` escapes a double
+/// quote, and `''` a single one.
+fn closing_quote(line: &str, q: u8) -> Option<usize> {
+    let bytes = line.as_bytes();
+    let mut j = 1;
+    while j < bytes.len() {
+        match bytes[j] {
+            b'\\' if q == b'"' => j += 1,
+            b if b == q && q == b'\'' && bytes.get(j + 1) == Some(&q) => j += 1,
+            b if b == q => return Some(j),
+            _ => {}
+        }
+        j += 1;
+    }
+    None
+}
+
+/// A block under an empty value: a list if every line is an item, else raw text. Comment
+/// lines are neither.
 fn nested(block: &[&str]) -> Value {
     let lines: Vec<&str> = block
         .iter()
         .copied()
-        .filter(|l| !l.trim().is_empty())
+        .filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))
         .collect();
     if lines.is_empty() {
         return Value::Text(String::new());

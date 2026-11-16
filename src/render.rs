@@ -288,14 +288,18 @@ pub fn embed_targets(from: &str, markdown: &str, index: &Index) -> Vec<Arc<str>>
 pub const NAME_MAX: usize = 255;
 
 /// A tag's page key: the tag lowercased, as Obsidian matches tags in any case. A tag holds
-/// letters, digits, `_`, `-` and `/`, with at least one non-digit and no empty level. A tag
-/// longer than a page name may be is no tag, so no link points at a page that cannot be
-/// written, and no nesting runs a page's path past the filesystem's limit.
+/// letters, digits, `_`, `-` and `/`, with at least one letter or digit, at least one
+/// non-digit and no empty level. A tag longer than a page name may be is no tag, so no link
+/// points at a page that cannot be written, and no nesting runs a page's path past the
+/// filesystem's limit.
 pub fn tag_key(tag: &str) -> Option<String> {
     let chars = tag
         .chars()
         .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '/'));
-    if !chars || tag.chars().all(|c| c.is_ascii_digit() || c == '/') {
+    if !chars
+        || tag.chars().all(|c| c.is_ascii_digit() || c == '/')
+        || !tag.chars().any(char::is_alphanumeric)
+    {
         return None;
     }
     let key = tag.to_lowercase();
@@ -541,9 +545,15 @@ fn render(
             Embed::Link(open) => wrap(&arena, node, open, "</a>".to_string()),
         }
     }
+    // A character reference can write `#`, which makes no tag. Only then are sources read.
+    let lines = (!texts.is_empty() && (markdown.contains("&#") || markdown.contains("&num;")))
+        .then(|| line_starts(&markdown));
     // Before the heading wrap, which gives a heading's first text a sibling.
     for node in texts {
-        link_tags(&arena, node, &mut body.tags);
+        let literal = lines
+            .as_ref()
+            .and_then(|lines| literal_hashes(&markdown, lines, node));
+        link_tags(&arena, node, literal.as_deref(), &mut body.tags);
     }
     for node in callouts {
         fold(&arena, node);
@@ -574,11 +584,74 @@ fn render(
     body
 }
 
+/// The byte offset of each line's start.
+fn line_starts(md: &str) -> Vec<usize> {
+    std::iter::once(0)
+        .chain(md.match_indices('\n').map(|(at, _)| at + 1))
+        .collect()
+}
+
+/// For each `#` in a text node, whether the note wrote it as `#` rather than as a character
+/// reference such as `&#35;`. `None` when the node's source does not account for each `#`.
+fn literal_hashes(md: &str, lines: &[usize], node: &AstNode<'_>) -> Option<Vec<bool>> {
+    let pos = node.data().sourcepos;
+    let NodeValue::Text(text) = &node.data().value else {
+        return None;
+    };
+    if pos.start.line != pos.end.line {
+        return None;
+    }
+    let line = *lines.get(pos.start.line.checked_sub(1)?)?;
+    let mut rest = md.get(line + pos.start.column.checked_sub(1)?..line + pos.end.column)?;
+    let mut literal = Vec::new();
+    while let Some(at) = rest.find(['#', '&']) {
+        rest = &rest[at..];
+        if rest.starts_with('#') {
+            literal.push(true);
+            rest = &rest[1..];
+        } else if let Some((len, hash)) = reference(rest) {
+            if hash {
+                literal.push(false);
+            }
+            rest = &rest[len..];
+        } else {
+            rest = &rest[1..];
+        }
+    }
+    (literal.len() == text.matches('#').count()).then_some(literal)
+}
+
+/// The length of the numeric character reference or `&num;` that `s` starts with, and
+/// whether it writes `#`.
+fn reference(s: &str) -> Option<(usize, bool)> {
+    if s.starts_with("&num;") {
+        return Some((5, true));
+    }
+    let digits = s.strip_prefix("&#")?;
+    let (radix, digits, max) = match digits.strip_prefix(['x', 'X']) {
+        Some(hex) => (16, hex, 6),
+        None => (10, digits, 7),
+    };
+    let n = digits
+        .bytes()
+        .take_while(|&b| char::from(b).is_digit(radix))
+        .count();
+    if !(1..=max).contains(&n) || digits.as_bytes().get(n) != Some(&b';') {
+        return None;
+    }
+    let value = u32::from_str_radix(&digits[..n], radix).ok()?;
+    Some((s.len() - digits.len() + n + 1, value == 35))
+}
+
 /// The byte ranges of the `#tags` in `text`, `#` included. A tag starts the text or follows
-/// whitespace, and `tag_key` takes it.
-fn tags(text: &str, at_start: bool) -> Vec<(usize, usize)> {
+/// whitespace, and `tag_key` takes it. `literal`, when known, says which `#` the note wrote
+/// as itself.
+fn tags(text: &str, at_start: bool, literal: Option<&[bool]>) -> Vec<(usize, usize)> {
     let mut found = Vec::new();
-    for (i, _) in text.match_indices('#') {
+    for (k, (i, _)) in text.match_indices('#').enumerate() {
+        if literal.is_some_and(|literal| literal.get(k) == Some(&false)) {
+            continue;
+        }
         let boundary = text[..i]
             .chars()
             .next_back()
@@ -599,7 +672,12 @@ fn tags(text: &str, at_start: bool) -> Vec<(usize, usize)> {
 }
 
 /// Splits a text node around its tags, which become tag links.
-fn link_tags<'a>(arena: &'a Arena<'a>, node: &'a AstNode<'a>, tags_found: &mut BTreeSet<String>) {
+fn link_tags<'a>(
+    arena: &'a Arena<'a>,
+    node: &'a AstNode<'a>,
+    literal: Option<&[bool]>,
+    tags_found: &mut BTreeSet<String>,
+) {
     let at_start = node
         .previous_sibling()
         .is_none_or(|p| matches!(p.data().value, NodeValue::SoftBreak | NodeValue::LineBreak));
@@ -607,7 +685,7 @@ fn link_tags<'a>(arena: &'a Arena<'a>, node: &'a AstNode<'a>, tags_found: &mut B
         NodeValue::Text(text) => text.to_string(),
         _ => return,
     };
-    let found = tags(&text, at_start);
+    let found = tags(&text, at_start, literal);
     if found.is_empty() {
         return;
     }

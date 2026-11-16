@@ -1181,3 +1181,70 @@ fn embedded_ids_stay_unique_and_their_links_stay_inside() {
         assert!(ids.contains(&id), "{id} not in {ids:?}");
     }
 }
+
+#[test]
+fn a_tag_needs_a_letter_or_digit() {
+    let body = render_body(
+        "a.md",
+        "#- #_ #-_/ #a- #1-2 #_x\n",
+        &Index::default(),
+        &Sources::new(),
+    );
+    assert_eq!(
+        body.tags.iter().map(String::as_str).collect::<Vec<_>>(),
+        ["1-2", "_x", "a-"]
+    );
+    for gone in ["tags/-\"", "tags/_\"", "tags/-_"] {
+        assert!(!body.html.contains(gone), "{gone} in {}", body.html);
+    }
+}
+
+#[test]
+fn a_character_reference_writes_a_hash_but_no_tag() {
+    let body = render_body(
+        "a.md",
+        "&#35;a &#x23;b &#X0023;c &num;d #e &#36;#f &#;g *&#35;h* #i&#35;j\n\n# &#35;k #l\n",
+        &Index::default(),
+        &Sources::new(),
+    );
+    assert_eq!(
+        body.tags.iter().map(String::as_str).collect::<Vec<_>>(),
+        ["e", "i", "l"]
+    );
+    for text in [
+        "#a ",
+        "#b ",
+        "#c ",
+        "#d ",
+        "$#f",
+        "&amp;#;g",
+        "<em>#h</em>",
+        "#j",
+        "#k",
+    ] {
+        assert!(body.html.contains(text), "{text} not in {}", body.html);
+    }
+}
+
+#[test]
+fn a_flow_list_of_tags_may_end_in_a_comment() {
+    let body = render_body(
+        "a.md",
+        "---\ntags: [a, b] # why\n---\nx\n",
+        &Index::default(),
+        &Sources::new(),
+    );
+    assert_eq!(
+        body.tags.iter().map(String::as_str).collect::<Vec<_>>(),
+        ["a", "b"]
+    );
+}
+
+#[test]
+fn a_byte_order_mark_keeps_the_properties() {
+    let html = plain("\u{FEFF}---\ntitle: T\n---\nbody\n");
+    assert!(
+        html.starts_with("<dl class=\"properties\"><dt>title</dt><dd>T</dd></dl>\n<p>body</p>"),
+        "{html}"
+    );
+}

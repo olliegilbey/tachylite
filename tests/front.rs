@@ -147,3 +147,54 @@ fn meta_reads_title_and_aliases() {
     );
     assert_eq!(meta("no front"), Meta::default());
 }
+
+#[test]
+fn a_byte_order_mark_before_the_fence_keeps_the_frontmatter() {
+    assert_eq!(
+        split("\u{FEFF}---\ntitle: A\n---\nbody"),
+        (Some("title: A\n"), "body")
+    );
+    assert_eq!(
+        split("\u{FEFF}# No front\n"),
+        (None, "\u{FEFF}# No front\n")
+    );
+    assert_eq!(
+        meta("\u{FEFF}---\ntitle: A\n---\n").title.as_deref(),
+        Some("A")
+    );
+}
+
+#[test]
+fn a_flow_list_may_end_in_a_comment() {
+    assert_eq!(
+        pairs("tags: [a, b] # c\nx: [a]   #c\nodd: [a]b]\n"),
+        vec![
+            kv("tags", list(&["a", "b"])),
+            kv("x", list(&["a"])),
+            kv("odd", list(&["a]b"])),
+        ]
+    );
+}
+
+#[test]
+fn comment_lines_in_a_nested_block_are_dropped() {
+    assert_eq!(
+        pairs("place:\n  # where\n  city: Lisbon\n  zip: 1000\nl:\n  - a\n  # c\n  - b\n"),
+        vec![
+            kv("place", text("city: Lisbon\nzip: 1000")),
+            kv("l", list(&["a", "b"])),
+        ]
+    );
+}
+
+#[test]
+fn a_quoted_key_keeps_its_colons() {
+    assert_eq!(
+        pairs("\"a: b\": c\n'it''s: x': y\n\"q\\\": r\": s\n"),
+        vec![
+            kv("a: b", text("c")),
+            kv("it's: x", text("y")),
+            kv("q\": r", text("s")),
+        ]
+    );
+}
