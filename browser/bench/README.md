@@ -99,7 +99,7 @@ A scenario names no note of its own, since the vault is generated. A path or a s
 
 Navigate by path. A scenario that taps a link by a selector breaks when the header changes.
 
-The `swipe-*` and `tap-*` scenarios time a switch between each pair of neighbouring tabs, each way. They use `tap`, `swipe` and `tab`.
+The `swipe-*` and `tap-*` scenarios time a switch between each pair of neighbouring tabs, each way. `tap-home-to-recent` and `tap-recent-to-home` time a tap across the Today tab. They use `tap`, `swipe` and `tab`.
 
 A profile is a device and a CPU rate. Add one to `profiles` in the same file.
 

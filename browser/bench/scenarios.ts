@@ -105,4 +105,6 @@ export const scenarios: Scenario[] = [
   ...switches("today", TODAY, "home", HOME, "right"),
   ...switches("today", TODAY, "recent", RECENT, "left"),
   ...switches("recent", RECENT, "today", TODAY, "right"),
+  { name: "tap-home-to-recent", start: HOME, action: { tap: RECENT }, until: { tab: RECENT } },
+  { name: "tap-recent-to-home", start: RECENT, action: { tap: HOME }, until: { tab: HOME } },
 ];

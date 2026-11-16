@@ -513,7 +513,7 @@ test("a stale copy of a tab is corrected once its stream connects", async ({ pag
   await expect(page.locator("main ul.recent").last()).toContainText("fresh");
 });
 
-// The client holds parsed copies of the tabs beside the one shown, read from the worker's cache.
+// The client holds parsed copies of every other tab, read from the worker's cache.
 test("a copy held ahead is read again after a sync, so a tab opens fresh offline", async ({ page, context }) => {
   await page.goto(base + TODAY);
   await shows(page, "Today");
@@ -539,7 +539,7 @@ test("a copy held ahead is read again after a sync, so a tab opens fresh offline
   await expect(page.locator("main ul.recent").last()).toContainText("fresh");
 });
 
-test("a switch to the tab beside this one reads nothing: its copy is held", async ({ page }) => {
+test("a switch to another tab reads nothing: its copy is held", async ({ page }) => {
   await page.addInitScript(() => {
     const reads: string[] = ((window as any).reads = []);
     const match = caches.match.bind(caches);
@@ -552,11 +552,11 @@ test("a switch to the tab beside this one reads nothing: its copy is held", asyn
   await synced(page, "/", TODAY, RECENT, latest);
   await live(page, "/");
   await rested(page);
-  expect(await page.evaluate(() => (window as any).reads)).toEqual(expect.arrayContaining([TODAY, latest]));
+  expect(await page.evaluate(() => (window as any).reads)).toEqual(expect.arrayContaining([TODAY, latest, RECENT]));
   await page.evaluate(() => ((window as any).reads.length = 0));
   await page.locator("header > a", { hasText: "Today" }).click();
   await shows(page, "Today");
-  // After the switch it reads the tabs now beside it, and neither page it has just shown.
+  // After the switch it reads the other tabs, and neither page it now shows.
   const reads: string[] = await page.evaluate(() => (window as any).reads);
   expect(reads.filter((url) => url === TODAY || url === latest)).toEqual([]);
 });

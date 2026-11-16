@@ -250,13 +250,13 @@
     const a = [...doc.querySelectorAll("main a[data-date]")].find((a) => a.dataset.date <= today);
     return a ? [a.pathname, a.dataset.date < today] : [TODAY, true];
   };
-  // Holds the tab on each side of the one shown, and the note Today would show.
+  // Holds every other tab, and the note Today would show.
   const prepare = () => {
     ahead = {};
     const all = tabs();
     const at = all.findIndex(current);
-    for (const a of at < 0 ? [] : [all[at - 1], all[at + 1]])
-      if (a)
+    for (const a of at < 0 ? [] : all)
+      if (!current(a))
         hold(a.pathname)
           .then((doc) => a.pathname === TODAY && hold(pick(doc)[0]))
           .catch(() => {});
