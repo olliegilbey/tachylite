@@ -11,12 +11,12 @@ expression: welcome()
 <link rel="manifest" href="/.tachylite/app.webmanifest">
 <link rel="icon" href="/.tachylite/icon.svg">
 <link rel="stylesheet" href="/.tachylite/style.css">
-<meta name="tachylite-version" content="633abcb3cc39bcb7">
+<meta name="tachylite-version" content="159190c4cbd0a8fc">
 <title>welcome</title>
 <script src="/.tachylite/live.js" defer></script>
 </head>
 <body>
-<header><a class="site" href="/">Tachylite</a><a href="/.tachylite/recent">Recent</a><button type="button" class="find" title="Find a note (Ctrl-K)">Find</button></header>
+<header><a href="/">Home</a><a href="/.tachylite/recent">Recent</a><button type="button" class="find" title="Find a note (Ctrl-K)">Find</button></header>
 <main>
 <dl class="properties"><dt>title</dt><dd>Welcome</dd><dt>tags</dt><dd><a class="tag" href="/.tachylite/tags/guide">#guide</a>, <a class="tag" href="/.tachylite/tags/sample">#sample</a></dd></dl>
 <h1 id="welcome-to-the-sample-vault">Welcome to the sample vault</h1>

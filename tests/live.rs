@@ -1157,7 +1157,7 @@ fn daily_settings_saved_with_the_config_take_effect() {
     .unwrap();
     fs::write(
         d.vault().join("tachylite.toml"),
-        "title = \"Field notes\"\n",
+        "pins = [\"a.md|Field notes\"]\n",
     )
     .unwrap();
     let mut html = events.expect("page").data;

@@ -9,7 +9,7 @@ use tachylite::render::{
 };
 
 /// The header of a site with no config.
-const HEADER: &str = "<header><a class=\"site\" href=\"/\">Tachylite</a><a href=\"/.tachylite/recent\">Recent</a><button type=\"button\" class=\"find\" title=\"Find a note (Ctrl-K)\">Find</button></header>\n";
+const HEADER: &str = "<header><a href=\"/\">Home</a><a href=\"/.tachylite/recent\">Recent</a><button type=\"button\" class=\"find\" title=\"Find a note (Ctrl-K)\">Find</button></header>\n";
 
 fn fixture(name: &str) -> String {
     std::fs::read_to_string(common::fixture().join(name)).unwrap()

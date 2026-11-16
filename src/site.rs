@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use crate::config::{Daily, Exclude, Nav};
 use crate::front;
-use crate::indexes::{self, Folder, Item};
+use crate::indexes::{self, Folder, Item, Tab};
 use crate::links::{Index, key};
 use crate::render::{
     Body, Broken, EMBED_DEPTH, NAME_MAX, Page, Sources, crumbs, embed_targets, encode, folder_url,
@@ -326,6 +326,8 @@ pub struct Site {
     daily: Option<(String, Vec<indexes::Part>)>,
     /// Every page's header, from `nav` and `daily` alone.
     header: String,
+    /// The headers of the home page, the Today page and the Recent page: each marks its tab.
+    tabs: [String; 3],
     /// What each folder's recent page was built from, hashed, so a derive rebuilds only the
     /// pages of the folders a save reached.
     scoped: HashMap<String, u64>,
@@ -537,12 +539,14 @@ impl Site {
             .filter(|(path, _)| !self.exclude.covers(path))
             .map(|(_, pin)| pin)
             .collect();
-        let site = self.nav.title.as_deref().unwrap_or(SITE);
-        let header = indexes::header(site, self.daily.is_some(), &pins);
+        let today = self.daily.is_some();
+        let header = indexes::header(today, &pins, None);
         // The Today page and the home page's name derive again.
         self.due = true;
         if header != self.header {
             self.header = header;
+            self.tabs = [Tab::Home, Tab::Today, Tab::Recent]
+                .map(|tab| indexes::header(today, &pins, Some(tab)));
             // Tag pages derive only where marked; every one holds the header.
             self.dirty_tags.extend(self.tagged.keys().cloned());
         }
@@ -930,6 +934,7 @@ impl Site {
         let mut inputs: HashMap<String, u64> = HashMap::new();
         {
             let header = self.header.as_str();
+            let [home, today, recent_tab] = &self.tabs;
             // Every folder that holds a page, with its subfolders and pages.
             let mut tree: BTreeMap<&str, (BTreeSet<&str>, Vec<Item>)> = BTreeMap::new();
             tree.entry("").or_default();
@@ -1040,14 +1045,14 @@ impl Site {
                     items,
                 };
                 let (key, page) = if path.is_empty() {
-                    (String::new(), indexes::home(header, site, &recent, &folder))
+                    (String::new(), indexes::home(home, site, &recent, &folder))
                 } else {
                     let page = indexes::folder(header, &folder, inputs.contains_key(path));
                     (format!("{FOLDERS}{path}"), page)
                 };
                 built.push((key, page.version, page.html));
             }
-            let page = indexes::recent(header, &recent);
+            let page = indexes::recent(recent_tab, &recent);
             built.push((".tachylite/recent".into(), page.version, page.html));
             for (folder, places) in &scoped {
                 let page = indexes::recent_in(header, folder, places.iter().map(|&p| row(p)));
@@ -1060,7 +1065,7 @@ impl Site {
                     .into_iter()
                     .map(|(date, path)| (date, self.title(path), url(path)))
                     .collect();
-                let page = indexes::today(header, &days);
+                let page = indexes::today(today, &days);
                 built.push((TODAY.into(), page.version, page.html));
             }
             let json = json.finish();

@@ -56,12 +56,12 @@ mark { background: #e8b45f55; color: inherit; }
 
 header {
   position: sticky; top: 0; z-index: 1; display: flex; flex-wrap: wrap; gap: 0 0.25rem; align-items: center;
-  padding: 0.25rem 0.75rem; background: var(--raise); border-bottom: 1px solid var(--line);
+  padding: 0 0.75rem; background: var(--raise); border-bottom: 1px solid var(--line);
 }
-header a, header button {
-  padding: 0.5rem 0.6rem; color: var(--fg); font: inherit; font-size: 0.95rem;
-}
-header .site { font-weight: 600; }
+header a, header button { color: var(--fg); font: inherit; font-size: 0.95rem; }
+/* A tab fills the bar's height, as a touch target. Its mark is a bar and a colour, with no bold: a tab keeps its width on every page. */
+header > a { padding: 0.7rem; }
+header > a[aria-current] { color: var(--link); box-shadow: inset 0 -2px; }
 /* Pins take a second line that scrolls sideways, so any number of them never wraps. */
 header .pins {
   flex: 1 0 100%; display: flex; overflow-x: auto; scrollbar-width: none; margin: 0 -0.75rem;
@@ -69,7 +69,7 @@ header .pins {
 }
 header .pins a { padding: 0.35rem 0.6rem; color: var(--link); font-size: 0.9rem; }
 header button {
-  margin-left: auto; background: none; border: 1px solid var(--line); border-radius: 6px; cursor: pointer;
+  margin-left: auto; padding: 0.4rem 0.7rem; background: none; border: 1px solid var(--line); border-radius: 6px; cursor: pointer;
 }
 .crumbs { font-size: 0.9rem; color: var(--dim); margin-top: 0.5rem; }
 

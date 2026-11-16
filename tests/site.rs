@@ -2207,7 +2207,7 @@ fn pins_come_from_config_alone() {
     assert!(!leaks(&delta), "an excluded pin reached the output");
     fold(&mut out, &delta, &mem);
     let page = page_text(&out, "pages/a.html");
-    assert!(page.contains(">Notes &amp; co</a>"), "{page}");
+    assert!(!page.contains("Notes &amp; co"), "{page}");
     assert!(
         page.contains(
             "<nav class=\"pins\"><a href=\"/people/Jane%20Doe\">Jane Doe</a>\
@@ -2282,4 +2282,102 @@ fn a_nav_change_rewrites_every_page_with_the_new_header() {
         &mem,
     );
     assert_eq!(out, expected);
+}
+
+const RECENT: &str = "pages/.tachylite/recent.html";
+
+/// A page's header, as written.
+fn header_of(out: &Out, path: &str) -> String {
+    let html = page_text(out, path);
+    let start = html.find("<header>").expect(path);
+    let end = html.find("</header>").expect(path);
+    html[start..end].to_string()
+}
+
+#[test]
+fn a_tab_page_marks_its_own_tab_and_no_other_page_marks_any() {
+    let mut mem = Mem::with(&[("a.md", "#t a"), ("d/2026-11-02.md", "b")]);
+    let mut site = Site::new(Exclude::default());
+    site.set_nav(nav(
+        "title = \"Notes\"\ndaily = { folder = \"d\" }\npins = [\"a.md\"]",
+    ));
+    let mut out = Out::new();
+    fold(&mut out, &site.apply(vec![sync_all(&mem)], &mut mem), &mem);
+
+    let plain = "<header><a href=\"/\">Home</a><a href=\"/.tachylite/today\">Today</a>\
+                 <a href=\"/.tachylite/recent\">Recent</a>\
+                 <button type=\"button\" class=\"find\" title=\"Find a note (Ctrl-K)\">Find</button>\
+                 <nav class=\"pins\"><a href=\"/a\">a</a></nav>";
+    let tabs = [
+        (HOME, "/"),
+        (TODAY, "/.tachylite/today"),
+        (RECENT, "/.tachylite/recent"),
+    ];
+    for (page, url) in tabs {
+        let link = format!("<a href=\"{url}\">");
+        let marked = format!("<a href=\"{url}\" aria-current=\"page\">");
+        assert_eq!(
+            header_of(&out, page),
+            plain.replacen(&link, &marked, 1),
+            "{page}"
+        );
+    }
+    let others: Vec<&String> = out
+        .keys()
+        .filter(|p| p.starts_with("pages/") && !tabs.iter().any(|(tab, _)| tab == p))
+        .collect();
+    assert_eq!(
+        others.len(),
+        5,
+        "a folder index, a folder recent page, a tag page, two notes"
+    );
+    for page in others {
+        assert_eq!(header_of(&out, page), plain, "{page}");
+    }
+
+    // The title names the home page, and no header.
+    let home = page_text(&out, HOME);
+    assert!(home.contains("<title>Notes</title>"), "{home}");
+    assert!(home.contains("<h1 class=\"sr\">Notes</h1>"), "{home}");
+    assert!(!header_of(&out, HOME).contains("Notes"));
+}
+
+#[test]
+fn with_no_daily_settings_the_tab_bar_has_no_today() {
+    let (out, _) = full(&Mem::with(&[("a.md", "a")]));
+    assert_eq!(
+        header_of(&out, "pages/a.html"),
+        "<header><a href=\"/\">Home</a><a href=\"/.tachylite/recent\">Recent</a>\
+         <button type=\"button\" class=\"find\" title=\"Find a note (Ctrl-K)\">Find</button>"
+    );
+    assert!(header_of(&out, HOME).contains("<a href=\"/\" aria-current=\"page\">Home</a>"));
+}
+
+#[test]
+fn a_save_a_retitle_and_a_new_daily_note_change_no_header() {
+    let mut mem = Mem::with(&[("a.md", "[[b]]"), ("b.md", "b"), ("d/2026-11-02.md", "x")]);
+    let mut site = Site::new(Exclude::default());
+    site.set_nav(nav("daily = { folder = \"d\" }\npins = [\"b.md\"]"));
+    let mut out = Out::new();
+    fold(&mut out, &site.apply(vec![sync_all(&mem)], &mut mem), &mem);
+    let headers = |out: &Out| -> BTreeMap<String, String> {
+        out.keys()
+            .filter(|p| p.starts_with("pages/"))
+            .map(|p| (p.clone(), header_of(out, p)))
+            .collect()
+    };
+    let mut before = headers(&out);
+
+    mem.0.insert("a.md".into(), b"edited [[b]]".to_vec());
+    mem.0
+        .insert("b.md".into(), b"---\ntitle: Bee\n---\nb".to_vec());
+    mem.0.insert("d/2026-11-03.md".into(), b"y".to_vec());
+    let changes = vec![touch("a.md"), touch("b.md"), touch("d/2026-11-03.md")];
+    apply_kept(&mut site, changes, &mut mem, &mut out);
+    let after = headers(&out);
+    before.insert(
+        "pages/d/2026-11-03.html".into(),
+        before["pages/a.html"].clone(),
+    );
+    assert_eq!(after, before);
 }
