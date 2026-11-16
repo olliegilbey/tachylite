@@ -2,7 +2,7 @@
 
 use std::cmp::Reverse;
 
-use crate::render::{Page, crumbs, escape, folder_url, shell};
+use crate::render::{Page, crumbs, encode, escape, folder_url, shell};
 
 /// A note or html page as an index lists it.
 pub struct Item<'a> {
@@ -46,6 +46,118 @@ fn dated(name: &str) -> bool {
 
 pub const HOME_RECENT: usize = 10;
 pub const RECENT: usize = 50;
+/// The daily notes the Today page lists. Enough to reach back two months, and small.
+pub const TODAY: usize = 60;
+
+/// The URL of a folder's recent page.
+pub fn recent_url(folder: &str) -> String {
+    format!("/.tachylite/recent/{}", encode(folder))
+}
+
+/// A pin as the header shows it.
+pub struct Pin {
+    pub label: String,
+    pub url: String,
+}
+
+/// The header every page carries: the site link, Today when there is a Today page, Recent,
+/// Find, and then the pins. It comes from config alone, so a save never changes it.
+pub fn header(site: &str, today: bool, pins: &[Pin]) -> String {
+    let mut html = format!("<header><a class=\"site\" href=\"/\">{}</a>", escape(site));
+    if today {
+        html.push_str("<a href=\"/.tachylite/today\">Today</a>");
+    }
+    html.push_str(
+        "<a href=\"/.tachylite/recent\">Recent</a>\
+         <button type=\"button\" class=\"find\" title=\"Find a note (Ctrl-K)\">Find</button>",
+    );
+    if !pins.is_empty() {
+        html.push_str("<nav class=\"pins\">");
+        for pin in pins {
+            html.push_str(&format!(
+                "<a href=\"{}\">{}</a>",
+                pin.url,
+                escape(&pin.label)
+            ));
+        }
+        html.push_str("</nav>");
+    }
+    html.push_str("</header>\n");
+    html
+}
+
+/// One piece of a daily-note format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Part {
+    Year,
+    Month,
+    Day,
+    Literal(char),
+}
+
+/// Parses a Moment.js format of `YYYY`, `MM` and `DD` with literal separators, `/` for a
+/// subfolder. Any other token is refused with why: a guess could list the wrong notes.
+pub fn date_format(format: &str) -> Result<Vec<Part>, String> {
+    let mut parts = Vec::new();
+    let mut rest = format;
+    while let Some(c) = rest.chars().next() {
+        let (part, len) = if rest.starts_with("YYYY") {
+            (Part::Year, 4)
+        } else if rest.starts_with("MM") {
+            (Part::Month, 2)
+        } else if rest.starts_with("DD") {
+            (Part::Day, 2)
+        } else if c.is_alphabetic() || c == '[' {
+            let token: String = rest.chars().take_while(|t| *t == c).collect();
+            return Err(format!(
+                "daily format {format:?}: {token:?} is not supported; use YYYY, MM and DD"
+            ));
+        } else {
+            (Part::Literal(c), c.len_utf8())
+        };
+        parts.push(part);
+        rest = &rest[len..];
+    }
+    for (part, name) in [(Part::Year, "YYYY"), (Part::Month, "MM"), (Part::Day, "DD")] {
+        if !parts.contains(&part) {
+            return Err(format!("daily format {format:?}: it has no {name}"));
+        }
+    }
+    Ok(parts)
+}
+
+/// The ISO date `YYYY-MM-DD` a name in `format` carries, or `None` if it does not match.
+/// A token used twice must read the same both times.
+pub fn date_of(format: &[Part], name: &str) -> Option<String> {
+    let mut rest = name.as_bytes();
+    let mut ymd = [None::<u32>; 3];
+    for part in format {
+        let (slot, len) = match part {
+            Part::Literal(c) => {
+                let mut buf = [0; 4];
+                rest = rest.strip_prefix(c.encode_utf8(&mut buf).as_bytes())?;
+                continue;
+            }
+            Part::Year => (0, 4),
+            Part::Month => (1, 2),
+            Part::Day => (2, 2),
+        };
+        let digits = rest.get(..len)?;
+        if !digits.iter().all(u8::is_ascii_digit) {
+            return None;
+        }
+        let n = digits.iter().fold(0, |n, d| n * 10 + u32::from(d - b'0'));
+        if *ymd[slot].get_or_insert(n) != n {
+            return None;
+        }
+        rest = &rest[len..];
+    }
+    let [Some(y), Some(m), Some(d)] = ymd else {
+        return None;
+    };
+    (rest.is_empty() && (1..=12).contains(&m) && (1..=31).contains(&d))
+        .then(|| format!("{y:04}-{m:02}-{d:02}"))
+}
 
 fn listing(folder: &Folder) -> String {
     let mut html = String::new();
@@ -76,61 +188,100 @@ pub fn row(title: &str, url: &str) -> String {
     format!("<li><a href=\"{url}\">{}</a></li>", escape(title))
 }
 
-fn recent_list(items: &[&Item]) -> String {
-    let mut html = String::from("<ul class=\"recent\">");
-    for item in items {
-        html.push_str(&format!(
-            "<li><a href=\"{}\">{}</a> <span class=\"meta\">",
-            item.url,
-            escape(item.title)
-        ));
-        if !item.folder.is_empty() {
-            html.push_str(&escape(item.folder));
-            html.push_str(" · ");
-        }
-        html.push_str(&date(item.modified));
-        html.push_str("</span></li>");
+/// One note's line in a recent list: its title, then its folder and date.
+pub fn recent_row(item: &Item) -> String {
+    let mut html = format!(
+        "<li><a href=\"{}\">{}</a> <span class=\"meta\">",
+        item.url,
+        escape(item.title)
+    );
+    if !item.folder.is_empty() {
+        html.push_str(&escape(item.folder));
+        html.push_str(" · ");
     }
+    html.push_str(&date(item.modified));
+    html.push_str("</span></li>");
+    html
+}
+
+fn recent_list<'a>(rows: impl IntoIterator<Item = &'a str>) -> String {
+    let mut html = String::from("<ul class=\"recent\">");
+    html.extend(rows);
     html.push_str("</ul>\n");
     html
 }
 
 /// `/`: the newest notes, then the root folder. The header names the site, so the
 /// page's heading is for screen readers only.
-pub fn home(site: &str, recent: &[&Item], root: &Folder) -> Page {
+pub fn home(header: &str, site: &str, recent: &[&str], root: &Folder) -> Page {
     let mut main = format!("<h1 class=\"sr\">{}</h1>\n", escape(site));
     if !recent.is_empty() {
         main.push_str("<h2>Recent</h2>\n");
-        main.push_str(&recent_list(&recent[..recent.len().min(HOME_RECENT)]));
+        main.push_str(&recent_list(recent.iter().take(HOME_RECENT).copied()));
         main.push_str("<p><a href=\"/.tachylite/recent\">All recent notes</a></p>\n");
     }
     main.push_str(&listing(root));
-    shell(site, &main)
+    shell(header, site, &main)
 }
 
-/// `/.tachylite/folders/<folder>`.
-pub fn folder(folder: &Folder) -> Page {
+/// `/.tachylite/folders/<folder>`, with a link to its recent page when it has one.
+pub fn folder(header: &str, folder: &Folder, recent: bool) -> Page {
     let (parent, name) = folder.path.rsplit_once('/').unwrap_or(("", folder.path));
     let mut main = crumbs(parent);
     main.push_str(&format!("<h1>{}</h1>\n", escape(name)));
+    if recent {
+        main.push_str(&format!(
+            "<p><a href=\"{}\">Recent in {}</a></p>\n",
+            recent_url(folder.path),
+            escape(name)
+        ));
+    }
     main.push_str(&listing(folder));
-    shell(name, &main)
+    shell(header, name, &main)
 }
 
 /// `/.tachylite/tags/<tag>`: the notes with the tag or a tag nested under it, as `row`s in
 /// listing order.
-pub fn tag<'a>(tag: &str, rows: impl IntoIterator<Item = &'a str>) -> Page {
+pub fn tag<'a>(header: &str, tag: &str, rows: impl IntoIterator<Item = &'a str>) -> Page {
     let mut main = format!("<h1>#{}</h1>\n<ul class=\"notes\">", escape(tag));
     main.extend(rows);
     main.push_str("</ul>\n");
-    shell(&format!("#{tag}"), &main)
+    shell(header, &format!("#{tag}"), &main)
 }
 
-/// `/.tachylite/recent`.
-pub fn recent(recent: &[&Item]) -> Page {
+/// `/.tachylite/recent`, given its `recent_row`s newest first.
+pub fn recent(header: &str, rows: &[&str]) -> Page {
     let mut main = String::from("<h1>Recent</h1>\n");
-    main.push_str(&recent_list(&recent[..recent.len().min(RECENT)]));
-    shell("Recent", &main)
+    main.push_str(&recent_list(rows.iter().take(RECENT).copied()));
+    shell(header, "Recent", &main)
+}
+
+/// `/.tachylite/recent/<folder>`: the newest notes under a folder, at any depth.
+pub fn recent_in<'a>(header: &str, folder: &str, rows: impl IntoIterator<Item = &'a str>) -> Page {
+    let name = folder.rsplit('/').next().unwrap_or(folder);
+    let mut main = crumbs(folder);
+    main.push_str(&format!("<h1>Recent in {}</h1>\n", escape(name)));
+    main.push_str(&recent_list(rows));
+    shell(header, &format!("Recent in {name}"), &main)
+}
+
+/// `/.tachylite/today`: the daily notes as `(date, title, url)`, newest first. Each link
+/// carries its ISO date, so the client opens the newest dated on or before its own today.
+pub fn today(header: &str, days: &[(String, &str, String)]) -> Page {
+    let mut main = String::from("<h1>Daily notes</h1>\n");
+    if days.is_empty() {
+        main.push_str("<p>No daily notes yet.</p>\n");
+    } else {
+        main.push_str("<ul class=\"notes\">");
+        for (date, title, url) in days {
+            main.push_str(&format!(
+                "<li><a href=\"{url}\" data-date=\"{date}\">{}</a></li>",
+                escape(title)
+            ));
+        }
+        main.push_str("</ul>\n");
+    }
+    shell(header, "Today", &main)
 }
 
 /// `/.tachylite/notes.json`: `[[title, url, path, alias…], …]`, for the switcher.

@@ -5,13 +5,13 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::config::Exclude;
+use crate::config::{Daily, Exclude, Nav};
 use crate::front;
 use crate::indexes::{self, Folder, Item};
 use crate::links::{Index, key};
 use crate::render::{
-    Body, Broken, EMBED_DEPTH, NAME_MAX, Page, Sources, crumbs, embed_targets, encode, note_title,
-    render_body, render_page, url,
+    Body, Broken, EMBED_DEPTH, NAME_MAX, Page, Sources, crumbs, embed_targets, encode, folder_url,
+    note_title, render_body, render_page, url,
 };
 use crate::vault::{Entry, Kind, ReadError, SkipReason, Skipped, VaultDir, classify};
 
@@ -86,6 +86,8 @@ pub struct Report {
     /// excluded folder, so the caller derives at once rather than wait for its queue to
     /// drain, and no index page keeps it.
     pub unpublished: bool,
+    /// After a sync of the root: each pin and daily format the header cannot show, and why.
+    pub notices: Vec<String>,
 }
 
 /// All of an apply's output and its report, collected.
@@ -96,6 +98,7 @@ pub struct Delta {
     pub pushes: Vec<Push>,
     pub skipped: Vec<Skipped>,
     pub broken: Vec<Broken>,
+    pub notices: Vec<String>,
 }
 
 impl Sink for Delta {
@@ -185,7 +188,7 @@ const HOLD_MAX: usize = 32 * 1024 * 1024;
 /// reads it once; a full sync reads the rest again per batch, so it never holds every note.
 const FRESH_MAX: usize = 1024 * 1024;
 
-/// The site's name, until config names it.
+/// The site's name when config names none.
 const SITE: &str = "Tachylite";
 
 /// The switcher list's URL key.
@@ -202,13 +205,22 @@ fn generated_out(key: &str) -> String {
     match key {
         "" => "pages/.tachylite/home.html".into(),
         NOTES_JSON => format!("files/{key}"),
-        _ if key.starts_with(FOLDERS) => format!("pages/{key}/.index.html"),
+        _ if key.starts_with(FOLDERS) || key.starts_with(RECENT_IN) => {
+            format!("pages/{key}/.index.html")
+        }
         _ => format!("pages/{key}.html"),
     }
 }
 
 /// The URL key prefix of the folder indexes.
 const FOLDERS: &str = ".tachylite/folders/";
+
+/// The URL key prefix of the recent pages of folders. Each is a dot name inside its
+/// folder's path, as a folder index is.
+const RECENT_IN: &str = ".tachylite/recent/";
+
+/// The URL key of the Today page.
+const TODAY: &str = ".tachylite/today";
 
 /// The URL key prefix of the tag pages. A tag holds no `.`, so `<tag>.html` never clashes
 /// with the folder of a nested tag.
@@ -302,6 +314,17 @@ pub struct Site {
     unlisted: bool,
     /// Whether an apply ran since the last derive.
     due: bool,
+    /// The header and pins from config.
+    nav: Nav,
+    /// Obsidian's daily-notes settings, which `nav.daily` overrides.
+    obsidian: Option<Daily>,
+    /// The daily folder and its format, when a Today page is built.
+    daily: Option<(String, Vec<indexes::Part>)>,
+    /// Every page's header, from `nav` and `daily` alone.
+    header: String,
+    /// What each folder's recent page was built from, hashed, so a derive rebuilds only the
+    /// pages of the folders a save reached.
+    scoped: HashMap<String, u64>,
 }
 
 /// One note's outgoing links.
@@ -336,6 +359,49 @@ fn claim(path: &str, kind: Kind) -> (String, String) {
         }
         Kind::Html | Kind::Asset => (path.to_string(), format!("files/{path}")),
     }
+}
+
+/// A pin as written, `path` or `path|label`: its vault path, and how the header shows it.
+/// A path the publish list names is a file; any other is a folder. Its URL follows from
+/// the path alone, so no note's state reaches the header.
+fn pin(text: &str) -> Option<(String, indexes::Pin)> {
+    let (path, label) = text.split_once('|').unwrap_or((text, ""));
+    let path = path.trim();
+    let path = path.strip_prefix("./").unwrap_or(path).trim_matches('/');
+    if path.is_empty() {
+        return None;
+    }
+    let file = classify(path, &Exclude::default()).is_some();
+    let (url, name) = if file {
+        (url(path), note_title(path))
+    } else {
+        (folder_url(path), path.rsplit('/').next().unwrap_or(path))
+    };
+    let label = match label.trim() {
+        "" => name,
+        label => label,
+    };
+    Some((
+        path.to_string(),
+        indexes::Pin {
+            label: label.to_string(),
+            url,
+        },
+    ))
+}
+
+fn parent(path: &str) -> &str {
+    path.rsplit_once('/').map_or("", |(folder, _)| folder)
+}
+
+/// The name a daily note's date is read from: its path under `folder`, without `.md`.
+fn daily_name<'a>(path: &'a str, folder: &str) -> Option<&'a str> {
+    let rest = if folder.is_empty() {
+        path
+    } else {
+        path.strip_prefix(folder)?.strip_prefix('/')?
+    };
+    rest.get(..rest.len().checked_sub(".md".len())?)
 }
 
 fn parents(out: &str) -> impl Iterator<Item = &str> {
@@ -418,15 +484,109 @@ fn render_all<'p>(
 
 impl Site {
     pub fn new(exclude: Exclude) -> Site {
-        Site {
+        let mut site = Site {
             exclude,
             ..Site::default()
-        }
+        };
+        site.renav();
+        site
     }
 
     /// Takes effect at the next `Sync` of the root, which re-lists every file.
     pub fn set_exclude(&mut self, exclude: Exclude) {
         self.exclude = exclude;
+        self.renav();
+    }
+
+    /// Sets the header's config. A note page takes it at the next `Sync` of the root, which
+    /// renders every note; the index pages, at the next derive.
+    pub fn set_nav(&mut self, nav: Nav) {
+        self.nav = nav;
+        self.renav();
+    }
+
+    /// Sets Obsidian's daily-notes settings, as `set_nav` sets the config's. Returns
+    /// whether they changed.
+    pub fn set_obsidian(&mut self, daily: Option<Daily>) -> bool {
+        if self.obsidian == daily {
+            return false;
+        }
+        self.obsidian = daily;
+        self.renav();
+        true
+    }
+
+    fn renav(&mut self) {
+        // An excluded folder publishes no daily note, so its Today link would lead nowhere.
+        let daily = self.nav.daily.as_ref().or(self.obsidian.as_ref());
+        self.daily = daily
+            .filter(|d| !self.exclude.covers(&d.folder))
+            .and_then(|d| {
+                let format = indexes::date_format(&d.format).ok()?;
+                Some((d.folder.clone(), format))
+            });
+        let pins: Vec<indexes::Pin> = self
+            .nav
+            .pins
+            .iter()
+            .filter_map(|text| pin(text))
+            .filter(|(path, _)| !self.exclude.covers(path))
+            .map(|(_, pin)| pin)
+            .collect();
+        let site = self.nav.title.as_deref().unwrap_or(SITE);
+        let header = indexes::header(site, self.daily.is_some(), &pins);
+        // The Today page and the home page's name derive again.
+        self.due = true;
+        if header != self.header {
+            self.header = header;
+            // Tag pages derive only where marked; every one holds the header.
+            self.dirty_tags.extend(self.tagged.keys().cloned());
+        }
+    }
+
+    /// Each pin and daily format the header cannot show, and why. A pin that names no
+    /// published path is likely a typo, as an unmatched exclude pattern is.
+    fn nav_notices(&self) -> Vec<String> {
+        let mut notices = Vec::new();
+        if let Some(daily) = self.nav.daily.as_ref().or(self.obsidian.as_ref()) {
+            if let Err(why) = indexes::date_format(&daily.format) {
+                notices.push(format!("{why}; there is no Today page"));
+            } else if self.exclude.covers(&daily.folder) {
+                notices.push(format!(
+                    "daily folder {:?} is excluded; there is no Today page",
+                    daily.folder
+                ));
+            }
+        }
+        for text in &self.nav.pins {
+            let Some((path, _)) = pin(text) else {
+                notices.push(format!("pin {text:?} names no path"));
+                continue;
+            };
+            if self.exclude.covers(&path) {
+                notices.push(format!(
+                    "pin {text:?} is excluded, so the header leaves it out"
+                ));
+            } else if !self.winners.contains(&path) && !self.holds(&path) {
+                notices.push(format!(
+                    "pin {text:?} matches no published note, folder or html page; check it for a typo"
+                ));
+            }
+        }
+        notices
+    }
+
+    /// Whether a published note or html page lies under `folder`, so it has an index.
+    fn holds(&self, folder: &str) -> bool {
+        let prefix = format!("{folder}/");
+        self.winners
+            .range(prefix.clone()..)
+            .take_while(|p| p.starts_with(&prefix))
+            .any(|p| self.entries.get(p).is_some_and(|k| *k != Kind::Asset))
+    }
+
+    pub fn nav(&self) -> &Nav {
+        &self.nav
     }
 
     pub fn exclude(&self) -> &Exclude {
@@ -450,6 +610,7 @@ impl Site {
         self.derive_to(&mut delta);
         delta.skipped = report.skipped;
         delta.broken = report.broken;
+        delta.notices = report.notices;
         delta
     }
 
@@ -464,6 +625,9 @@ impl Site {
         self.due = true;
         let mut report = Report::default();
         let mut touched = BTreeSet::new();
+        let root = changes
+            .iter()
+            .any(|c| matches!(c, Change::Sync { under, .. } if under.is_empty()));
         for change in changes {
             match change {
                 Change::Touch(path) => {
@@ -626,6 +790,9 @@ impl Site {
 
         self.modified.retain(|path, _| won.contains(path));
         self.winners = won;
+        if root {
+            report.notices = self.nav_notices();
+        }
         report.skipped.sort_by(|a, b| a.path.cmp(&b.path));
         report.broken.sort_by(|a, b| a.from.cmp(&b.from));
         report
@@ -653,7 +820,8 @@ impl Site {
         let mut pushes = Vec::new();
         for &(path, body) in bodies {
             done.foot.remove(path);
-            let page = render_page(path, self.title(path), body, &self.backlinks(path));
+            let backlinks = self.backlinks(path);
+            let page = render_page(&self.header, path, self.title(path), body, &backlinks);
             let new = !self.winners.contains(path) && !done.pushed.contains(path);
             if !new && self.versions.get(path) == Some(&page.version) {
                 continue;
@@ -754,11 +922,15 @@ impl Site {
     /// pushes the ones whose version changed. Returns whether any changed.
     fn indexes(&mut self, won: &BTreeSet<String>, sink: &mut impl Sink) -> bool {
         let mut built: Vec<(String, String, String)> = Vec::new();
+        let mut kept: Vec<String> = Vec::new();
+        let mut inputs: HashMap<String, u64> = HashMap::new();
         {
+            let header = self.header.as_str();
             // Every folder that holds a page, with its subfolders and pages.
             let mut tree: BTreeMap<&str, (BTreeSet<&str>, Vec<Item>)> = BTreeMap::new();
             tree.entry("").or_default();
             let mut notes: Vec<(i64, &str)> = Vec::new();
+            let mut days: Vec<(String, &str)> = Vec::new();
             let mut json = indexes::NotesJson::default();
             for path in won {
                 let kind = self.entries.get(path).copied().unwrap_or(Kind::Asset);
@@ -768,12 +940,11 @@ impl Site {
                 let (folder, name) = path.rsplit_once('/').unwrap_or(("", path));
                 let mut child = folder;
                 while !child.is_empty() {
-                    let parent = child.rsplit_once('/').map_or("", |(p, _)| p);
-                    let (subs, _) = tree.entry(parent).or_default();
+                    let (subs, _) = tree.entry(parent(child)).or_default();
                     if !subs.insert(child) {
                         break;
                     }
-                    child = parent;
+                    child = parent(child);
                 }
                 let modified = self.modified.get(path).copied().unwrap_or_default();
                 let title = if kind == Kind::Note {
@@ -785,6 +956,12 @@ impl Site {
                 if kind == Kind::Note {
                     notes.push((modified, path));
                     json.push(title, &url, note_key(path), self.index.aliases(path));
+                    if let Some((daily, format)) = &self.daily
+                        && let Some(date) =
+                            daily_name(path, daily).and_then(|n| indexes::date_of(format, n))
+                    {
+                        days.push((date, path));
+                    }
                 }
                 tree.entry(folder).or_default().1.push(Item {
                     title,
@@ -794,22 +971,57 @@ impl Site {
                 });
             }
             // Newest first; equal times by path.
-            let order = |a: &(i64, &str), b: &(i64, &str)| b.0.cmp(&a.0).then(a.1.cmp(b.1));
-            if notes.len() > indexes::RECENT {
-                notes.select_nth_unstable_by(indexes::RECENT, order);
-                notes.truncate(indexes::RECENT);
+            notes.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)));
+            // The newest notes under each folder, at any depth, by place in `notes`. A folder
+            // has every note its subfolder has, so once a folder's list is full, so is each
+            // folder above it.
+            let mut scoped: HashMap<&str, Vec<usize>> = HashMap::new();
+            for (place, &(_, path)) in notes.iter().enumerate() {
+                let mut folder = parent(path);
+                while !folder.is_empty() {
+                    let list = scoped.entry(folder).or_default();
+                    if list.len() == indexes::RECENT {
+                        break;
+                    }
+                    list.push(place);
+                    folder = parent(folder);
+                }
             }
-            notes.sort_unstable_by(order);
-            let recent: Vec<Item> = notes
-                .iter()
-                .map(|&(modified, path)| Item {
-                    title: self.title(path),
-                    url: url(path),
-                    folder: path.rsplit_once('/').map_or("", |(f, _)| f),
-                    modified,
-                })
-                .collect();
-            let recent: Vec<&Item> = recent.iter().collect();
+            // A folder whose list reads as it did needs no new page.
+            scoped.retain(|folder, places| {
+                let mut hasher = DefaultHasher::new();
+                header.hash(&mut hasher);
+                for &place in places.iter() {
+                    let (modified, path) = notes[place];
+                    (modified, path, self.title(path)).hash(&mut hasher);
+                }
+                let input = hasher.finish();
+                inputs.insert(folder.to_string(), input);
+                let same = self.scoped.get(*folder) == Some(&input)
+                    && self.generated.contains_key(&format!("{RECENT_IN}{folder}"));
+                if same {
+                    kept.push(format!("{RECENT_IN}{folder}"));
+                }
+                !same
+            });
+            // Each listed note's row, made once.
+            let mut rows: Vec<Option<String>> = vec![None; notes.len()];
+            let places =
+                (0..notes.len().min(indexes::RECENT)).chain(scoped.values().flatten().copied());
+            for place in places {
+                let (modified, path) = notes[place];
+                rows[place].get_or_insert_with(|| {
+                    indexes::recent_row(&Item {
+                        title: self.title(path),
+                        url: url(path),
+                        folder: parent(path),
+                        modified,
+                    })
+                });
+            }
+            let row = |place: usize| rows[place].as_deref().unwrap_or_default();
+            let recent: Vec<&str> = (0..notes.len().min(indexes::RECENT)).map(row).collect();
+            let site = self.nav.title.as_deref().unwrap_or(SITE);
             for (path, (subs, mut items)) in tree {
                 items.sort_by_cached_key(|i| (indexes::order(i.title), i.url.clone()));
                 let folder = Folder {
@@ -824,21 +1036,41 @@ impl Site {
                     items,
                 };
                 let (key, page) = if path.is_empty() {
-                    (String::new(), indexes::home(SITE, &recent, &folder))
+                    (String::new(), indexes::home(header, site, &recent, &folder))
                 } else {
-                    (format!("{FOLDERS}{path}"), indexes::folder(&folder))
+                    let page = indexes::folder(header, &folder, inputs.contains_key(path));
+                    (format!("{FOLDERS}{path}"), page)
                 };
                 built.push((key, page.version, page.html));
             }
-            let page = indexes::recent(&recent);
+            let page = indexes::recent(header, &recent);
             built.push((".tachylite/recent".into(), page.version, page.html));
+            for (folder, places) in &scoped {
+                let page = indexes::recent_in(header, folder, places.iter().map(|&p| row(p)));
+                built.push((format!("{RECENT_IN}{folder}"), page.version, page.html));
+            }
+            if self.daily.is_some() {
+                days.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)));
+                days.truncate(indexes::TODAY);
+                let days: Vec<(String, &str, String)> = days
+                    .into_iter()
+                    .map(|(date, path)| (date, self.title(path), url(path)))
+                    .collect();
+                let page = indexes::today(header, &days);
+                built.push((TODAY.into(), page.version, page.html));
+            }
             let json = json.finish();
             let mut hasher = DefaultHasher::new();
             json.hash(&mut hasher);
             built.push((NOTES_JSON.into(), format!("{:016x}", hasher.finish()), json));
         }
 
-        let fresh: HashSet<String> = built.iter().map(|(key, ..)| key.clone()).collect();
+        self.scoped = inputs;
+        let fresh: HashSet<String> = built
+            .iter()
+            .map(|(key, ..)| key.clone())
+            .chain(kept)
+            .collect();
         // Tag pages derive only where a tag was added, removed or retitled, so a save that
         // changes no tag builds none.
         let mut gone: Vec<String> = self
@@ -974,6 +1206,7 @@ impl Site {
         // A note with two nested tags is listed once.
         places.dedup();
         Some(indexes::tag(
+            &self.header,
             tag,
             places.into_iter().map(|place| rows.rows[place].as_str()),
         ))

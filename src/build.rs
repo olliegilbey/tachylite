@@ -16,6 +16,8 @@ pub struct Summary {
     pub broken: Vec<crate::render::Broken>,
     /// Exclude patterns, as written, that matched no path.
     pub unmatched: Vec<String>,
+    /// Each pin and daily format the header cannot show, and why.
+    pub notices: Vec<String>,
 }
 
 fn io_err(path: &Path) -> impl FnOnce(io::Error) -> Error + '_ {
@@ -59,6 +61,8 @@ pub fn build(vault: &Path, out: &Path) -> Result<Summary, Error> {
 
     let mut writer = Writer::new(&out, &dir, |_| {});
     let mut site = Site::new(config.exclude);
+    site.set_nav(config.nav);
+    site.set_obsidian(crate::config::obsidian_daily(&dir));
     let report = site.apply_to(
         vec![Change::Sync {
             under: String::new(),
@@ -84,6 +88,7 @@ pub fn build(vault: &Path, out: &Path) -> Result<Summary, Error> {
         skipped,
         broken: report.broken,
         unmatched,
+        notices: report.notices,
     })
 }
 

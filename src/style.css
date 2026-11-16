@@ -55,13 +55,19 @@ blockquote { margin: 1em 0; padding-left: 1em; border-left: 3px solid var(--line
 mark { background: #e8b45f55; color: inherit; }
 
 header {
-  position: sticky; top: 0; z-index: 1; display: flex; gap: 0.25rem; align-items: center;
+  position: sticky; top: 0; z-index: 1; display: flex; flex-wrap: wrap; gap: 0 0.25rem; align-items: center;
   padding: 0.25rem 0.75rem; background: var(--raise); border-bottom: 1px solid var(--line);
 }
 header a, header button {
   padding: 0.5rem 0.6rem; color: var(--fg); font: inherit; font-size: 0.95rem;
 }
 header .site { font-weight: 600; }
+/* Pins take a second line that scrolls sideways, so any number of them never wraps. */
+header .pins {
+  flex: 1 0 100%; display: flex; overflow-x: auto; scrollbar-width: none; margin: 0 -0.75rem;
+  padding: 0 0.6rem; border-top: 1px solid var(--line); white-space: nowrap;
+}
+header .pins a { padding: 0.35rem 0.6rem; color: var(--link); font-size: 0.9rem; }
 header button {
   margin-left: auto; background: none; border: 1px solid var(--line); border-radius: 6px; cursor: pointer;
 }

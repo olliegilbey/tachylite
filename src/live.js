@@ -1,5 +1,27 @@
 // Live updates: swap in pushed pages, catch up after a lost connection.
 (() => {
+  // The Today page lists daily notes newest first, each with its date. Only this device knows
+  // its own today, so it opens the newest dated on or before it. Back skips the list. The
+  // cached list can predate a note made since the last sync, so when it holds no note for
+  // today the network's list comes first, if it answers quickly.
+  if (location.pathname === "/.tachylite/today") {
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, "0");
+    const today = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+    const pick = (doc) =>
+      [...doc.querySelectorAll("main a[data-date]")].find((a) => a.dataset.date <= today);
+    const go = (a) => a && location.replace(a.getAttribute("href"));
+    const held = pick(document);
+    // Today's own note opens at once. An older one waits, briefly, for the network's list.
+    if (held?.dataset.date === today) go(held);
+    else
+      fetch(location.pathname, { cache: "no-cache", signal: AbortSignal.timeout?.(1500) })
+        .then((r) => (r.ok ? r.text() : Promise.reject()))
+        .then((html) => pick(new DOMParser().parseFromString(html, "text/html")))
+        .catch(() => null)
+        .then((a) => go(a ?? held));
+  }
+
   // Mermaid loads only once a page shows a diagram, and draws again after each swap.
   let mermaid = null;
   const diagrams = () => {
@@ -181,6 +203,10 @@
       const open = new Map(fold(current).map(([k, d]) => [k, d.open]));
       for (const [k, d] of fold(main)) if (open.has(k)) d.open = open.get(k);
       current.replaceWith(main);
+      // A config change moves the header: the site name, Today and the pins.
+      const header = next.querySelector("header");
+      const shown = document.querySelector("header");
+      if (header && shown && header.outerHTML !== shown.outerHTML) shown.replaceWith(header);
       document.title = next.title;
       meta.content = e.lastEventId;
       diagrams();

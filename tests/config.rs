@@ -151,3 +151,59 @@ fn a_pattern_with_outer_space_is_an_error() {
         );
     }
 }
+
+#[test]
+fn nav_keys_parse() {
+    let nav = tachylite::config::parse(
+        "title = \"Notes\"\npins = [\"a.md\", \"b|B\"]\n[daily]\nfolder = \"/journal/\"\n",
+    )
+    .unwrap()
+    .nav;
+    assert_eq!(nav.title.as_deref(), Some("Notes"));
+    assert_eq!(nav.pins, ["a.md", "b|B"]);
+    let daily = nav.daily.unwrap();
+    assert_eq!(
+        (daily.folder.as_str(), daily.format.as_str()),
+        ("journal", "YYYY-MM-DD")
+    );
+}
+
+#[test]
+fn bad_nav_keys_are_errors() {
+    for text in [
+        "title = 1",
+        "title = [\"a\"]",
+        "pins = \"a.md\"",
+        "pins = [1]",
+        "daily = \"journal\"",
+        "daily = { fromat = \"YYYY\" }",
+        "daily = { folder = 2 }",
+    ] {
+        assert!(tachylite::config::parse(text).is_err(), "{text}");
+    }
+}
+
+#[test]
+fn a_date_format_reads_three_numbers() {
+    use tachylite::indexes::{date_format, date_of};
+    let f = date_format("YYYY/MM/YYYY-MM-DD").unwrap();
+    assert_eq!(
+        date_of(&f, "2026/11/2026-11-02").as_deref(),
+        Some("2026-11-02")
+    );
+    assert_eq!(date_of(&f, "2026/12/2026-11-02"), None);
+    assert_eq!(date_of(&f, "2026/11/2026-11-0x"), None);
+    assert_eq!(date_of(&f, "2026/11/2026-11-02 notes"), None);
+    let f = date_format("DD.MM.YYYY").unwrap();
+    assert_eq!(date_of(&f, "02.11.2026").as_deref(), Some("2026-11-02"));
+    assert_eq!(date_of(&f, "32.11.2026"), None);
+    for bad in [
+        "YYYY-MM",
+        "YY-MM-DD",
+        "YYYY-MM-DD ddd",
+        "YYYY-M-D",
+        "[Day] YYYY-MM-DD",
+    ] {
+        assert!(date_format(bad).is_err(), "{bad}");
+    }
+}

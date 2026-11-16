@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use common::{Dirs, Server};
 use proptest::prelude::*;
 
-const PATHS: [&str; 10] = [
+const PATHS: [&str; 11] = [
     "a.md",
     "a.MD",
     "x.html",
@@ -20,6 +20,7 @@ const PATHS: [&str; 10] = [
     "d/p.png",
     "d/e/m.md",
     ".h.md",
+    "d/2026-01-02.md",
 ];
 const CONTENTS: [&str; 15] = [
     "# one",
@@ -49,7 +50,8 @@ enum Op {
     RenameFolder,
     DeleteFolder,
     Burst,
-    /// Writes `tachylite.toml`, excluding `d` or nothing.
+    /// Writes `tachylite.toml`, excluding `d`, or excluding nothing and naming pins and a
+    /// daily folder in `d`.
     Config(bool),
 }
 
@@ -109,11 +111,12 @@ fn apply(vault: &Path, op: &Op) {
             let _ = fs::remove_dir_all(vault.join("d"));
         }
         Op::Config(exclude) => {
-            let list = if *exclude { "[\"d\"]" } else { "[]" };
-            write(
-                vault.join("tachylite.toml"),
-                format!("exclude = {list}\n").as_bytes(),
-            );
+            let text = if *exclude {
+                "exclude = [\"d\"]\n"
+            } else {
+                "exclude = []\npins = [\"d/n.md|N\", \"d\"]\ndaily = { folder = \"d\" }\n"
+            };
+            write(vault.join("tachylite.toml"), text.as_bytes());
         }
         Op::Burst => {
             let _ = fs::create_dir_all(vault.join("burst"));

@@ -1451,9 +1451,15 @@ pub fn crumbs(folder: &str) -> String {
     html
 }
 
-/// Wraps a note's body in the page shell, under links to its folders and above its
-/// backlinks, given as `(title, url)` pairs.
-pub fn render_page(path: &str, title: &str, body: &str, backlinks: &[(String, String)]) -> Page {
+/// Wraps a note's body in the page shell, under `header` and links to its folders, and
+/// above its backlinks, given as `(title, url)` pairs.
+pub fn render_page(
+    header: &str,
+    path: &str,
+    title: &str,
+    body: &str,
+    backlinks: &[(String, String)],
+) -> Page {
     let folder = path.rsplit_once('/').map_or("", |(folder, _)| folder);
     let mut main = crumbs(folder);
     main.push_str(body);
@@ -1464,11 +1470,12 @@ pub fn render_page(path: &str, title: &str, body: &str, backlinks: &[(String, St
         }
         main.push_str("</ul></section>\n");
     }
-    shell(title, &main)
+    shell(header, title, &main)
 }
 
-/// Every page's template: the head, the header, and `main`. `title` is plain text.
-pub fn shell(title: &str, main: &str) -> Page {
+/// Every page's template: the head, `header`, and `main`. `header` is HTML, from config
+/// alone; `title` is plain text.
+pub fn shell(header: &str, title: &str, main: &str) -> Page {
     let title = escape(title);
     let before = "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
                   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
@@ -1480,9 +1487,7 @@ pub fn shell(title: &str, main: &str) -> Page {
     let after = format!(
         "\">\n<title>{title}</title>\n\
          <script src=\"/.tachylite/live.js\" defer></script>\n</head>\n<body>\n\
-         <header><a class=\"site\" href=\"/\">Tachylite</a><a href=\"/.tachylite/recent\">Recent</a>\
-         <button type=\"button\" class=\"find\" title=\"Find a note (Ctrl-K)\">Find</button>\
-         </header>\n<main>\n{main}</main>\n</body>\n</html>\n"
+         {header}<main>\n{main}</main>\n</body>\n</html>\n"
     );
     // The version hashes the whole page but itself, so a new template re-syncs every client.
     let mut hasher = DefaultHasher::new();

@@ -10,6 +10,8 @@ const SHELL = [
 ];
 const PASS = new Set(["/.tachylite/events", "/.tachylite/sw.js", MANIFEST]);
 const NOTES = "/.tachylite/notes.json";
+// Asked for with `no-cache`, these come from the network first: a cached copy can miss a new note.
+const FRESH = new Set([NOTES, "/.tachylite/today"]);
 const MERMAID = "/.tachylite/mermaid.js";
 const KEEP = [...SHELL, MANIFEST, MERMAID];
 const DIAGRAM = '<pre class="mermaid">';
@@ -70,7 +72,7 @@ self.addEventListener("fetch", (e) => {
         if (r.status === 404) e.waitUntil(cache.delete(url.pathname));
         return r;
       });
-      if (hit && !(url.pathname === NOTES && e.request.cache === "no-cache")) {
+      if (hit && !(FRESH.has(url.pathname) && e.request.cache === "no-cache")) {
         e.waitUntil(fresh.catch(() => {}));
         return hit;
       }

@@ -718,7 +718,7 @@ fn served(out: &Path, path: &str) -> Option<PathBuf> {
     let key = percent_decode(path.trim_start_matches('/'));
     let candidates = if key.is_empty() {
         vec![out.join("pages/.tachylite/home.html")]
-    } else if key.starts_with(".tachylite/folders/") {
+    } else if key.starts_with(".tachylite/folders/") || key.starts_with(".tachylite/recent/") {
         vec![out.join("pages").join(&key).join(".index.html")]
     } else {
         vec![
@@ -754,4 +754,33 @@ fn every_local_link_in_the_output_resolves() {
     }
     assert!(checked > 20, "only {checked} links checked");
     assert!(dead.is_empty(), "dead links:\n{}", dead.join("\n"));
+}
+
+#[test]
+fn obsidian_daily_settings_build_a_today_page_and_stay_unpublished() {
+    let dir = bare(&[
+        (
+            ".obsidian/daily-notes.json",
+            "{\n  \"folder\": \"Daily\\/Log\",\n  \"format\": \"YYYY-MM-DD\",\n  \"template\": \"t\"\n}",
+        ),
+        ("Daily/Log/2026-11-02.md", "# a"),
+        ("Daily/Log/2026-11-03.md", "# b"),
+        ("Daily/Log/private-2026-11-04.md", "# hidden-day"),
+        (
+            "tachylite.toml",
+            "exclude = [\"Daily/Log/private-*\"]\npins = [\"Daily/Log/private-2026-11-04.md\"]\n",
+        ),
+    ]);
+    let (vault, out) = (dir.path().join("vault"), dir.path().join("out"));
+    let summary = build(&vault, &out).unwrap();
+    let today = fs::read_to_string(out.join("pages/.tachylite/today.html")).unwrap();
+    let at = |date: &str| today.find(&format!("data-date=\"{date}\"")).unwrap();
+    assert!(at("2026-11-03") < at("2026-11-02"), "{today}");
+    let text = all_output_text(&out);
+    assert!(!text.contains("hidden-day") && !text.contains("private-"));
+    assert!(
+        !text.contains("template"),
+        "Obsidian's settings reached the output"
+    );
+    assert_eq!(summary.notices.len(), 1, "{:?}", summary.notices);
 }

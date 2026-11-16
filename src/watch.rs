@@ -14,7 +14,7 @@ use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::fs::inotify::{self, CreateFlags, ReadFlags, WatchFlags};
 use tokio::sync::broadcast;
 
-use crate::config::{self, Config, Exclude};
+use crate::config::{self, Config, Exclude, Nav};
 use crate::output::Writer;
 use crate::site::{Change, Note, Push, Site, Source};
 use crate::vault::{ReadError, VaultDir, classify, hold, scan_under};
@@ -140,12 +140,15 @@ impl Watcher {
             }
         })?;
         let watched = config.exclude.clone();
+        let mut site = Site::new(config.exclude);
+        site.set_nav(config.nav);
+        site.set_obsidian(config::obsidian_daily(&vault));
         let mut watcher = Watcher {
             inotify,
             dirs: HashMap::new(),
             vault,
             out,
-            site: Site::new(config.exclude),
+            site,
             live,
             held: HashMap::new(),
             hold: hold(),
@@ -270,6 +273,7 @@ impl Watcher {
         // Each folder with an event, and whether one was a create.
         let mut folders: BTreeMap<String, bool> = BTreeMap::new();
         let mut reload = false;
+        let mut daily = false;
         let now = Instant::now();
         for event in events {
             if event.flags.contains(ReadFlags::QUEUE_OVERFLOW) {
@@ -295,11 +299,28 @@ impl Watcher {
                 continue;
             }
             let Some(name) = event.name else { continue };
+            // Obsidian's folder may come or go while the server runs.
+            if dir.is_empty() && name == ".obsidian" {
+                if event
+                    .flags
+                    .intersects(ReadFlags::CREATE | ReadFlags::MOVED_TO)
+                {
+                    self.watch_obsidian();
+                }
+                daily = true;
+                continue;
+            }
             if Exclude::segment(name.as_bytes()) {
                 continue;
             }
             let Some(name) = name.to_str() else { continue };
             let path = join(&dir, name);
+            if path == config::DAILY_NOTES {
+                daily |= !event
+                    .flags
+                    .intersects(ReadFlags::MODIFY | ReadFlags::CREATE);
+                continue;
+            }
             if path == config::FILE {
                 // Only a save reloads: mid-save, the file can be missing, empty or half
                 // written, and each would publish what it excludes. A write after the save
@@ -354,10 +375,14 @@ impl Watcher {
             paths.insert(path);
         }
         if reload {
-            let previous = self.site.exclude().clone();
+            let previous = (self.site.exclude().clone(), self.site.nav().clone());
             if self.reload_config()? == Reload::Loaded {
                 return self.resync_reloaded(previous, removed);
             }
+        }
+        // Every page's header shows whether there is a Today page, so a change renders all.
+        if daily && self.site.set_obsidian(config::obsidian_daily(&self.vault)) {
+            return self.resync(removed);
         }
 
         // The folders as they stand now, each once: a parent's sync covers its children.
@@ -413,6 +438,7 @@ impl Watcher {
         match read {
             Ok(Some(config)) => {
                 self.site.set_exclude(config.exclude);
+                self.site.set_nav(config.nav);
                 self.hosts = config.hosts;
                 Ok(Reload::Loaded)
             }
@@ -486,12 +512,13 @@ impl Watcher {
     /// stalled in between got past the reload's check. The rescan gave it time to queue.
     fn resync_reloaded(
         &mut self,
-        previous: Exclude,
+        (exclude, nav): (Exclude, Nav),
         removed: HashSet<String>,
     ) -> Result<(Vec<Change>, HashSet<String>), Error> {
         let (changes, removed) = self.resync(removed)?;
         if self.config_written()? {
-            self.site.set_exclude(previous);
+            self.site.set_exclude(exclude);
+            self.site.set_nav(nav);
             return self.resync(removed);
         }
         report::unmatched(&self.site.exclude().unmatched());
@@ -504,6 +531,8 @@ impl Watcher {
         removed: HashSet<String>,
     ) -> Result<(Vec<Change>, HashSet<String>), Error> {
         self.rewatch(&[""])?;
+        // A rescan renders every page, and its cause may have hidden a save of these.
+        self.site.set_obsidian(config::obsidian_daily(&self.vault));
         Ok((vec![self.sync("")?], removed))
     }
 
@@ -555,6 +584,15 @@ impl Watcher {
         })
     }
 
+    /// Obsidian's daily-notes settings name the Today page's notes. The folder is never
+    /// published, so its watch only reports changes to that file. A vault may have none.
+    fn watch_obsidian(&mut self) {
+        let obsidian = self.vault.root().join(".obsidian");
+        if let Ok(wd) = inotify::add_watch(&self.inotify, &obsidian, MASK) {
+            self.dirs.insert(wd, ".obsidian".to_string());
+        }
+    }
+
     /// Adds a watch to `rel` and every published folder below it. A folder that vanished
     /// or cannot be read is left to the scan to report.
     fn watch_tree(&mut self, rel: &str) -> Result<(), Error> {
@@ -563,6 +601,9 @@ impl Watcher {
         match inotify::add_watch(&self.inotify, &path, mask) {
             Ok(wd) => {
                 self.dirs.insert(wd, rel.to_string());
+                if rel.is_empty() {
+                    self.watch_obsidian();
+                }
             }
             Err(e) if rel.is_empty() || e == rustix::io::Errno::NOSPC => {
                 return Err(Error::Watch {
@@ -600,6 +641,7 @@ impl Watcher {
         let mut writer = writer(&self.out, &self.vault, &self.live);
         let report = self.site.apply_to(changes, &mut batch, &mut writer);
         let failed = writer.finish()?;
+        report::notices(&report.notices);
         report::skipped(&report.skipped);
         report::skipped(&failed);
         report::broken(&report.broken);
@@ -779,7 +821,9 @@ mod tests {
         assert_eq!(watcher.reload_config().unwrap(), Reload::Loaded);
         // A write that slipped past the reload's check, queued by the rescan's end.
         fs::write(&toml, "# half\n").unwrap();
-        watcher.resync_reloaded(previous, HashSet::new()).unwrap();
+        watcher
+            .resync_reloaded((previous, Nav::default()), HashSet::new())
+            .unwrap();
         assert!(watcher.site.exclude().path("d/n.md"));
     }
 
