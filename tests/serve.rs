@@ -689,6 +689,26 @@ fn an_asset_keeps_its_tag_across_a_restart() {
 }
 
 #[test]
+fn a_start_names_only_the_pattern_that_matched_nothing() {
+    let d = Dirs::fixture();
+    fs::write(
+        d.vault().join("tachylite.toml"),
+        "exclude = [\"welcome.md\", \"people\", \"privte\"]\n",
+    )
+    .unwrap();
+    let server = Server::start(&d.vault(), &d.out());
+    let named: Vec<&String> = server
+        .start_lines
+        .iter()
+        .filter(|l| l.contains("matched no published path"))
+        .collect();
+    assert_eq!(
+        named,
+        ["exclude \"privte\" matched no published path; check it for a typo"]
+    );
+}
+
+#[test]
 fn a_live_config_save_names_an_unmatched_pattern() {
     let d = Dirs::fixture();
     let server = Server::start(&d.vault(), &d.out());
