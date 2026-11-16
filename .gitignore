@@ -3,3 +3,4 @@
 /browser/.tmp/
 /browser/test-results/
 /browser/playwright-report/
+/browser/bench/results/

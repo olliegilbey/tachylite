@@ -7,10 +7,11 @@ export type Server = { child: ChildProcess; port: number; base: string };
 
 /**
  * Starts a server on `dir/vault`, resolving once it prints its address. Port 0 takes a free
- * port; pass a stopped server's port to restart it on the same origin.
+ * port; pass a stopped server's port to restart it on the same origin. The bench passes
+ * `bin` to serve from another build.
  */
-export function serve(dir: string, port = 0): Promise<Server> {
-  const child = spawn(binary, ["serve", join(dir, "vault"), join(dir, "out"), "--port", `${port}`]);
+export function serve(dir: string, port = 0, bin = binary): Promise<Server> {
+  const child = spawn(bin, ["serve", join(dir, "vault"), join(dir, "out"), "--port", `${port}`]);
   return new Promise((resolve, reject) => {
     let log = "";
     const read = (chunk: Buffer) => {
