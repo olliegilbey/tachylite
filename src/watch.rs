@@ -93,25 +93,37 @@ fn join(dir: &str, name: &str) -> String {
 }
 
 /// The vault, as one batch reads it. A held path may be mid-save, and so may a file at a
-/// path whose last event removed it: the new file's CREATE is still queued.
+/// path whose last event removed it: a new file is there, and its save may not be done.
 struct Batch<'a> {
     vault: &'a VaultDir,
     held: &'a HashMap<String, Instant>,
     removed: &'a HashSet<String>,
+    /// The paths read as mid-save that no hold covers yet.
+    unheld: Vec<String>,
 }
 
 impl Batch<'_> {
     fn saved(&self, path: &str) -> bool {
         !self.held.contains_key(path) && !self.removed.contains(path)
     }
+
+    /// Records a read that found a path mid-save with no hold to end the wait.
+    fn noted<T>(&mut self, path: &str, read: Result<T, ReadError>) -> Result<T, ReadError> {
+        if matches!(read, Err(ReadError::MidSave)) && !self.held.contains_key(path) {
+            self.unheld.push(path.to_string());
+        }
+        read
+    }
 }
 
 impl Source for Batch<'_> {
     fn note(&mut self, path: &str) -> Result<Note, ReadError> {
-        self.vault.read_note(path, self.saved(path))
+        let read = self.vault.read_note(path, self.saved(path));
+        self.noted(path, read)
     }
     fn file(&mut self, path: &str) -> Result<(), ReadError> {
-        self.vault.open_after(path, self.saved(path)).map(|_| ())
+        let read = self.vault.open_after(path, self.saved(path)).map(|_| ());
+        self.noted(path, read)
     }
 }
 
@@ -193,23 +205,7 @@ impl Watcher {
     pub fn run(mut self) -> Error {
         let mut buf = vec![MaybeUninit::<u8>::uninit(); 64 * 1024];
         loop {
-            let next = if self.pending.is_empty() {
-                self.read_batch(&mut buf)
-            } else {
-                Ok((std::mem::take(&mut self.pending), false))
-            };
-            let result = next.and_then(|(events, drained)| {
-                let (changes, removed) = self.changes(events)?;
-                // A config reload may have read more events, and they come next.
-                let drained = drained && self.pending.is_empty();
-                let unpublished = self.apply(changes, removed)?;
-                // Index pages wait until no event is queued, so a burst derives them once.
-                // An unpublished page leaves them at once, and a long burst still derives
-                // them every `DERIVE_MAX`.
-                let burst = self.since.get_or_insert_with(Instant::now).elapsed();
-                if drained || unpublished || burst >= DERIVE_MAX {
-                    self.derive()?;
-                }
+            let result = self.pass(&mut buf).and_then(|drained| {
                 if drained {
                     self.wait()?;
                 }
@@ -219,6 +215,27 @@ impl Watcher {
                 return e;
             }
         }
+    }
+
+    /// Applies the next batch of events. Returns whether the queue was empty after it.
+    fn pass(&mut self, buf: &mut [MaybeUninit<u8>]) -> Result<bool, Error> {
+        let (events, drained) = if self.pending.is_empty() {
+            self.read_batch(buf)?
+        } else {
+            (std::mem::take(&mut self.pending), false)
+        };
+        let (changes, removed) = self.changes(events)?;
+        // A config reload may have read more events, and they come next.
+        let drained = drained && self.pending.is_empty();
+        let unpublished = self.apply(changes, removed)?;
+        // Index pages wait until no event is queued, so a burst derives them once.
+        // An unpublished page leaves them at once, and a long burst still derives
+        // them every `DERIVE_MAX`.
+        let burst = self.since.get_or_insert_with(Instant::now).elapsed();
+        if drained || unpublished || burst >= DERIVE_MAX {
+            self.derive()?;
+        }
+        Ok(drained)
     }
 
     /// Waits for an event, or until the first hold ends. With no path held it has no
@@ -637,9 +654,16 @@ impl Watcher {
             vault: &self.vault,
             held: &self.held,
             removed: &removed,
+            unheld: Vec::new(),
         };
         let mut writer = writer(&self.out, &self.vault, &self.live);
         let report = self.site.apply_to(changes, &mut batch, &mut writer);
+        // A file at a removed path sends no event when its folder came after its save: a
+        // folder made again, or moved into place. A hold reads it whatever follows.
+        let end = Instant::now() + self.hold;
+        for path in batch.unheld {
+            self.held.insert(path, end);
+        }
         let failed = writer.finish()?;
         report::notices(&report.notices);
         report::skipped(&report.skipped);
@@ -848,5 +872,94 @@ mod tests {
         ];
         let (_, removed) = watcher.changes(events).unwrap();
         assert!(removed.contains("n.md"));
+    }
+
+    /// Runs the watcher until its queue is empty and no path is held.
+    fn settle(watcher: &mut Watcher) {
+        let mut buf = vec![MaybeUninit::<u8>::uninit(); 64 * 1024];
+        loop {
+            let drained = watcher.pass(&mut buf).unwrap();
+            if drained && watcher.held.is_empty() {
+                return;
+            }
+        }
+    }
+
+    /// A vault whose note `d/n.md` is published, then deleted with its folder and saved
+    /// again in a new folder of the same name. So the note's new CREATE came before the new
+    /// folder's watch, and no event for the note is queued.
+    fn saved_again_in_a_new_folder() -> (tempfile::TempDir, PathBuf, Watcher) {
+        let (tmp, vault) = vault();
+        fs::create_dir(vault.join("d")).unwrap();
+        fs::write(vault.join("d/n.md"), "one").unwrap();
+        fs::write(vault.join(config::FILE), "exclude = []\n").unwrap();
+        let mut watcher = watcher(&vault);
+        // A hold that ends at once, so no test waits one out.
+        watcher.hold = Duration::ZERO;
+        fs::remove_dir_all(vault.join("d")).unwrap();
+        fs::create_dir(vault.join("d")).unwrap();
+        fs::write(vault.join("d/n.md"), "two").unwrap();
+        (tmp, vault, watcher)
+    }
+
+    /// Whether the live output's page of `d/n.md` and its manifest equal a fresh full build's.
+    fn equals_full_build(vault: &Path) -> bool {
+        let fresh = vault.with_file_name("fresh");
+        crate::build::build(vault, &fresh).unwrap();
+        let live = vault.with_file_name("out");
+        ["pages/d/n.html", crate::site::MANIFEST]
+            .iter()
+            .all(|file| fs::read(live.join(file)).unwrap() == fs::read(fresh.join(file)).unwrap())
+    }
+
+    #[test]
+    fn a_folder_moved_into_place_reads_its_note_at_a_removed_path() {
+        let (tmp, vault) = vault();
+        fs::create_dir(vault.join("d")).unwrap();
+        fs::write(vault.join("d/n.md"), "one").unwrap();
+        let staged = tmp.path().join("staged");
+        fs::create_dir(&staged).unwrap();
+        fs::write(staged.join("n.md"), "two").unwrap();
+        let mut watcher = watcher(&vault);
+        watcher.hold = Duration::ZERO;
+        // The new folder comes with its note saved, so the note sends no event at all.
+        fs::remove_dir_all(vault.join("d")).unwrap();
+        fs::rename(&staged, vault.join("d")).unwrap();
+        settle(&mut watcher);
+        assert!(equals_full_build(&vault));
+    }
+
+    #[test]
+    fn a_config_reload_reads_a_note_saved_again_in_a_new_folder() {
+        let (_tmp, vault, mut watcher) = saved_again_in_a_new_folder();
+        // The save lands in the batch of the note's delete: every event is queued by now.
+        fs::write(vault.join(config::FILE), "exclude = []\n").unwrap();
+        settle(&mut watcher);
+        assert!(equals_full_build(&vault));
+    }
+
+    #[test]
+    fn a_change_of_obsidian_daily_settings_reads_a_note_saved_again_in_a_new_folder() {
+        let (_tmp, vault, mut watcher) = saved_again_in_a_new_folder();
+        fs::create_dir(vault.join(".obsidian")).unwrap();
+        fs::write(vault.join(config::DAILY_NOTES), "{\"folder\": \"d\"}").unwrap();
+        settle(&mut watcher);
+        assert!(equals_full_build(&vault));
+    }
+
+    #[test]
+    fn a_queue_overflow_reads_a_note_saved_again_in_a_new_folder() {
+        let (_tmp, vault, mut watcher) = saved_again_in_a_new_folder();
+        let d = wd(&watcher, "d");
+        // The kernel kept the note's delete and dropped every event after it.
+        watcher.config_written().unwrap();
+        let overflow = Event {
+            wd: -1,
+            flags: ReadFlags::QUEUE_OVERFLOW,
+            name: None,
+        };
+        watcher.pending = vec![event(d, ReadFlags::DELETE, "n.md"), overflow];
+        settle(&mut watcher);
+        assert!(equals_full_build(&vault));
     }
 }
