@@ -981,6 +981,18 @@ impl Site {
             }
             // Newest first; equal times by path.
             notes.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)));
+            // The newest daily notes by date open the Recent page. Its list of the rest and
+            // the home page's leave them out: an agent saves today's daily note all day.
+            days.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)));
+            let newest: Vec<usize> = days
+                .iter()
+                .take(indexes::DAILY)
+                .filter_map(|&(_, day)| notes.iter().position(|&(_, path)| path == day))
+                .collect();
+            let listed: Vec<usize> = (0..notes.len())
+                .filter(|place| !newest.contains(place))
+                .take(indexes::RECENT)
+                .collect();
             // The newest notes under each folder, at any depth, by place in `notes`. A folder
             // has every note its subfolder has, so once a folder's list is full, so is each
             // folder above it.
@@ -1015,8 +1027,11 @@ impl Site {
             });
             // Each listed note's row, made once.
             let mut rows: Vec<Option<String>> = vec![None; notes.len()];
-            let places =
-                (0..notes.len().min(indexes::RECENT)).chain(scoped.values().flatten().copied());
+            let places = listed
+                .iter()
+                .chain(&newest)
+                .chain(scoped.values().flatten())
+                .copied();
             for place in places {
                 let (modified, path) = notes[place];
                 rows[place].get_or_insert_with(|| {
@@ -1029,7 +1044,8 @@ impl Site {
                 });
             }
             let row = |place: usize| rows[place].as_deref().unwrap_or_default();
-            let recent: Vec<&str> = (0..notes.len().min(indexes::RECENT)).map(row).collect();
+            let recent: Vec<&str> = listed.iter().map(|&place| row(place)).collect();
+            let daily: Vec<&str> = newest.iter().map(|&place| row(place)).collect();
             let site = self.nav.title.as_deref().unwrap_or(SITE);
             for (path, (subs, mut items)) in tree {
                 items.sort_by_cached_key(|i| (indexes::order(i.title), i.url.clone()));
@@ -1052,14 +1068,13 @@ impl Site {
                 };
                 built.push((key, page.version, page.html));
             }
-            let page = indexes::recent(recent_tab, &recent);
+            let page = indexes::recent(recent_tab, &daily, &recent);
             built.push((".tachylite/recent".into(), page.version, page.html));
             for (folder, places) in &scoped {
                 let page = indexes::recent_in(header, folder, places.iter().map(|&p| row(p)));
                 built.push((format!("{RECENT_IN}{folder}"), page.version, page.html));
             }
             if self.daily.is_some() {
-                days.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)));
                 days.truncate(indexes::TODAY);
                 let days: Vec<(String, &str, String)> = days
                     .into_iter()

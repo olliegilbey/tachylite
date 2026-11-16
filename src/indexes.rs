@@ -44,8 +44,10 @@ fn dated(name: &str) -> bool {
         })
 }
 
-pub const HOME_RECENT: usize = 10;
+pub const HOME_RECENT: usize = 5;
 pub const RECENT: usize = 50;
+/// The newest daily notes that open the Recent page, and that the home page leaves out.
+pub const DAILY: usize = 3;
 /// The daily notes the Today page lists. Enough to reach back two months, and small.
 pub const TODAY: usize = 60;
 
@@ -232,14 +234,13 @@ fn recent_list<'a>(rows: impl IntoIterator<Item = &'a str>) -> String {
     html
 }
 
-/// `/`: the newest notes, then the root folder. The Home tab names the page, so its
+/// `/`: the newest of `recent`, then the root folder. The Home tab names the page, so its
 /// heading is for screen readers only.
 pub fn home(header: &str, site: &str, recent: &[&str], root: &Folder) -> Page {
     let mut main = format!("<h1 class=\"sr\">{}</h1>\n", escape(site));
     if !recent.is_empty() {
         main.push_str("<h2>Recent</h2>\n");
         main.push_str(&recent_list(recent.iter().take(HOME_RECENT).copied()));
-        main.push_str("<p><a href=\"/.tachylite/recent\">All recent notes</a></p>\n");
     }
     main.push_str(&listing(root));
     shell(header, site, &main)
@@ -270,9 +271,16 @@ pub fn tag<'a>(header: &str, tag: &str, rows: impl IntoIterator<Item = &'a str>)
     shell(header, &format!("#{tag}"), &main)
 }
 
-/// `/.tachylite/recent`, given its `recent_row`s newest first.
-pub fn recent(header: &str, rows: &[&str]) -> Page {
-    let mut main = String::from("<h1>Recent</h1>\n");
+/// `/.tachylite/recent`: a Daily block of the newest daily notes when there are any, then
+/// the other notes, newest first. Both are `recent_row`s. The Recent tab names the page,
+/// as the Home tab names the home page.
+pub fn recent(header: &str, daily: &[&str], rows: &[&str]) -> Page {
+    let mut main = String::from("<h1 class=\"sr\">Recent notes</h1>\n");
+    if !daily.is_empty() {
+        main.push_str("<h2>Daily</h2>\n");
+        main.push_str(&recent_list(daily.iter().copied()));
+    }
+    main.push_str("<h2>Recent</h2>\n");
     main.push_str(&recent_list(rows.iter().take(RECENT).copied()));
     shell(header, "Recent", &main)
 }

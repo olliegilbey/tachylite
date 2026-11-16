@@ -1200,7 +1200,9 @@ fn the_home_page_lists_recent_notes_and_the_root() {
         "{home}"
     );
     assert!(home.contains("<a href=\"/d/b\">b</a>"), "recent: {home}");
-    assert!(home.contains("<a href=\"/.tachylite/recent\">"), "{home}");
+    // Recent is a tab, so the page links to it from the header alone.
+    let main = &home[home.find("<main>").unwrap()..];
+    assert!(!main.contains("/.tachylite/recent"), "{main}");
     assert_eq!(written(&delta, "pages/.tachylite/home.html"), home);
 }
 
@@ -2380,4 +2382,238 @@ fn a_save_a_retitle_and_a_new_daily_note_change_no_header() {
         before["pages/a.html"].clone(),
     );
     assert_eq!(after, before);
+}
+
+/// Each block of a page's `<main>`: its `<h2>` and the URLs its list links to, in order.
+fn blocks(html: &str) -> Vec<(String, Vec<String>)> {
+    let main = &html[html.find("<main>").unwrap()..];
+    main.split("<h2>")
+        .skip(1)
+        .map(|block| {
+            let (heading, rest) = block.split_once("</h2>").unwrap();
+            let list = rest.split("</ul>").next().unwrap();
+            let urls = list
+                .match_indices("<li><a href=\"")
+                .map(|(at, m)| list[at + m.len()..].split('"').next().unwrap().to_string())
+                .collect();
+            (heading.to_string(), urls)
+        })
+        .collect()
+}
+
+/// A vault of five daily notes in `d` and the notes `n1` to `n7`, with modified times. The
+/// oldest daily note by date was modified last, and `n7` is the newest of the rest.
+fn daily_vault() -> Mem {
+    let mut mem = Mem::default();
+    let days = [
+        ("d/2026-11-01.md", 200),
+        ("d/2026-11-02.md", 101),
+        ("d/2026-11-03.md", 102),
+        ("d/2026-11-04.md", 103),
+        ("d/2026-11-05.md", 104),
+    ];
+    let notes = (1..=7).map(|i| (format!("n{i}.md"), 10 + i));
+    for (path, time) in days.iter().map(|(p, t)| (p.to_string(), *t)).chain(notes) {
+        mem.0.insert(path.clone(), b"x".to_vec());
+        mem.1.insert(path, time);
+    }
+    mem
+}
+
+fn daily_site(exclude: Exclude) -> Site {
+    let mut site = Site::new(exclude);
+    site.set_nav(nav("daily = { folder = \"d\" }"));
+    site
+}
+
+#[test]
+fn the_home_page_lists_five_recent_notes_without_the_three_newest_daily_notes() {
+    let mut mem = daily_vault();
+    let mut site = daily_site(Exclude::default());
+    let mut out = Out::new();
+    fold(&mut out, &site.apply(vec![sync_all(&mem)], &mut mem), &mem);
+    let home = page_text(&out, HOME);
+    let urls = ["/d/2026-11-01", "/d/2026-11-02", "/n7", "/n6", "/n5"];
+    assert_eq!(
+        blocks(&home),
+        [("Recent".to_string(), urls.map(String::from).to_vec())]
+    );
+    assert!(!home.contains("All recent notes"), "{home}");
+    // The vault root follows.
+    assert!(home.contains("<ul class=\"folders\"><li><a href=\"/.tachylite/folders/d\">"));
+    assert!(
+        home.contains("<ul class=\"notes\"><li><a href=\"/n1\">"),
+        "{home}"
+    );
+
+    // A new daily note takes a place among the three, and the oldest of them joins the list.
+    mem.0.insert("d/2026-11-06.md".into(), b"x".to_vec());
+    mem.1.insert("d/2026-11-06.md".into(), 300);
+    let delta = apply_kept(
+        &mut site,
+        vec![touch("d/2026-11-06.md")],
+        &mut mem,
+        &mut out,
+    );
+    let urls = [
+        "/d/2026-11-01",
+        "/d/2026-11-03",
+        "/d/2026-11-02",
+        "/n7",
+        "/n6",
+    ];
+    assert_eq!(blocks(&page_text(&out, HOME))[0].1, urls);
+    assert!(indexed(&delta).contains(&""), "{:?}", indexed(&delta));
+}
+
+#[test]
+fn with_no_daily_settings_the_home_page_lists_the_five_most_recent_notes() {
+    let (out, _) = full(&daily_vault());
+    let urls = [
+        "/d/2026-11-01",
+        "/d/2026-11-05",
+        "/d/2026-11-04",
+        "/d/2026-11-03",
+        "/d/2026-11-02",
+    ];
+    assert_eq!(blocks(&page_text(&out, HOME))[0].1, urls);
+}
+
+#[test]
+fn the_recent_page_lists_the_three_newest_daily_notes_then_the_other_notes() {
+    let mut mem = daily_vault();
+    let mut site = daily_site(Exclude::default());
+    let mut out = Out::new();
+    fold(&mut out, &site.apply(vec![sync_all(&mem)], &mut mem), &mem);
+    let urls = |urls: &[&str]| urls.iter().map(|u| u.to_string()).collect::<Vec<_>>();
+    let recent = [
+        "/d/2026-11-01",
+        "/d/2026-11-02",
+        "/n7",
+        "/n6",
+        "/n5",
+        "/n4",
+        "/n3",
+        "/n2",
+        "/n1",
+    ];
+    assert_eq!(
+        blocks(&page_text(&out, RECENT)),
+        [
+            (
+                "Daily".to_string(),
+                urls(&["/d/2026-11-05", "/d/2026-11-04", "/d/2026-11-03"])
+            ),
+            ("Recent".to_string(), urls(&recent)),
+        ]
+    );
+    // A row reads the same in both blocks: the title, then the folder and the date.
+    assert!(page_text(&out, RECENT).contains(
+        "<li><a href=\"/d/2026-11-05\">2026-11-05</a> <span class=\"meta\">d · 1970-01-01</span></li>"
+    ));
+
+    // Create, rename and delete each move the blocks, and the page is pushed and listed anew.
+    let listed = |out: &Out| page_text(out, tachylite::site::MANIFEST);
+    let before = listed(&out);
+    mem.0.insert("d/2026-11-06.md".into(), b"x".to_vec());
+    let delta = apply_kept(
+        &mut site,
+        vec![touch("d/2026-11-06.md")],
+        &mut mem,
+        &mut out,
+    );
+    let page = blocks(&page_text(&out, RECENT));
+    assert_eq!(
+        page[0].1,
+        ["/d/2026-11-06", "/d/2026-11-05", "/d/2026-11-04"]
+    );
+    assert_eq!(
+        page[1].1[..3],
+        ["/d/2026-11-01", "/d/2026-11-03", "/d/2026-11-02"]
+    );
+    assert!(indexed(&delta).contains(&".tachylite/recent"));
+    assert_ne!(listed(&out), before);
+
+    let body = mem.0.remove("d/2026-11-06.md").unwrap();
+    mem.0.insert("d/2026-10-31.md".into(), body);
+    let changes = vec![touch("d/2026-11-06.md"), touch("d/2026-10-31.md")];
+    apply_kept(&mut site, changes, &mut mem, &mut out);
+    let page = blocks(&page_text(&out, RECENT));
+    assert_eq!(
+        page[0].1,
+        ["/d/2026-11-05", "/d/2026-11-04", "/d/2026-11-03"]
+    );
+    assert!(page[1].1.contains(&"/d/2026-10-31".to_string()));
+
+    for day in ["05", "04", "03", "02"] {
+        mem.0.remove(&format!("d/2026-11-{day}.md"));
+    }
+    let changes = ["05", "04", "03", "02"].map(|day| touch(&format!("d/2026-11-{day}.md")));
+    apply_kept(&mut site, changes.to_vec(), &mut mem, &mut out);
+    let page = blocks(&page_text(&out, RECENT));
+    assert_eq!(page[0].1, ["/d/2026-11-01", "/d/2026-10-31"]);
+    assert_eq!(page[1].1[0], "/n7");
+}
+
+#[test]
+fn the_recent_page_has_no_daily_block_without_daily_settings_or_daily_notes() {
+    let (out, _) = full(&daily_vault());
+    let page = blocks(&page_text(&out, RECENT));
+    assert_eq!(page.len(), 1, "{page:?}");
+    assert_eq!(page[0].0, "Recent");
+    assert_eq!(page[0].1[0], "/d/2026-11-01");
+
+    let mut mem = Mem::with(&[("a.md", "a"), ("d/not a date.md", "b")]);
+    let mut site = daily_site(Exclude::default());
+    let mut out = Out::new();
+    fold(&mut out, &site.apply(vec![sync_all(&mem)], &mut mem), &mem);
+    let page = blocks(&page_text(&out, RECENT));
+    assert_eq!(page.len(), 1, "{page:?}");
+    assert_eq!(page[0].0, "Recent");
+}
+
+#[test]
+fn the_recent_page_keeps_fifty_notes_besides_the_daily_block() {
+    let mut mem = daily_vault();
+    for i in 0..60 {
+        mem.0.insert(format!("m/{i:02}.md"), b"x".to_vec());
+        mem.1.insert(format!("m/{i:02}.md"), 1000 + i);
+    }
+    let mut site = daily_site(Exclude::default());
+    let mut out = Out::new();
+    fold(&mut out, &site.apply(vec![sync_all(&mem)], &mut mem), &mem);
+    let page = blocks(&page_text(&out, RECENT));
+    assert_eq!(page[0].1.len(), 3);
+    assert_eq!(page[1].1.len(), 50);
+    assert_eq!(
+        (page[1].1[0].as_str(), page[1].1[49].as_str()),
+        ("/m/59", "/m/10")
+    );
+}
+
+#[test]
+fn an_excluded_daily_note_is_in_no_daily_block_and_nowhere_on_the_home_page() {
+    let mut mem = daily_vault();
+    mem.0
+        .insert("d/2026-11-06.md".into(), HUSHED.as_bytes().to_vec());
+    mem.1.insert("d/2026-11-06.md".into(), 500);
+    let exclude = || Exclude::new(&["d/2026-11-06.md".to_string()]).unwrap();
+    let mut site = daily_site(exclude());
+    let mut out = Out::new();
+    let delta = site.apply(vec![sync_all(&mem)], &mut mem);
+    fold(&mut out, &delta, &mem);
+    assert!(!leaks(&delta));
+    assert!(
+        out.values()
+            .all(|page| !String::from_utf8_lossy(page).contains("2026-11-06"))
+    );
+    let page = blocks(&page_text(&out, RECENT));
+    assert_eq!(
+        page[0].1,
+        ["/d/2026-11-05", "/d/2026-11-04", "/d/2026-11-03"]
+    );
+    assert_eq!(
+        blocks(&page_text(&out, HOME))[0].1[..2],
+        ["/d/2026-11-01", "/d/2026-11-02"]
+    );
 }
