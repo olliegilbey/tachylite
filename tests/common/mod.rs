@@ -55,6 +55,8 @@ impl Dirs {
 pub struct Server {
     pub child: Child,
     pub addr: SocketAddr,
+    /// The stderr lines printed before the `serving` line.
+    pub start_lines: Vec<String>,
     stderr: Receiver<String>,
 }
 
@@ -87,15 +89,24 @@ impl Server {
         let mut server = Server {
             child,
             addr: "127.0.0.1:1".parse().unwrap(),
+            start_lines: Vec::new(),
             stderr: rx,
         };
+        let before = std::cell::RefCell::new(Vec::new());
         let line = server
             .wait_line(
-                |l| l.starts_with("serving http://"),
+                |l| {
+                    let serving = l.starts_with("serving http://");
+                    if !serving {
+                        before.borrow_mut().push(l.to_string());
+                    }
+                    serving
+                },
                 Duration::from_secs(30),
             )
             .expect("server did not start");
         server.addr = line["serving http://".len()..].parse().unwrap();
+        server.start_lines = before.into_inner();
         server
     }
 
