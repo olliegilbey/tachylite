@@ -93,25 +93,37 @@ fn join(dir: &str, name: &str) -> String {
 }
 
 /// The vault, as one batch reads it. A held path may be mid-save, and so may a file at a
-/// path whose last event removed it: the new file's CREATE is still queued.
+/// path whose last event removed it: a new file is there, and its save may not be done.
 struct Batch<'a> {
     vault: &'a VaultDir,
     held: &'a HashMap<String, Instant>,
     removed: &'a HashSet<String>,
+    /// The paths read as mid-save that no hold covers yet.
+    unheld: Vec<String>,
 }
 
 impl Batch<'_> {
     fn saved(&self, path: &str) -> bool {
         !self.held.contains_key(path) && !self.removed.contains(path)
     }
+
+    /// Records a read that found a path mid-save with no hold to end the wait.
+    fn noted<T>(&mut self, path: &str, read: Result<T, ReadError>) -> Result<T, ReadError> {
+        if matches!(read, Err(ReadError::MidSave)) && !self.held.contains_key(path) {
+            self.unheld.push(path.to_string());
+        }
+        read
+    }
 }
 
 impl Source for Batch<'_> {
     fn note(&mut self, path: &str) -> Result<Note, ReadError> {
-        self.vault.read_note(path, self.saved(path))
+        let read = self.vault.read_note(path, self.saved(path));
+        self.noted(path, read)
     }
     fn file(&mut self, path: &str) -> Result<(), ReadError> {
-        self.vault.open_after(path, self.saved(path)).map(|_| ())
+        let read = self.vault.open_after(path, self.saved(path)).map(|_| ());
+        self.noted(path, read)
     }
 }
 
@@ -637,9 +649,16 @@ impl Watcher {
             vault: &self.vault,
             held: &self.held,
             removed: &removed,
+            unheld: Vec::new(),
         };
         let mut writer = writer(&self.out, &self.vault, &self.live);
         let report = self.site.apply_to(changes, &mut batch, &mut writer);
+        // A file at a removed path sends no event if it was saved before its folder's watch,
+        // in a folder made again or moved into place. A hold reads it whatever follows.
+        let end = Instant::now() + self.hold;
+        for path in batch.unheld {
+            self.held.insert(path, end);
+        }
         let failed = writer.finish()?;
         report::notices(&report.notices);
         report::skipped(&report.skipped);
@@ -848,5 +867,30 @@ mod tests {
         ];
         let (_, removed) = watcher.changes(events).unwrap();
         assert!(removed.contains("n.md"));
+    }
+
+    #[test]
+    fn a_queue_overflow_holds_a_note_saved_again_in_a_new_folder() {
+        let (_tmp, vault) = vault();
+        fs::create_dir(vault.join("d")).unwrap();
+        fs::write(vault.join("d/n.md"), "one").unwrap();
+        let mut watcher = watcher(&vault);
+        let d = wd(&watcher, "d");
+        fs::remove_dir_all(vault.join("d")).unwrap();
+        fs::create_dir(vault.join("d")).unwrap();
+        fs::write(vault.join("d/n.md"), "two").unwrap();
+        // The kernel kept the note's delete and dropped every event after it. The note was
+        // saved before the new folder's watch, so none follows.
+        watcher.config_written().unwrap();
+        watcher.pending.clear();
+        let overflow = Event {
+            wd: -1,
+            flags: ReadFlags::QUEUE_OVERFLOW,
+            name: None,
+        };
+        let events = vec![event(d, ReadFlags::DELETE, "n.md"), overflow];
+        let (changes, removed) = watcher.changes(events).unwrap();
+        watcher.apply(changes, removed).unwrap();
+        assert!(watcher.held.contains_key("d/n.md"));
     }
 }

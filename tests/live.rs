@@ -771,6 +771,63 @@ fn a_folder_deleted_and_recreated_publishes_the_new_note() {
     assert!(page.contains("\">new</h1>"), "{page}");
 }
 
+/// A short hold, so a test that waits one out stays fast.
+const SHORT_HOLD: &[(&str, &str)] = &[("TACHYLITE_HOLD_MS", "20")];
+
+/// Deletes the folder `d` and its note, then saves the note again in a new `d`, before the
+/// new folder's watch exists. So the note's last event is its delete.
+fn save_again_in_a_new_folder(d: &Dirs) {
+    fs::remove_dir_all(d.vault().join("d")).unwrap();
+    fs::create_dir(d.vault().join("d")).unwrap();
+    fs::write(d.vault().join("d/n.md"), "# new").unwrap();
+}
+
+#[test]
+fn a_note_saved_again_in_a_new_folder_is_published_after_a_config_save_in_its_batch() {
+    let (d, server) = with_notes_env(&[("d/n.md", "# old")], SHORT_HOLD);
+    let mut events = server.subscribe("/d/n", &version(&server, "/d/n"), None);
+    stop(&server);
+    save_again_in_a_new_folder(&d);
+    // The reload rescans the root, so the new folder's own event syncs nothing.
+    fs::write(d.vault().join("tachylite.toml"), "pins = [\"d\"]\n").unwrap();
+    resume(&server);
+    let page = next_page(&mut events);
+    assert!(page.contains("\">new</h1>"), "{page}");
+}
+
+#[test]
+fn a_note_saved_again_in_a_new_folder_is_published_after_new_daily_settings_in_its_batch() {
+    let (d, server) = with_notes_env(&[("d/n.md", "# old")], SHORT_HOLD);
+    let mut events = server.subscribe("/d/n", &version(&server, "/d/n"), None);
+    stop(&server);
+    save_again_in_a_new_folder(&d);
+    fs::create_dir(d.vault().join(".obsidian")).unwrap();
+    fs::write(
+        d.vault().join(".obsidian/daily-notes.json"),
+        "{\"folder\": \"d\"}",
+    )
+    .unwrap();
+    resume(&server);
+    let page = next_page(&mut events);
+    assert!(page.contains("\">new</h1>"), "{page}");
+}
+
+#[test]
+fn a_folder_moved_over_a_deleted_one_publishes_its_note() {
+    let (d, server) = with_notes_env(&[("d/n.md", "# old")], SHORT_HOLD);
+    let mut events = server.subscribe("/d/n", &version(&server, "/d/n"), None);
+    let staged = d.tmp.path().join("staged");
+    fs::create_dir(&staged).unwrap();
+    fs::write(staged.join("n.md"), "# new").unwrap();
+    stop(&server);
+    // The folder arrives with its note saved, so the note's last event is its delete.
+    fs::remove_dir_all(d.vault().join("d")).unwrap();
+    fs::rename(&staged, d.vault().join("d")).unwrap();
+    resume(&server);
+    let page = next_page(&mut events);
+    assert!(page.contains("\">new</h1>"), "{page}");
+}
+
 #[test]
 fn a_save_by_link_is_published() {
     let (d, server) = with_notes(&[("a.md", "# a")]);
