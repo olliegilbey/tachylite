@@ -11,12 +11,12 @@ expression: "built(\"notes/links\")"
 <link rel="manifest" href="/.tachylite/app.webmanifest">
 <link rel="icon" href="/.tachylite/icon.svg">
 <link rel="stylesheet" href="/.tachylite/style.css">
-<meta name="tachylite-version" content="676ebcc40ecbd062">
+<meta name="tachylite-version" content="e614bd969fd9d72e">
 <title>links</title>
 <script src="/.tachylite/live.js" defer></script>
 </head>
 <body>
-<header><a class="site" href="/">Tachylite</a><a href="/.tachylite/recent">Recent</a><button type="button" class="find" title="Find a note (Ctrl-K)">Find</button></header>
+<header><a href="/">Home</a><a href="/.tachylite/recent">Recent</a><button type="button" class="find" title="Find a note (Ctrl-K)">Find</button></header>
 <main>
 <nav class="crumbs"><a href="/.tachylite/folders/notes">notes</a></nav>
 <h1 id="links">Links</h1>

@@ -92,21 +92,28 @@ test("the home page opens offline", async ({ page }) => {
   await synced(page, "/a", "/");
   await stop(server!);
   await page.goto(base + "/");
-  await expect(page.locator("header a.site")).toHaveText("Tachylite");
+  await expect(page).toHaveTitle("Tachylite");
+  await expect(page.locator('header a[aria-current="page"]')).toHaveText("Home");
   await expect(page.locator("main")).toContainText("Fern care");
 });
 
-test("the header's links and a folder index work", async ({ page }) => {
+test("the tabs and a folder index work, and a tab page marks its own tab", async ({ page }) => {
+  const current = page.locator('header a[aria-current="page"]');
   await page.goto(base + "/garden/Rose");
+  await expect(page.locator("header > a")).toHaveText(["Home", "Recent"]);
+  await expect(current).toHaveCount(0);
   await page.locator("nav.crumbs a", { hasText: "garden" }).click();
   await expect(page).toHaveURL(base + "/.tachylite/folders/garden");
   await expect(page.locator("main ul.notes li")).toHaveText(["Fern care", "Rose"]);
-  await page.locator("header a", { hasText: "Recent" }).click();
+  await expect(current).toHaveCount(0);
+  await page.locator("header > a", { hasText: "Recent" }).click();
   await expect(page).toHaveURL(base + "/.tachylite/recent");
   await expect(page.locator("main ul.recent li")).toHaveCount(3);
-  await page.locator("header a.site").click();
+  await expect(current).toHaveText("Recent");
+  await page.locator("header > a", { hasText: "Home" }).click();
   await expect(page).toHaveURL(base + "/");
   await expect(page.locator("main ul.folders")).toContainText("garden");
+  await expect(current).toHaveText("Home");
 });
 
 test("a wide table does not widen the page", async ({ page }) => {
@@ -236,6 +243,29 @@ test("Today opens offline", async ({ page }) => {
   await expect(page.locator("main")).toContainText("yesterday's plan");
 });
 
+test("a daily note links to the daily notes before and after it", async ({ page }) => {
+  await daily(page);
+  await page.goto(base + `/days/${iso(-1)}`);
+  const days = page.locator("main nav.days a");
+  await expect(days).toHaveText([iso(-3), iso(2)]);
+  // The previous day sits at the left edge and the next at the right, on one line.
+  const boxes = await days.evaluateAll((els) => els.map((e) => e.getBoundingClientRect().toJSON()));
+  expect(boxes[0].right).toBeLessThan(boxes[1].left);
+  expect(Math.round(boxes[0].top)).toBe(Math.round(boxes[1].top));
+  // Each is a touch target, as a tab is, and names its direction to a screen reader.
+  for (const box of boxes) expect(box.height).toBeGreaterThanOrEqual(48);
+  await expect(page.getByRole("link", { name: `Previous: ${iso(-3)}` })).toBeVisible();
+  await expect(page.getByRole("link", { name: `Next: ${iso(2)}` })).toBeVisible();
+  await days.nth(1).click();
+  await expect(page).toHaveURL(base + `/days/${iso(2)}`);
+  await expect(days).toHaveText([iso(-1)]);
+  await days.click();
+  await expect(page).toHaveURL(base + `/days/${iso(-1)}`);
+  // A new daily note reaches the open page of the one before it.
+  note(`days/${iso(0)}`, "# today\n");
+  await expect(days).toHaveText([iso(-3), iso(0)]);
+});
+
 test("five pins keep the header on its lines and the page its width", async ({ page }) => {
   await daily(page);
   await page.goto(base + "/a");
@@ -244,6 +274,14 @@ test("five pins keep the header on its lines and the page its width", async ({ p
     els.map((e) => { const r = e.getBoundingClientRect(); return Math.round(r.top + r.height / 2); }),
   );
   expect(new Set(tops).size, "the first line wrapped").toBe(1);
+  // A tab is a touch target: 48 CSS px is Android's minimum.
+  const tabs = await page.locator("header > a").evaluateAll((els) =>
+    els.map((e) => { const r = e.getBoundingClientRect(); return Math.min(r.width, r.height); }),
+  );
+  expect(tabs.length).toBe(3);
+  for (const side of tabs) expect(side).toBeGreaterThanOrEqual(48);
+  const find = await page.locator("header button.find").boundingBox();
+  expect(find!.height).toBeGreaterThanOrEqual(44);
   const pins = await page.locator("header .pins a").evaluateAll((els) =>
     els.map((e) => { const r = e.getBoundingClientRect(); return Math.round(r.top + r.height / 2); }),
   );
