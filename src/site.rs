@@ -188,8 +188,8 @@ const HOLD_MAX: usize = 32 * 1024 * 1024;
 /// reads it once; a full sync reads the rest again per batch, so it never holds every note.
 const FRESH_MAX: usize = 1024 * 1024;
 
-/// The most threads a render batch takes. Past 8, the main thread's share of a build bounds
-/// its time, and a thread that shares a core bills CPU time for little speed.
+/// The most threads a render batch takes. On the budget vault, the cold build ran little
+/// faster past 6 threads, and a thread that shares a core billed CPU time for no speed.
 const RENDER_THREADS: usize = 8;
 
 /// The site's name when config names none.
