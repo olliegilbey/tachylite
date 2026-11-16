@@ -4,7 +4,7 @@ TARGET ?= x86_64-unknown-linux-gnu
 PLAYWRIGHT_INSTALL ?=
 SIZE_LIMIT := 5000000
 
-.PHONY: check browser budget size upgrade mermaid
+.PHONY: check browser budget release size upgrade mermaid
 
 # The gate CI runs.
 check:
@@ -27,8 +27,10 @@ budget:
 	BUDGET_SCALE=1 cargo test --release --test budgets -- --ignored --nocapture --test-threads=1
 
 # A static glibc build: musl's allocator serialises the render threads.
-size:
+release:
 	RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --target $(TARGET)
+
+size: release
 	@bin=target/$(TARGET)/release/tachylite; bytes=$$(stat -c%s $$bin); \
 	echo "release binary $(TARGET): $$bytes bytes (limit $(SIZE_LIMIT))"; \
 	file -b $$bin | grep -q static || { echo "$$bin is not static"; exit 1; }; \

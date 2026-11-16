@@ -25,11 +25,11 @@ The smallest thing that works, made fast, beats the clever thing. Fight scope cr
 
 - **vault**: the folder of Markdown that Tachylite reads.
 - **note**: one `.md` file in the vault.
-- **page**: any HTML at a URL that the manifest lists. Clients cache every page for offline use.
+- **page**: a note page or an index page. The manifest's `pages` lists each one with its version, and the switcher list `notes.json` too. Clients cache every page for offline use.
 - **note page**: the page rendered from one note.
 - **html page**: an `.html` file from the vault, served with its content unchanged and a sandbox header.
 - **index page**: a page generated from many notes: a tag page, a folder index, recent notes, the board. Index pages live under the reserved prefix `/.tachylite/`, except the home page at `/`.
-- **asset**: an image or PDF. It is not in the manifest. A client fetches it on first open and keeps it cached.
+- **asset**: an image or PDF from the vault. The manifest's `files` lists each asset and html page, with no version. A client fetches it on first open and keeps it cached. The files built into the binary, such as the JS and CSS, are client assets, a separate thing.
 - **output**: the directory Tachylite writes. It lives outside the vault.
 - **manifest**: the list of every page with its content hash. Clients sync against it.
 - **push**: new page HTML sent to open clients over Server-Sent Events.
@@ -84,7 +84,7 @@ The likeliest defect here is a change that works in a full build and goes stale 
 
 The stack: Rust stable, edition 2024, one crate until a second earns its place. Client assets are plain files embedded in the binary. Write code that passes the gate set by construction:
 
-- The gate set: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, and the budget benches at CI's ceiling. `make check` runs them the way CI does; run it green before any push. CI also runs `make size` for both release targets. The first build slice creates the Makefile and CI. Until then, run the cargo commands directly.
+- The gate set: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, and the budget benches at CI's ceiling. `make check` runs them the way CI does; run it green before any push. CI also runs `make size` for both release targets.
 - `cargo machete` and `cargo deny check` run in `make check`. They fail on an unused crate, a disallowed licence or a known advisory.
 - Dependencies track the newest releases. Add a crate with `cargo add`. `make upgrade` updates the stable toolchain and moves every crate to its latest version, across major versions.
 - `make budget` runs the timed budgets on the reference host. Put its numbers in the PR body.
