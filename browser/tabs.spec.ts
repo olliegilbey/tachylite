@@ -217,6 +217,12 @@ test.describe("the Today tab", () => {
     await expect(page.locator("main [data-date]")).toBeVisible();
     await expect(page.locator('header a[aria-current="page"]')).toHaveText("Today");
     await live(page, TODAY);
+    // Switched to in place, the list shows as well.
+    await page.locator("header > a", { hasText: "Home" }).click();
+    await shows(page, "Home");
+    await page.locator("header > a", { hasText: "Today" }).click();
+    await expect(page.locator("main [data-date]")).toBeVisible();
+    await expect(page).toHaveURL(base + TODAY);
   });
 
   test("never shows its list while the script has yet to run", async ({ page, context }) => {
@@ -286,7 +292,7 @@ test.describe("a swipe", () => {
     await shows(page, "Today");
   });
 
-  test("up the page scrolls it, and a slanted one does nothing", async ({ page }) => {
+  test("up the page scrolls it, and a slanted or a short one does nothing", async ({ page }) => {
     note(`days/${iso(-1)}`, `# latest\n\nyesterday's plan\n\n${"a paragraph\n\n".repeat(80)}`);
     await expect.poll(async () => (await page.request.get(base + latest)).text()).toContain("a paragraph");
     await page.goto(base + TODAY);
@@ -299,6 +305,9 @@ test.describe("a swipe", () => {
     await swipe(page, [320, 300], [200, 420]);
     await settled(page);
     await shows(page, "Today");
+    await swipe(page, [220, 300], [175, 300]);
+    await settled(page);
+    await shows(page, "Today");
   });
 
   test("of a pinched-in page pans it", async ({ page }) => {
@@ -308,7 +317,8 @@ test.describe("a swipe", () => {
     await cdp.send("Input.synthesizePinchGesture", { x: 200, y: 400, scaleFactor: 2 });
     await expect.poll(() => page.evaluate(() => visualViewport!.scale)).toBeGreaterThan(1.5);
     const before = await page.evaluate(() => visualViewport!.offsetLeft);
-    await left(page);
+    // The touch lands clear of both edges of the layout viewport, which the pinch moved.
+    await swipe(page, [250, 500], [60, 510]);
     await expect.poll(() => page.evaluate(() => visualViewport!.offsetLeft)).toBeGreaterThan(before);
     await settled(page);
     await shows(page, "Today");
@@ -411,6 +421,18 @@ test("a tab opened from another tab replaces the history entry, by tap or by swi
   await expect(page.locator("main")).toContainText("aye text");
 });
 
+test("Back from a note returns to the tab the reader left, not the one first loaded", async ({ page }) => {
+  await page.goto(base + "/");
+  await shows(page, "Home");
+  await page.locator("header > a", { hasText: "Recent" }).click();
+  await shows(page, "Recent");
+  await page.locator("main a", { hasText: "Fern care" }).click();
+  await expect(page.locator("main")).toContainText("water weekly");
+  await page.goBack();
+  await shows(page, "Recent");
+  await live(page, RECENT);
+});
+
 test("a tab page switched to in place is that tab's page in full", async ({ page }) => {
   await page.goto(base + "/");
   await synced(page, "/", TODAY, RECENT, latest);
@@ -476,9 +498,10 @@ test("a stale copy of a tab is corrected once its stream connects", async ({ pag
 
 // The client holds parsed copies of the tabs beside the one shown, read from the worker's cache.
 test("a copy held ahead is read again after a sync, so a tab opens fresh offline", async ({ page, context }) => {
-  await page.goto(base + "/");
-  await synced(page, "/", RECENT);
-  await live(page, "/");
+  await page.goto(base + TODAY);
+  await shows(page, "Today");
+  await synced(page, "/", TODAY, RECENT, latest);
+  await live(page, latest);
   await rested(page);
   await setHidden(page, true);
   note("fresh", "# Fresh\n\nfresh text\n");
