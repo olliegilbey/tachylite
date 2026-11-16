@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::ops::Bound;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -10,8 +11,8 @@ use crate::front;
 use crate::indexes::{self, Folder, Item, Tab};
 use crate::links::{Index, key};
 use crate::render::{
-    Body, Broken, EMBED_DEPTH, NAME_MAX, Page, Sources, crumbs, embed_targets, encode, folder_url,
-    note_title, render_body, render_page, url,
+    Body, Broken, EMBED_DEPTH, NAME_MAX, Page, Sources, crumbs, day_links, embed_targets, encode,
+    folder_url, note_title, render_body, render_page, url,
 };
 use crate::vault::{Entry, Kind, ReadError, SkipReason, Skipped, VaultDir, classify};
 
@@ -131,7 +132,8 @@ struct Fresh {
 struct Done {
     /// The notes whose bodies it rendered.
     rendered: HashSet<String>,
-    /// The notes whose backlinks may have changed since this apply last wrote their page.
+    /// The notes whose backlinks or daily neighbours may have changed since this apply last
+    /// wrote their page.
     foot: BTreeSet<Arc<str>>,
     /// The notes it pushed.
     pushed: HashSet<String>,
@@ -324,6 +326,9 @@ pub struct Site {
     obsidian: Option<Daily>,
     /// The daily folder and its format, when a Today page is built.
     daily: Option<(String, Vec<indexes::Part>)>,
+    /// The winning daily notes as `(ISO date, path)`, so in date order. A daily note's page
+    /// links to the one before it and the one after.
+    days: BTreeSet<(String, String)>,
     /// Every page's header, from `nav` and `daily` alone.
     header: String,
     /// The headers of the home page, the Today page and the Recent page: each marks its tab.
@@ -525,12 +530,22 @@ impl Site {
     fn renav(&mut self) {
         // An excluded folder publishes no daily note, so its Today link would lead nowhere.
         let daily = self.nav.daily.as_ref().or(self.obsidian.as_ref());
-        self.daily = daily
+        let daily = daily
             .filter(|d| !self.exclude.covers(&d.folder))
             .and_then(|d| {
                 let format = indexes::date_format(&d.format).ok()?;
                 Some((d.folder.clone(), format))
             });
+        if daily != self.daily {
+            self.daily = daily;
+            // Other notes are daily notes now. The sync of the root that follows renders
+            // every note, so each page takes its new line.
+            self.days = self
+                .winners
+                .iter()
+                .filter_map(|path| Some((self.day(path)?, path.clone())))
+                .collect();
+        }
         let pins: Vec<indexes::Pin> = self
             .nav
             .pins
@@ -591,6 +606,32 @@ impl Site {
             .range(prefix.clone()..)
             .take_while(|p| p.starts_with(&prefix))
             .any(|p| self.entries.get(p).is_some_and(|k| *k != Kind::Asset))
+    }
+
+    /// The ISO date a note's name carries, if the daily settings make it a daily note.
+    fn day(&self, path: &str) -> Option<String> {
+        let (folder, format) = self.daily.as_ref()?;
+        let date = indexes::date_of(format, daily_name(path, folder)?)?;
+        // Its kind by extension: a removed path is in no list.
+        (classify(path, &Exclude::default()) == Some(Kind::Note)).then_some(date)
+    }
+
+    /// The daily notes just before and just after `day`, which need not be listed itself.
+    fn around(&self, day: &(String, String)) -> [Option<&(String, String)>; 2] {
+        let after = (Bound::Excluded(day), Bound::Unbounded);
+        [
+            self.days.range(..day).next_back(),
+            self.days.range::<(String, String), _>(after).next(),
+        ]
+    }
+
+    /// A daily note's line of links to its neighbours, or nothing for any other note.
+    fn day_links(&self, path: &str) -> String {
+        let Some(date) = self.day(path) else {
+            return String::new();
+        };
+        let days = self.around(&(date, path.to_string()));
+        day_links(days.map(|day| day.map(|(date, path)| (date.as_str(), path.as_str()))))
     }
 
     pub fn nav(&self) -> &Nav {
@@ -829,7 +870,9 @@ impl Site {
         for &(path, body) in bodies {
             done.foot.remove(path);
             let backlinks = self.backlinks(path);
-            let page = render_page(&self.header, path, self.title(path), body, &backlinks);
+            let days = self.day_links(path);
+            let title = self.title(path);
+            let page = render_page(&self.header, path, title, &days, body, &backlinks);
             let new = !self.winners.contains(path) && !done.pushed.contains(path);
             if !new && self.versions.get(path) == Some(&page.version) {
                 continue;
@@ -842,7 +885,7 @@ impl Site {
             let start = page
                 .html
                 .find("<main>\n")
-                .map(|at| at + "<main>\n".len() + crumbs(folder).len());
+                .map(|at| at + "<main>\n".len() + crumbs(folder).len() + days.len());
             match start.filter(|&at| page.html.get(at..at + body.len()) == Some(body)) {
                 Some(at) => self.spans.insert(path.to_string(), (at, body.len())),
                 None => self.spans.remove(path),
@@ -939,7 +982,6 @@ impl Site {
             let mut tree: BTreeMap<&str, (BTreeSet<&str>, Vec<Item>)> = BTreeMap::new();
             tree.entry("").or_default();
             let mut notes: Vec<(i64, &str)> = Vec::new();
-            let mut days: Vec<(String, &str)> = Vec::new();
             let mut json = indexes::NotesJson::default();
             for path in won {
                 let kind = self.entries.get(path).copied().unwrap_or(Kind::Asset);
@@ -965,12 +1007,6 @@ impl Site {
                 if kind == Kind::Note {
                     notes.push((modified, path));
                     json.push(title, &url, note_key(path), self.index.aliases(path));
-                    if let Some((daily, format)) = &self.daily
-                        && let Some(date) =
-                            daily_name(path, daily).and_then(|n| indexes::date_of(format, n))
-                    {
-                        days.push((date, path));
-                    }
                 }
                 tree.entry(folder).or_default().1.push(Item {
                     title,
@@ -983,11 +1019,12 @@ impl Site {
             notes.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)));
             // The newest daily notes by date open the Recent page. Its list of the rest and
             // the home page's leave them out: an agent saves today's daily note all day.
-            days.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)));
-            let newest: Vec<usize> = days
+            let newest: Vec<usize> = self
+                .days
                 .iter()
+                .rev()
                 .take(indexes::DAILY)
-                .filter_map(|&(_, day)| notes.iter().position(|&(_, path)| path == day))
+                .filter_map(|(_, day)| notes.iter().position(|&(_, path)| path == day))
                 .collect();
             let listed: Vec<usize> = (0..notes.len())
                 .filter(|place| !newest.contains(place))
@@ -1075,10 +1112,12 @@ impl Site {
                 built.push((format!("{RECENT_IN}{folder}"), page.version, page.html));
             }
             if self.daily.is_some() {
-                days.truncate(indexes::TODAY);
-                let days: Vec<(String, &str, String)> = days
-                    .into_iter()
-                    .map(|(date, path)| (date, self.title(path), url(path)))
+                let days: Vec<(&str, &str, String)> = self
+                    .days
+                    .iter()
+                    .rev()
+                    .take(indexes::TODAY)
+                    .map(|(date, path)| (date.as_str(), self.title(path), url(path)))
                     .collect();
                 let page = indexes::today(today, &days);
                 built.push((TODAY.into(), page.version, page.html));
@@ -1327,6 +1366,30 @@ impl Site {
         // A retitled note changes the backlink text on every page it links to.
         let mut deps = BTreeSet::new();
         let mut foot = BTreeSet::new();
+
+        // A daily note that comes or goes changes the line of the one before it and the one
+        // after. Each takes the new line around the body it has, as with a new backlink.
+        if self.daily.is_some() {
+            let days = removed.iter().map(|p| (p, false));
+            for (path, new) in days.chain(added.iter().map(|p| (p, true))) {
+                let Some(date) = self.day(path) else {
+                    continue;
+                };
+                let day = (date, path.clone());
+                if !new {
+                    self.days.remove(&day);
+                }
+                foot.extend(
+                    self.around(&day)
+                        .into_iter()
+                        .flatten()
+                        .map(|(_, path)| Arc::from(path.as_str())),
+                );
+                if new {
+                    self.days.insert(day);
+                }
+            }
+        }
         let mut aliased = Vec::new();
         for (path, note) in fresh.iter_mut().filter(|(p, _)| won.contains(*p)) {
             let meta = std::mem::take(&mut note.meta);

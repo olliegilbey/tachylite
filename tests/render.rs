@@ -21,6 +21,7 @@ fn render_note(title: &str, markdown: &str) -> Page {
         HEADER,
         "x.md",
         title,
+        "",
         &render_body("x.md", markdown, &Index::default(), &Sources::new()).html,
         &[],
     )
@@ -200,6 +201,7 @@ fn backlinks_list_at_the_foot_of_main() {
         HEADER,
         "b.md",
         "b",
+        "",
         "<p>body</p>\n",
         &[("a<1>".to_string(), "/a%3C1%3E".to_string())],
     );
@@ -212,7 +214,7 @@ fn backlinks_list_at_the_foot_of_main() {
         page.html
     );
     assert!(
-        !render_page(HEADER, "b.md", "b", "<p>body</p>\n", &[])
+        !render_page(HEADER, "b.md", "b", "", "<p>body</p>\n", &[])
             .html
             .contains("backlinks")
     );
@@ -222,8 +224,8 @@ fn backlinks_list_at_the_foot_of_main() {
 fn version_covers_backlinks() {
     let link = [("a".to_string(), "/a".to_string())];
     assert_ne!(
-        render_page(HEADER, "b.md", "b", "x", &[]).version,
-        render_page(HEADER, "b.md", "b", "x", &link).version
+        render_page(HEADER, "b.md", "b", "", "x", &[]).version,
+        render_page(HEADER, "b.md", "b", "", "x", &link).version
     );
 }
 

@@ -296,7 +296,7 @@ pub fn recent_in<'a>(header: &str, folder: &str, rows: impl IntoIterator<Item = 
 
 /// `/.tachylite/today`: the daily notes as `(date, title, url)`, newest first. Each link
 /// carries its ISO date, so the client opens the newest dated on or before its own today.
-pub fn today(header: &str, days: &[(String, &str, String)]) -> Page {
+pub fn today(header: &str, days: &[(&str, &str, String)]) -> Page {
     let mut main = String::from("<h1>Daily notes</h1>\n");
     if days.is_empty() {
         main.push_str("<p>No daily notes yet.</p>\n");

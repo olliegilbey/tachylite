@@ -1066,6 +1066,40 @@ fn a_new_daily_note_reaches_the_open_today_page() {
 }
 
 #[test]
+fn a_daily_note_that_comes_or_goes_reaches_its_open_neighbour_and_the_manifest() {
+    let (d, server) = with_notes(&[
+        ("tachylite.toml", "daily = { folder = \"j\" }\n"),
+        ("j/2026-11-02.md", "a"),
+    ]);
+    let before = version(&server, "/j/2026-11-02");
+    let mut events = server.subscribe("/j/2026-11-02", &before, None);
+    fs::write(d.vault().join("j/2026-11-03.md"), "b").unwrap();
+    let event = events.expect("page");
+    assert!(
+        event
+            .data
+            .contains("<a rel=\"next\" href=\"/j/2026-11-03\">2026-11-03</a>"),
+        "{}",
+        event.data
+    );
+    let after = event.id.unwrap();
+    assert_ne!(after, before);
+    // The manifest follows the push, so an offline client takes the page on its next sync.
+    let listed = format!("\"/j/2026-11-02\":\"{after}\"");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let manifest = || server.get("/.tachylite/manifest.json").text();
+    while !manifest().contains(&listed) {
+        assert!(std::time::Instant::now() < deadline, "{}", manifest());
+        std::thread::yield_now();
+    }
+
+    fs::remove_file(d.vault().join("j/2026-11-03.md")).unwrap();
+    let event = events.expect("page");
+    assert!(!event.data.contains("class=\"days\""), "{}", event.data);
+    assert_eq!(event.id, Some(before));
+}
+
+#[test]
 fn obsidian_daily_settings_take_effect_on_save() {
     let (d, server) = with_notes(&[
         (

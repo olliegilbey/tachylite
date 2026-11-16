@@ -671,7 +671,7 @@ fn unchanged_backlinks_render_nothing() {
     assert_eq!(pushed(&delta), ["a"]);
 }
 
-const PATHS: [&str; 13] = [
+const PATHS: [&str; 14] = [
     "a.md",
     "a.MD",
     "x.html",
@@ -685,6 +685,7 @@ const PATHS: [&str; 13] = [
     ".h.md",
     "private/s.md",
     "d/k.secret.md",
+    "d/2026-01-03.md",
 ];
 
 /// What the exclusion property excludes: `private/s.md` and `d/k.secret.md`, wherever
@@ -781,12 +782,25 @@ fn mid_save_loser_does_not_block_promotion() {
     assert_eq!(files(&delta).len(), 1, "its save publishes it");
 }
 
+/// Daily notes in the folder the moves take away, so they come and go one by one and at once.
+const DAYS: [&str; 4] = [
+    "d/2026-01-02.md",
+    "d/2026-01-03.md",
+    "d/2026-01-05.md",
+    "d/2026-02-01.md",
+];
+
 #[derive(Debug, Clone)]
 enum Op {
     Write(usize, usize),
     Delete(usize),
     DeleteDir,
     MoveDir,
+    /// Writes a daily note, or deletes it.
+    Day(usize, bool),
+    /// Sets the daily folder to `d`, or to none. A sync of the root follows, as after a
+    /// config save.
+    Daily(bool),
 }
 
 fn op() -> impl Strategy<Value = Op> {
@@ -795,7 +809,14 @@ fn op() -> impl Strategy<Value = Op> {
         2 => (0..PATHS.len()).prop_map(Op::Delete),
         1 => Just(Op::DeleteDir),
         1 => Just(Op::MoveDir),
+        3 => (0..DAYS.len(), any::<bool>()).prop_map(|(d, write)| Op::Day(d, write)),
+        1 => any::<bool>().prop_map(Op::Daily),
     ]
+}
+
+/// The header config with the daily folder `d`, or with none.
+fn daily_nav(on: bool) -> tachylite::config::Nav {
+    nav(if on { "daily = { folder = \"d\" }" } else { "" })
 }
 
 /// Applies an op to the model vault and returns the changes the watcher would report.
@@ -817,6 +838,17 @@ fn apply_op(mem: &mut Mem, op: &Op) -> Vec<Change> {
             mem.0.remove(PATHS[*p]);
             vec![touch(PATHS[*p])]
         }
+        Op::Day(d, true) => {
+            let time = mem.1.values().max().map_or(1, |t| t + 1);
+            mem.1.insert(DAYS[*d].to_string(), time);
+            mem.0.insert(DAYS[*d].to_string(), b"day".to_vec());
+            vec![touch(DAYS[*d])]
+        }
+        Op::Day(d, false) => {
+            mem.0.remove(DAYS[*d]);
+            vec![touch(DAYS[*d])]
+        }
+        Op::Daily(_) => vec![sync_all(mem)],
         Op::DeleteDir => {
             mem.0.retain(|k, _| !k.starts_with("d/"));
             vec![Change::Sync {
@@ -866,6 +898,8 @@ proptest! {
     ) {
         let mut mem = Mem::default();
         let mut site = Site::new(hush());
+        let mut daily = true;
+        site.set_nav(daily_nav(daily));
         let mut out = Out::new();
         let mut last_push: BTreeMap<String, Push> = BTreeMap::new();
 
@@ -875,6 +909,10 @@ proptest! {
         for (i, chunk) in chunks.iter().enumerate() {
             let mut changes = Vec::new();
             for (op, _) in *chunk {
+                if let Op::Daily(on) = op {
+                    daily = *on;
+                    site.set_nav(daily_nav(daily));
+                }
                 changes.extend(apply_op(&mut mem, op));
             }
             let mut source = mem.clone();
@@ -895,7 +933,10 @@ proptest! {
             }
         }
 
-        let (expected, _) = full_with(&mem, hush());
+        let mut fresh = Site::new(hush());
+        fresh.set_nav(daily_nav(daily));
+        let mut expected = Out::new();
+        fold(&mut expected, &fresh.apply(vec![sync_all(&mem)], &mut mem.clone()), &mem);
         prop_assert_eq!(&out, &expected);
         prop_assert_eq!(manifest_urls(&out), page_urls(&out));
         for path in out.keys() {
@@ -1505,6 +1546,7 @@ proptest! {
     ) {
         let mut mem = Mem::default();
         let mut site = Site::new(Exclude::default());
+        site.set_nav(daily_nav(true));
         let mut out = Out::new();
         for (op, flux) in &ops {
             let mut changes = apply_op(&mut mem, op);
@@ -1528,7 +1570,10 @@ proptest! {
                 fold(&mut out, &delta, &mem);
             }
         }
-        let (expected, _) = full(&mem);
+        let mut fresh = Site::new(Exclude::default());
+        fresh.set_nav(daily_nav(true));
+        let mut expected = Out::new();
+        fold(&mut expected, &fresh.apply(vec![sync_all(&mem)], &mut mem.clone()), &mem);
         prop_assert_eq!(&out, &expected);
     }
 }
@@ -2616,4 +2661,259 @@ fn an_excluded_daily_note_is_in_no_daily_block_and_nowhere_on_the_home_page() {
         blocks(&page_text(&out, HOME))[0].1[..2],
         ["/d/2026-11-01", "/d/2026-11-02"]
     );
+}
+
+/// The daily notes a page links to as its previous and its next, each as `url date`.
+fn neighbours(out: &Out, path: &str) -> [Option<String>; 2] {
+    let html = page_text(out, path);
+    ["prev", "next"].map(|rel| {
+        let open = format!("<a rel=\"{rel}\" href=\"");
+        let link = &html[html.find(&open)? + open.len()..];
+        let (url, rest) = link.split_once("\">")?;
+        Some(format!("{url} {}", rest.split_once("</a>")?.0))
+    })
+}
+
+fn day(day: &str) -> Option<String> {
+    Some(format!("/d/2026-11-{day} 2026-11-{day}"))
+}
+
+fn day_page(day: &str) -> String {
+    format!("pages/d/2026-11-{day}.html")
+}
+
+#[test]
+fn a_daily_note_page_links_to_the_previous_and_the_next_daily_note() {
+    let mut mem = daily_vault();
+    mem.0.insert("d/sub/n.md".into(), b"x".to_vec());
+    let mut site = daily_site(Exclude::default());
+    let mut out = Out::new();
+    fold(&mut out, &site.apply(vec![sync_all(&mem)], &mut mem), &mem);
+    assert_eq!(neighbours(&out, &day_page("01")), [None, day("02")]);
+    assert_eq!(neighbours(&out, &day_page("03")), [day("02"), day("04")]);
+    assert_eq!(neighbours(&out, &day_page("05")), [day("04"), None]);
+    // The line sits under the breadcrumbs, above the note.
+    let page = page_text(&out, &day_page("03"));
+    assert!(
+        page.contains(
+            "<main>\n<nav class=\"crumbs\"><a href=\"/.tachylite/folders/d\">d</a></nav>\n\
+             <nav class=\"days\" aria-label=\"Daily notes\">\
+             <a rel=\"prev\" href=\"/d/2026-11-02\">2026-11-02</a>\
+             <a rel=\"next\" href=\"/d/2026-11-04\">2026-11-04</a></nav>\n<p>x</p>"
+        ),
+        "{page}"
+    );
+    // No other page has one.
+    for path in ["pages/n1.html", "pages/d/sub/n.html", HOME, RECENT, TODAY] {
+        assert!(!page_text(&out, path).contains("class=\"days\""), "{path}");
+    }
+}
+
+#[test]
+fn a_lone_daily_note_has_no_line_and_a_link_reads_as_an_iso_date() {
+    let mut mem = Mem::with(&[("j/02.11.2026.md", "x")]);
+    let mut site = Site::new(Exclude::default());
+    site.set_nav(nav("daily = { folder = \"j\", format = \"DD.MM.YYYY\" }"));
+    let mut out = Out::new();
+    fold(&mut out, &site.apply(vec![sync_all(&mem)], &mut mem), &mem);
+    assert!(!page_text(&out, "pages/j/02.11.2026.html").contains("class=\"days\""));
+
+    mem.0.insert("j/30.10.2026.md".into(), b"y".to_vec());
+    apply_kept(
+        &mut site,
+        vec![touch("j/30.10.2026.md")],
+        &mut mem,
+        &mut out,
+    );
+    assert_eq!(
+        neighbours(&out, "pages/j/02.11.2026.html"),
+        [Some("/j/30.10.2026 2026-10-30".to_string()), None]
+    );
+    assert_eq!(
+        neighbours(&out, "pages/j/30.10.2026.html"),
+        [None, Some("/j/02.11.2026 2026-11-02".to_string())]
+    );
+}
+
+/// Applies `changes` and checks that exactly `notes` were pushed, that none of `unread` was
+/// read again, that each pushed page has a new version in the manifest, and that the output
+/// equals a fresh full build.
+fn day_step(
+    site: &mut Site,
+    mem: &Mem,
+    out: &mut Out,
+    changes: Vec<Change>,
+    notes: &[&str],
+    unread: &[&str],
+) {
+    let listed = |out: &Out| -> BTreeMap<String, String> {
+        let json = page_text(out, tachylite::site::MANIFEST);
+        let pages = &json[r#"{"pages":{"#.len()..json.find(r#"},"files""#).unwrap()];
+        pages
+            .split(',')
+            .filter_map(|pair| pair.split_once(':'))
+            .map(|(url, version)| (url.to_string(), version.to_string()))
+            .collect()
+    };
+    let before = listed(out);
+    let mut source = Counted(mem.clone(), Vec::new());
+    let mut kept = Kept {
+        delta: Delta::default(),
+        out,
+    };
+    site.apply_to(changes, &mut source, &mut kept);
+    let mut delta = kept.delta;
+    site.derive_to(&mut delta);
+    fold(out, &delta, mem);
+    let mut got = pushed(&delta);
+    got.sort_unstable();
+    assert_eq!(got, notes);
+    for path in unread {
+        assert!(!source.1.contains(&path.to_string()), "{path} was read");
+    }
+    let after = listed(out);
+    for note in notes {
+        let url = format!("\"/{note}\"");
+        assert_ne!(after.get(&url), before.get(&url), "{note}");
+        assert!(after.contains_key(&url), "{note}");
+    }
+    let mut fresh = daily_site(Exclude::default());
+    let mut want = Out::new();
+    let delta = fresh.apply(vec![sync_all(mem)], &mut mem.clone());
+    fold(&mut want, &delta, mem);
+    assert_eq!(*out, want);
+}
+
+#[test]
+fn a_daily_note_that_comes_or_goes_rewrites_its_two_neighbours_unrendered() {
+    let mut mem = daily_vault();
+    let mut site = daily_site(Exclude::default());
+    let mut out = Out::new();
+    apply_kept(&mut site, vec![sync_all(&mem)], &mut mem, &mut out);
+
+    // A new newest daily note: the one before it gains a next link.
+    mem.0.insert("d/2026-11-07.md".into(), b"x".to_vec());
+    let changes = vec![touch("d/2026-11-07.md")];
+    let pushed = ["d/2026-11-05", "d/2026-11-07"];
+    day_step(
+        &mut site,
+        &mem,
+        &mut out,
+        changes,
+        &pushed,
+        &["d/2026-11-05.md"],
+    );
+    assert_eq!(neighbours(&out, &day_page("05")), [day("04"), day("07")]);
+
+    // A note created between two: both link to it, and no other page changes.
+    mem.0.insert("d/2026-11-06.md".into(), b"x".to_vec());
+    let changes = vec![touch("d/2026-11-06.md")];
+    let pushed = ["d/2026-11-05", "d/2026-11-06", "d/2026-11-07"];
+    let unread = ["d/2026-11-05.md", "d/2026-11-07.md"];
+    day_step(&mut site, &mem, &mut out, changes, &pushed, &unread);
+    assert_eq!(neighbours(&out, &day_page("06")), [day("05"), day("07")]);
+
+    // A deleted note: its neighbours link to each other.
+    mem.0.remove("d/2026-11-03.md");
+    let changes = vec![touch("d/2026-11-03.md")];
+    let pushed = ["d/2026-11-02", "d/2026-11-04"];
+    let unread = ["d/2026-11-02.md", "d/2026-11-04.md"];
+    day_step(&mut site, &mem, &mut out, changes, &pushed, &unread);
+    assert_eq!(neighbours(&out, &day_page("02")), [day("01"), day("04")]);
+    assert_eq!(neighbours(&out, &day_page("04")), [day("02"), day("05")]);
+
+    // A renamed note: its old neighbours and its new ones.
+    let body = mem.0.remove("d/2026-11-06.md").unwrap();
+    mem.0.insert("d/2026-10-31.md".into(), body);
+    let changes = vec![touch("d/2026-11-06.md"), touch("d/2026-10-31.md")];
+    let pushed = [
+        "d/2026-10-31",
+        "d/2026-11-01",
+        "d/2026-11-05",
+        "d/2026-11-07",
+    ];
+    let unread = ["d/2026-11-01.md", "d/2026-11-05.md", "d/2026-11-07.md"];
+    day_step(&mut site, &mem, &mut out, changes, &pushed, &unread);
+    assert_eq!(
+        neighbours(&out, &day_page("01")),
+        [Some("/d/2026-10-31 2026-10-31".to_string()), day("02")]
+    );
+
+    // A save that keeps the name changes no neighbour.
+    mem.0.insert("d/2026-11-04.md".into(), b"edited".to_vec());
+    let changes = vec![touch("d/2026-11-04.md")];
+    day_step(&mut site, &mem, &mut out, changes, &["d/2026-11-04"], &[]);
+}
+
+#[test]
+fn an_excluded_daily_note_is_no_neighbour() {
+    let mut mem = daily_vault();
+    let exclude = || Exclude::new(&["d/2026-11-03.md".to_string()]).unwrap();
+    let mut site = daily_site(exclude());
+    let mut out = Out::new();
+    apply_kept(&mut site, vec![sync_all(&mem)], &mut mem, &mut out);
+    assert_eq!(neighbours(&out, &day_page("02")), [day("01"), day("04")]);
+    assert_eq!(neighbours(&out, &day_page("04")), [day("02"), day("05")]);
+    assert!(
+        out.values()
+            .all(|page| !String::from_utf8_lossy(page).contains("2026-11-03"))
+    );
+
+    // Publishing it and excluding it again each move its neighbours' links.
+    site.set_exclude(Exclude::default());
+    apply_kept(&mut site, vec![sync_all(&mem)], &mut mem, &mut out);
+    assert_eq!(neighbours(&out, &day_page("02")), [day("01"), day("03")]);
+    assert_eq!(neighbours(&out, &day_page("04")), [day("03"), day("05")]);
+    site.set_exclude(exclude());
+    let delta = apply_kept(&mut site, vec![sync_all(&mem)], &mut mem, &mut out);
+    assert_eq!(neighbours(&out, &day_page("02")), [day("01"), day("04")]);
+    assert_eq!(neighbours(&out, &day_page("04")), [day("02"), day("05")]);
+    assert!(pushed(&delta).contains(&"d/2026-11-02") && pushed(&delta).contains(&"d/2026-11-04"));
+    assert!(
+        out.values()
+            .all(|page| !String::from_utf8_lossy(page).contains("2026-11-03"))
+    );
+}
+
+#[test]
+fn a_change_of_daily_settings_moves_every_daily_line() {
+    let mut mem = Mem::with(&[
+        ("a/2026-11-02.md", "x"),
+        ("a/2026-11-03.md", "x"),
+        ("b/02.11.2026.md", "x"),
+        ("b/04.11.2026.md", "x"),
+    ]);
+    let mut site = Site::new(Exclude::default());
+    site.set_obsidian(Some(daily("a", "YYYY-MM-DD")));
+    let mut out = Out::new();
+    apply_kept(&mut site, vec![sync_all(&mem)], &mut mem, &mut out);
+    assert!(page_text(&out, "pages/a/2026-11-02.html").contains("class=\"days\""));
+    assert!(!page_text(&out, "pages/b/02.11.2026.html").contains("class=\"days\""));
+
+    site.set_nav(nav("daily = { folder = \"b\", format = \"DD.MM.YYYY\" }"));
+    let delta = apply_kept(&mut site, vec![sync_all(&mem)], &mut mem, &mut out);
+    assert!(!page_text(&out, "pages/a/2026-11-02.html").contains("class=\"days\""));
+    assert_eq!(
+        neighbours(&out, "pages/b/02.11.2026.html"),
+        [None, Some("/b/04.11.2026 2026-11-04".to_string())]
+    );
+    let mut got = pushed(&delta);
+    got.sort_unstable();
+    let all = [
+        "a/2026-11-02",
+        "a/2026-11-03",
+        "b/02.11.2026",
+        "b/04.11.2026",
+    ];
+    assert_eq!(got, all);
+
+    // With no daily settings, no page has a line.
+    site.set_nav(nav(""));
+    site.set_obsidian(None);
+    apply_kept(&mut site, vec![sync_all(&mem)], &mut mem, &mut out);
+    assert!(
+        out.values()
+            .all(|page| !String::from_utf8_lossy(page).contains("class=\"days\""))
+    );
+    assert_eq!(out, full(&mem).0);
 }

@@ -1451,17 +1451,36 @@ pub fn crumbs(folder: &str) -> String {
     html
 }
 
-/// Wraps a note's body in the page shell, under `header` and links to its folders, and
-/// above its backlinks, given as `(title, url)` pairs.
+/// A daily note's line of links to the previous and the next daily note, each given as
+/// `(ISO date, path)`. Nothing when it has neither.
+pub fn day_links(days: [Option<(&str, &str)>; 2]) -> String {
+    if days == [None, None] {
+        return String::new();
+    }
+    let mut html = String::from("<nav class=\"days\" aria-label=\"Daily notes\">");
+    for (rel, day) in ["prev", "next"].into_iter().zip(days) {
+        if let Some((date, path)) = day {
+            let href = url(path);
+            html.push_str(&format!("<a rel=\"{rel}\" href=\"{href}\">{date}</a>"));
+        }
+    }
+    html.push_str("</nav>\n");
+    html
+}
+
+/// Wraps a note's body in the page shell, under `header`, links to its folders and `days`,
+/// its `day_links`, and above its backlinks, given as `(title, url)` pairs.
 pub fn render_page(
     header: &str,
     path: &str,
     title: &str,
+    days: &str,
     body: &str,
     backlinks: &[(String, String)],
 ) -> Page {
     let folder = path.rsplit_once('/').map_or("", |(folder, _)| folder);
     let mut main = crumbs(folder);
+    main.push_str(days);
     main.push_str(body);
     if !backlinks.is_empty() {
         main.push_str("<section class=\"backlinks\"><h2>Backlinks</h2><ul>");

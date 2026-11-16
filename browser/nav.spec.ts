@@ -243,6 +243,26 @@ test("Today opens offline", async ({ page }) => {
   await expect(page.locator("main")).toContainText("yesterday's plan");
 });
 
+test("a daily note links to the daily notes before and after it", async ({ page }) => {
+  await daily(page);
+  await page.goto(base + `/days/${iso(-1)}`);
+  const days = page.locator("main nav.days a");
+  await expect(days).toHaveText([iso(-3), iso(2)]);
+  // The previous day sits at the left edge and the next at the right, on one line.
+  const boxes = await days.evaluateAll((els) => els.map((e) => e.getBoundingClientRect().toJSON()));
+  expect(boxes[0].right).toBeLessThan(boxes[1].left);
+  expect(Math.round(boxes[0].top)).toBe(Math.round(boxes[1].top));
+  for (const box of boxes) expect(box.height).toBeGreaterThanOrEqual(40);
+  await days.nth(1).click();
+  await expect(page).toHaveURL(base + `/days/${iso(2)}`);
+  await expect(days).toHaveText([iso(-1)]);
+  await days.click();
+  await expect(page).toHaveURL(base + `/days/${iso(-1)}`);
+  // A new daily note reaches the open page of the one before it.
+  note(`days/${iso(0)}`, "# today\n");
+  await expect(days).toHaveText([iso(-3), iso(0)]);
+});
+
 test("five pins keep the header on its lines and the page its width", async ({ page }) => {
   await daily(page);
   await page.goto(base + "/a");
