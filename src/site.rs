@@ -1363,7 +1363,6 @@ impl Site {
             self.titles.remove(path);
         }
 
-        // A retitled note changes the backlink text on every page it links to.
         let mut deps = BTreeSet::new();
         let mut foot = BTreeSet::new();
 
@@ -1390,6 +1389,8 @@ impl Site {
                 }
             }
         }
+
+        // A retitled note changes the backlink text on every page it links to.
         let mut aliased = Vec::new();
         for (path, note) in fresh.iter_mut().filter(|(p, _)| won.contains(*p)) {
             let meta = std::mem::take(&mut note.meta);
