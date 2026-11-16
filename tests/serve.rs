@@ -689,6 +689,39 @@ fn an_asset_keeps_its_tag_across_a_restart() {
 }
 
 #[test]
+fn a_start_names_only_the_pattern_that_matched_nothing() {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+    let d = Dirs::fixture();
+    fs::write(
+        d.vault().join("tachylite.toml"),
+        "exclude = [\"welcome.md\", \"people\", \"privte\"]\n",
+    )
+    .unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tachylite"))
+        .arg("serve")
+        .arg(d.vault())
+        .arg(d.out())
+        .args(["--port", "0"])
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stderr = BufReader::new(child.stderr.take().unwrap());
+    let lines: Vec<String> = stderr
+        .lines()
+        .map(Result::unwrap)
+        .take_while(|l| !l.starts_with("serving http://"))
+        .filter(|l| l.contains("matched no published path"))
+        .collect();
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert_eq!(
+        lines,
+        ["exclude \"privte\" matched no published path; check it for a typo"]
+    );
+}
+
+#[test]
 fn a_live_config_save_names_an_unmatched_pattern() {
     let d = Dirs::fixture();
     let server = Server::start(&d.vault(), &d.out());

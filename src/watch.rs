@@ -179,6 +179,11 @@ impl Watcher {
         Ok(watcher)
     }
 
+    /// The exclusions in force.
+    pub fn exclude(&self) -> &Exclude {
+        self.site.exclude()
+    }
+
     /// Runs until a fatal error, which it returns.
     pub fn run(mut self) -> Error {
         let mut buf = vec![MaybeUninit::<u8>::uninit(); 64 * 1024];
