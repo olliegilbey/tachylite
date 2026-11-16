@@ -121,4 +121,4 @@ Full Chromium and the headless shell give different numbers for the same scenari
 
 ## Keeping it working
 
-`browser/bench.spec.ts` runs one sample of three scenarios on the fixture vault, in the browser suite. So `make check` fails when the bench stops running. It asserts no time.
+`browser/bench.spec.ts` runs one sample of four scenarios on the fixture vault, in the browser suite. So `make check` fails when the bench stops running. It asserts no time.
