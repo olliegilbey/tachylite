@@ -2051,6 +2051,24 @@ fn no_daily_config_means_no_today_page_or_link() {
 }
 
 #[test]
+fn an_excluded_daily_folder_means_no_today_page_or_link() {
+    let mut mem = Mem::with(&[("a.md", "a"), ("private/2026-11-04.md", HUSHED)]);
+    let mut site = Site::new(hush());
+    site.set_obsidian(Some(daily("private", "YYYY-MM-DD")));
+    let delta = site.apply(vec![sync_all(&mem)], &mut mem);
+    let mut out = Out::new();
+    fold(&mut out, &delta, &mem);
+    assert!(!out.contains_key(TODAY));
+    assert!(!page_text(&out, "pages/a.html").contains("today"));
+    assert_eq!(delta.notices.len(), 1, "{:?}", delta.notices);
+    assert!(
+        delta.notices[0].contains("\"private\" is excluded"),
+        "{:?}",
+        delta.notices
+    );
+}
+
+#[test]
 fn the_config_daily_overrides_obsidian_and_a_change_takes_effect() {
     let mut mem = Mem::with(&[("a/2026-11-02.md", "a"), ("b/02.11.2026.md", "b")]);
     let mut site = Site::new(Exclude::default());

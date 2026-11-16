@@ -517,11 +517,14 @@ impl Site {
     }
 
     fn renav(&mut self) {
+        // An excluded folder publishes no daily note, so its Today link would lead nowhere.
         let daily = self.nav.daily.as_ref().or(self.obsidian.as_ref());
-        self.daily = daily.and_then(|d| {
-            let format = indexes::date_format(&d.format).ok()?;
-            Some((d.folder.clone(), format))
-        });
+        self.daily = daily
+            .filter(|d| !self.exclude.covers(&d.folder))
+            .and_then(|d| {
+                let format = indexes::date_format(&d.format).ok()?;
+                Some((d.folder.clone(), format))
+            });
         let pins: Vec<indexes::Pin> = self
             .nav
             .pins
@@ -545,10 +548,15 @@ impl Site {
     /// published path is likely a typo, as an unmatched exclude pattern is.
     fn nav_notices(&self) -> Vec<String> {
         let mut notices = Vec::new();
-        if let Some(daily) = self.nav.daily.as_ref().or(self.obsidian.as_ref())
-            && let Err(why) = indexes::date_format(&daily.format)
-        {
-            notices.push(format!("{why}; there is no Today page"));
+        if let Some(daily) = self.nav.daily.as_ref().or(self.obsidian.as_ref()) {
+            if let Err(why) = indexes::date_format(&daily.format) {
+                notices.push(format!("{why}; there is no Today page"));
+            } else if self.exclude.covers(&daily.folder) {
+                notices.push(format!(
+                    "daily folder {:?} is excluded; there is no Today page",
+                    daily.folder
+                ));
+            }
         }
         for text in &self.nav.pins {
             let Some((path, _)) = pin(text) else {
@@ -568,7 +576,6 @@ impl Site {
         notices
     }
 
-    /// Whether a published path lies under `folder`.
     /// Whether a published note or html page lies under `folder`, so it has an index.
     fn holds(&self, folder: &str) -> bool {
         let prefix = format!("{folder}/");

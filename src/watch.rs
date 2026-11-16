@@ -531,6 +531,8 @@ impl Watcher {
         removed: HashSet<String>,
     ) -> Result<(Vec<Change>, HashSet<String>), Error> {
         self.rewatch(&[""])?;
+        // A rescan renders every page, and its cause may have hidden a save of these.
+        self.site.set_obsidian(config::obsidian_daily(&self.vault));
         Ok((vec![self.sync("")?], removed))
     }
 
@@ -582,8 +584,6 @@ impl Watcher {
         })
     }
 
-    /// Adds a watch to `rel` and every published folder below it. A folder that vanished
-    /// or cannot be read is left to the scan to report.
     /// Obsidian's daily-notes settings name the Today page's notes. The folder is never
     /// published, so its watch only reports changes to that file. A vault may have none.
     fn watch_obsidian(&mut self) {
@@ -593,6 +593,8 @@ impl Watcher {
         }
     }
 
+    /// Adds a watch to `rel` and every published folder below it. A folder that vanished
+    /// or cannot be read is left to the scan to report.
     fn watch_tree(&mut self, rel: &str) -> Result<(), Error> {
         let path = self.vault.root().join(rel);
         let mask = if rel.is_empty() { ROOT_MASK } else { MASK };

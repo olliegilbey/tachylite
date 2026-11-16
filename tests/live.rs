@@ -1143,3 +1143,26 @@ fn an_obsidian_folder_made_after_start_is_read() {
     assert!(html.contains("/j/2026-11-02"), "{html}");
     assert!(server.get("/a").text().contains("/.tachylite/today"));
 }
+
+#[test]
+fn daily_settings_saved_with_the_config_take_effect() {
+    let (d, server) = with_notes(&[("a.md", "# a"), ("j/2026-11-02.md", "b")]);
+    fs::create_dir(d.vault().join(".obsidian")).unwrap();
+    let mut events = server.subscribe("/a", &version(&server, "/a"), None);
+    // One batch holds both saves: the config's reload must not drop the settings' own.
+    fs::write(
+        d.vault().join(".obsidian/daily-notes.json"),
+        "{\"folder\":\"j\"}",
+    )
+    .unwrap();
+    fs::write(
+        d.vault().join("tachylite.toml"),
+        "title = \"Field notes\"\n",
+    )
+    .unwrap();
+    let mut html = events.expect("page").data;
+    if !html.contains("Field notes") {
+        html = events.expect("page").data;
+    }
+    assert!(html.contains("/.tachylite/today"), "{html}");
+}
