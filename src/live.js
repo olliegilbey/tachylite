@@ -171,9 +171,15 @@
       const main = next.querySelector("main");
       const current = document.querySelector("main");
       if (!main || !current) return;
-      // A callout stays as the reader left it.
-      const open = [...current.querySelectorAll("details")].map((d) => d.open);
-      main.querySelectorAll("details").forEach((d, i) => i in open && (d.open = open[i]));
+      // A callout stays as the reader left it, matched by its title and its place among
+      // callouts of that title, so one added above it takes nothing from it.
+      const fold = (root, n = {}) =>
+        [...root.querySelectorAll("details")].map((d) => {
+          const t = d.querySelector("summary")?.textContent;
+          return [t + "\n" + (n[t] = -~n[t]), d];
+        });
+      const open = new Map(fold(current).map(([k, d]) => [k, d.open]));
+      for (const [k, d] of fold(main)) if (open.has(k)) d.open = open.get(k);
       current.replaceWith(main);
       document.title = next.title;
       meta.content = e.lastEventId;

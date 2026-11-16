@@ -56,6 +56,17 @@ test("a push keeps a callout the reader opened open", async ({ page }, info) => 
   await expect(page.locator(".callout-content")).toBeVisible();
 });
 
+test("a push keeps the callout the reader opened open when one is added above it", async ({ page }, info) => {
+  const name = `fold-above-${info.project.name}`;
+  note(name, "# Fold\n\n> [!tip]- Kept\n> kept body\n\nfirst text\n");
+  await open(page, name, "first text");
+  await page.locator(".callout-title", { hasText: "Kept" }).click();
+  note(name, "# Fold\n\n> [!note]- Added\n> added body\n\n> [!tip]- Kept\n> kept body\n\nsecond text\n");
+  await expect(page.locator("main")).toContainText("second text");
+  await expect(page.getByText("kept body")).toBeVisible();
+  await expect(page.getByText("added body")).toBeHidden();
+});
+
 test("the page asks once to keep its storage, and shows an icon", async ({ page }, info) => {
   await page.addInitScript(() => {
     const w = window as any;
