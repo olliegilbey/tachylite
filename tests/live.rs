@@ -961,3 +961,42 @@ fn an_embedder_catches_up_when_a_note_rewritten_in_place_closes() {
     let page = next_page(&mut x);
     assert!(page.contains("half and the rest"), "{page}");
 }
+
+#[test]
+fn a_start_waits_for_a_config_save_that_truncated_it() {
+    use std::io::{BufRead, BufReader, Write};
+    let d = Dirs::empty();
+    fs::create_dir(d.vault().join("d")).unwrap();
+    fs::write(d.vault().join("d/n.md"), "# n").unwrap();
+    fs::write(d.vault().join("a.md"), "# a").unwrap();
+    // Truncated before the server starts, and written only once the server is waiting.
+    let mut config = fs::File::create(d.vault().join("tachylite.toml")).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tachylite"))
+        .arg("serve")
+        .arg(d.vault())
+        .arg(d.out())
+        .args(["--port", "0"])
+        .envs(LONG_HOLD.iter().copied())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stderr = BufReader::new(child.stderr.take().unwrap()).lines();
+    let mut line = || stderr.next().expect("no line").unwrap();
+    assert_eq!(
+        line(),
+        "tachylite.toml is empty and was just modified; waiting for its save to finish"
+    );
+    config
+        .write_all(b"exclude = [\"d\"]\nhosts = [\"notes.example\"]\n")
+        .unwrap();
+    drop(config);
+    let serving = line();
+    let addr = serving.strip_prefix("serving http://").expect(&serving);
+    // The test's `Host` is not listed, so `hosts` from the finished save is in force.
+    let status = common::get(addr.parse().unwrap(), "/a", &[]).status;
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert_eq!(status, 421);
+    assert!(d.out().join("pages/a.html").is_file());
+    assert!(!d.out().join("pages/d").exists());
+}

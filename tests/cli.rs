@@ -188,3 +188,61 @@ fn a_pattern_inside_an_excluded_folder_is_not_named() {
     assert!(!stderr.contains("matched no published path"), "{stderr}");
     assert!(!dir.path().join("out/pages/private").exists());
 }
+
+const WAITING: &str =
+    "tachylite.toml is empty and was just modified; waiting for its save to finish";
+
+#[test]
+fn a_build_waits_for_a_config_save_that_truncated_it() {
+    use std::io::{BufRead, BufReader, Write};
+    let dir = tempfile::tempdir().unwrap();
+    let vault = dir.path().join("vault");
+    std::fs::create_dir_all(vault.join("private")).unwrap();
+    std::fs::write(vault.join("private/secret.md"), "# secret").unwrap();
+    // Truncated before the build starts, and written only once the build is waiting.
+    let mut config = std::fs::File::create(vault.join("tachylite.toml")).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tachylite"))
+        .args([
+            "build".as_ref(),
+            vault.as_os_str(),
+            dir.path().join("out").as_os_str(),
+        ])
+        .env("TACHYLITE_HOLD_MS", "600000")
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stderr = BufReader::new(child.stderr.take().unwrap()).lines();
+    let first = stderr.next().expect("no line").unwrap();
+    assert_eq!(first, WAITING);
+    config.write_all(b"exclude = [\"private\"]\n").unwrap();
+    drop(config);
+    assert!(child.wait().unwrap().success());
+    assert!(dir.path().join("out/pages").is_dir());
+    assert!(!dir.path().join("out/pages/private").exists());
+}
+
+#[test]
+fn an_empty_config_saved_just_now_still_builds() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = dir.path().join("vault");
+    std::fs::create_dir(&vault).unwrap();
+    std::fs::write(vault.join("a.md"), "# a").unwrap();
+    let config = std::fs::File::create(vault.join("tachylite.toml")).unwrap();
+    // A time ahead of the clock counts as just now, however slowly the build starts.
+    let ahead = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
+    config.set_modified(ahead).unwrap();
+    drop(config);
+    let run = Command::new(env!("CARGO_BIN_EXE_tachylite"))
+        .args([
+            "build".as_ref(),
+            vault.as_os_str(),
+            dir.path().join("out").as_os_str(),
+        ])
+        .env("TACHYLITE_HOLD_MS", "200")
+        .output()
+        .unwrap();
+    assert_eq!(run.status.code(), Some(0));
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(stderr.starts_with(WAITING), "{stderr}");
+    assert!(dir.path().join("out/pages/a.html").is_file());
+}

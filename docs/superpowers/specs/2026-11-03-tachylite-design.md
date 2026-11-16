@@ -170,13 +170,13 @@ Only these file types reach the output: `.md` (rendered), `.html` (sandboxed), i
 
 ### Configuration
 
-Optional `tachylite.toml` in the vault root. Any other top-level key is an error, and so is `exclude` inside a table: a typo there would publish what it meant to hide. At start, a config that cannot be read or parsed is an error, so `build` and `serve` stop rather than publish. `daily`, `pins` and `title` are accepted and do nothing until their features are built.
+Optional `tachylite.toml` in the vault root. Any other top-level key is an error, and so is `exclude` inside a table: a typo there would publish what it meant to hide. At start, a config that cannot be read or parsed is an error, so `build` and `serve` stop rather than publish. A save truncates the file before it writes it, so at start an empty config modified within the last second may be mid-save, with no event yet to show it. `build` and `serve` wait for its close, or for a second with no change to it, then read it. A config meant to be empty costs that second. The config is safe to save by rename: write a temporary file, then rename it over the config. A save in place can still be read half written in four rare cases: a writer idle for over a second after it truncated the file at start, two writers at once, an inotify queue overflow, and a writer stalled longer than a whole rescan. A half-written config can publish what it excludes, so the README tells users to save by rename. `daily`, `pins` and `title` are accepted and do nothing until their features are built.
 
 - `exclude`: globs, added to the defaults. They ignore case, as the publish list does. A pattern that matches no path on a full scan is logged. Any file or folder whose name starts with `.` is always excluded (`.git`, `.obsidian`, `.trash`, `.draft.md`); config cannot publish it, because the reserved prefix depends on it. `target/` and `node_modules/` are always excluded as well. Excluded means never published. Tachylite may still read config from an excluded folder, such as `.obsidian/daily-notes.json`.
 - `daily`: folder and date format, overriding the Obsidian config.
 - `pins`: list of links.
 - `title`: site name.
-- `hosts`: names the server answers besides `127.0.0.1` and `localhost`, for the proxy in front. When set, any other `Host` gets 421, which defeats DNS rebinding. When absent, any `Host` is answered. It is read at start only.
+- `hosts`: names the server answers besides `127.0.0.1` and `localhost`, for the proxy in front. When set, any other `Host` gets 421, which defeats DNS rebinding. When absent, any `Host` is answered. It is read at start only, from the same read as the first sync's exclusions.
 
 ### Performance budgets
 

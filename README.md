@@ -98,6 +98,7 @@ exclude = ["private", "journal/*.md", "**/draft-*.md"]
 - `exclude` goes above any `[table]` header. An unknown key, or `exclude` inside a table, is an error, so a typo stops the build rather than publish the notes.
 - A pattern that starts or ends with a space is an error. Each pattern that matches no published path is logged at start and on each save, since it is likely a typo.
 - A saved edit to `tachylite.toml` takes effect at once. If the edit does not parse, Tachylite logs the error and keeps the previous config. Deleting the file keeps its exclusions until the next start.
+- Save `tachylite.toml` by rename: write a temporary file beside it, then rename it over the config. A rename is atomic, so Tachylite never reads half a save. A script that writes the config in place, as `echo ... > tachylite.toml` does, can be read half written in rare cases, and a half-written config can publish what it excludes.
 
 ## Who it is for
 

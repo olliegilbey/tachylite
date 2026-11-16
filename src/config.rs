@@ -1,10 +1,14 @@
 //! `tachylite.toml`: optional settings in the vault root.
 
 use std::fmt;
+use std::mem::MaybeUninit;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant, SystemTime};
 
 use glob::{MatchOptions, Pattern};
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
+use rustix::fs::inotify::{self, CreateFlags, ReadFlags, WatchFlags};
 use toml::de::{DeTable, DeValue};
 
 use crate::Error;
@@ -210,7 +214,85 @@ pub fn load(vault: &VaultDir) -> Result<Config, Error> {
             .collect();
         crate::report::misnamed(&misnamed);
     }
+    settle(vault)?;
     reload(vault).map(Option::unwrap_or_default)
+}
+
+/// Waits while the config may be mid-save with no event yet to show it. A save that truncated
+/// it before this process watched it leaves it empty and just modified. Returns at a save's
+/// close, or once the hold passes with no change to it. So a config meant to be empty waits
+/// up to the hold, and a writer stalled for longer is read as it stands.
+fn settle(vault: &VaultDir) -> Result<(), Error> {
+    let hold = crate::vault::hold();
+    let Some(left) = fresh_empty(vault, hold) else {
+        return Ok(());
+    };
+    let watch_err = |e: rustix::io::Errno| Error::Watch {
+        path: vault.root().to_path_buf(),
+        source: e.into(),
+    };
+    let fd = inotify::init(CreateFlags::CLOEXEC | CreateFlags::NONBLOCK).map_err(watch_err)?;
+    let mask = WatchFlags::MODIFY
+        | WatchFlags::CLOSE_WRITE
+        | WatchFlags::MOVED_TO
+        | WatchFlags::MOVED_FROM
+        | WatchFlags::CREATE
+        | WatchFlags::DELETE
+        | WatchFlags::ONLYDIR;
+    inotify::add_watch(&fd, vault.root(), mask).map_err(watch_err)?;
+    // Printed once the watch exists, so a save that closes after this line is seen.
+    eprintln!("{FILE} is empty and was just modified; waiting for its save to finish");
+    let mut deadline = Instant::now() + left;
+    let mut buf = [MaybeUninit::<u8>::uninit(); 4096];
+    loop {
+        let Ok(timeout) = Timespec::try_from(deadline.saturating_duration_since(Instant::now()))
+        else {
+            return Ok(());
+        };
+        let mut fds = [PollFd::new(&fd, PollFlags::IN)];
+        match poll(&mut fds, Some(&timeout)) {
+            Ok(0) => return Ok(()),
+            Ok(_) | Err(rustix::io::Errno::INTR) => {}
+            Err(e) => return Err(watch_err(e)),
+        }
+        let mut reader = inotify::Reader::new(&fd, &mut buf);
+        loop {
+            match reader.next() {
+                Ok(e) if e.events().contains(ReadFlags::QUEUE_OVERFLOW) => return Ok(()),
+                Ok(e)
+                    if e.file_name()
+                        .is_some_and(|n| n.to_bytes() == FILE.as_bytes()) =>
+                {
+                    if e.events()
+                        .intersects(ReadFlags::CLOSE_WRITE | ReadFlags::MOVED_TO)
+                    {
+                        return Ok(());
+                    }
+                    // A write, or a remove a create may follow: the save goes on.
+                    deadline = Instant::now() + hold;
+                }
+                Ok(_) | Err(rustix::io::Errno::INTR) => {}
+                Err(rustix::io::Errno::AGAIN) => break,
+                Err(e) => return Err(watch_err(e)),
+            }
+            if reader.is_buffer_empty() {
+                break;
+            }
+        }
+    }
+}
+
+/// How much longer an empty config counts as mid-save, or `None` if it is not empty or
+/// not just modified. A modified time in the future counts as now.
+fn fresh_empty(vault: &VaultDir, hold: Duration) -> Option<Duration> {
+    let meta = vault.root().join(FILE).symlink_metadata().ok()?;
+    if !meta.is_file() || meta.len() != 0 {
+        return None;
+    }
+    let age = SystemTime::now()
+        .duration_since(meta.modified().ok()?)
+        .unwrap_or_default();
+    hold.checked_sub(age).filter(|left| !left.is_zero())
 }
 
 /// Whether `name` is the config itself, as on a file system that folds case.
