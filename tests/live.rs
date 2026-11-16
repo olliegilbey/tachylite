@@ -1100,9 +1100,15 @@ fn obsidian_daily_settings_take_effect_on_save() {
 
     // Removing the settings takes the Today link from every page.
     let mut events = server.subscribe("/a/2026-11-02", &version(&server, "/a/2026-11-02"), None);
+    let mut today = server.subscribe(
+        "/.tachylite/today",
+        &version(&server, "/.tachylite/today"),
+        None,
+    );
     fs::remove_file(d.vault().join(".obsidian/daily-notes.json")).unwrap();
     let html = events.expect("page").data;
     assert!(!html.contains("/.tachylite/today"), "{html}");
+    today.expect("gone");
     assert_eq!(server.get("/.tachylite/today").status, 404);
 }
 
@@ -1126,7 +1132,7 @@ fn a_pin_saved_to_config_reaches_open_pages() {
 fn an_obsidian_folder_made_after_start_is_read() {
     let (d, server) = with_notes(&[("a.md", "# a"), ("j/2026-11-02.md", "b")]);
     assert_eq!(server.get("/.tachylite/today").status, 404);
-    let mut events = server.subscribe("/a", &version(&server, "/a"), None);
+    let mut events = server.subscribe("/.tachylite/today", "", None);
     fs::create_dir(d.vault().join(".obsidian")).unwrap();
     fs::write(
         d.vault().join(".obsidian/daily-notes.json"),
@@ -1134,11 +1140,6 @@ fn an_obsidian_folder_made_after_start_is_read() {
     )
     .unwrap();
     let html = events.expect("page").data;
-    assert!(html.contains("/.tachylite/today"), "{html}");
-    assert!(
-        server
-            .get("/.tachylite/today")
-            .text()
-            .contains("/j/2026-11-02")
-    );
+    assert!(html.contains("/j/2026-11-02"), "{html}");
+    assert!(server.get("/a").text().contains("/.tachylite/today"));
 }
