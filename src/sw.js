@@ -169,6 +169,8 @@ async function sync() {
   });
   await Promise.all(workers);
   await save();
+  // An open page holds parsed copies of the tabs beside it, and reads them again.
+  if (stored) for (const client of await self.clients.matchAll()) client.postMessage(0);
   // A diagram draws offline only with the script. It is large, so it comes after the pages,
   // with time for 760 KB on a slow link. A pending entry with no page fetched this sync to
   // show a diagram looks through the cached pages.

@@ -229,10 +229,18 @@
     });
   };
 
-  const get = (url, cache) =>
-    fetch(url, { cache })
+  // A page as a parsed document, read from the worker's cache directly, so no worker need
+  // be awake. Then the network.
+  const load = (url, cache) =>
+    Promise.resolve(!cache && self.caches?.match(url))
+      .catch(() => {})
+      .then((hit) => hit || fetch(url, { cache }))
       .then((r) => (r.ok ? r.text() : Promise.reject()))
       .then((html) => new DOMParser().parseFromString(html, "text/html"));
+  // The pages a switch would show, loaded ahead, so it waits for no read and no parse.
+  let ahead = {};
+  const hold = (url) => (ahead[url] ??= load(url));
+  const get = (url, cache) => (!cache && ahead[url]) || load(url, cache);
   // The Today page lists daily notes newest first, each with its date. Only this device
   // knows its own today, so it picks the newest dated on or before it.
   const pick = (doc) => {
@@ -242,6 +250,19 @@
     const a = [...doc.querySelectorAll("main a[data-date]")].find((a) => a.dataset.date <= today);
     return a ? [a.pathname, a.dataset.date < today] : [TODAY, true];
   };
+  // Holds the tab on each side of the one shown, and the note Today would show.
+  const prepare = () => {
+    ahead = {};
+    const all = tabs();
+    const at = all.findIndex(current);
+    for (const a of at < 0 ? [] : [all[at - 1], all[at + 1]])
+      if (a)
+        hold(a.pathname)
+          .then((doc) => a.pathname === TODAY && hold(pick(doc)[0]))
+          .catch(() => {});
+  };
+  // The worker says when a sync has changed its cache, so no copy held is older than it.
+  worker?.addEventListener("message", prepare);
   // Brings on screen what the tab at `url` shows: its own page, or for Today its pick in
   // place of the list. `doc` is the tab's page, when the caller holds it. The last call wins.
   let turn = 0;
@@ -260,6 +281,7 @@
       }
       adopt(doc);
       connect();
+      prepare();
     }
     // A cached list can predate a note made since the last sync, so the network's list
     // follows, and its pick replaces an older one.
@@ -318,7 +340,10 @@
       .catch(() => {})
       .then(() => {
         document.querySelector(".pick")?.removeAttribute("class");
-        events || connect();
+        events || (connect(), prepare());
       });
-  else connect();
+  else {
+    connect();
+    prepare();
+  }
 })();

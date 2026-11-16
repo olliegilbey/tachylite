@@ -87,6 +87,13 @@ async function settled(page: Page) {
   });
 }
 
+/** Waits until the page is idle: a frame has passed and no task waits. */
+function rested(page: Page) {
+  return page.evaluate(
+    () => new Promise((r) => requestAnimationFrame(() => (window as any).scheduler.postTask(r, { priority: "background" }))),
+  );
+}
+
 /** Asserts the tab on screen: its URL, its mark in the header, and a text in its `<main>`. */
 async function shows(page: Page, tab: "Home" | "Today" | "Recent") {
   const [path, text] = { Home: ["/", "garden"], Today: [TODAY, "yesterday's plan"], Recent: [RECENT, "Fern care"] }[tab];
@@ -358,9 +365,7 @@ test.describe("a swipe", () => {
     ] as const;
     for (let i = 0; i < 12; i++) {
       // A reader rests on a tab before the next swipe: its stream is open and the page is idle.
-      await page.evaluate(
-        () => new Promise((r) => requestAnimationFrame(() => (window as any).scheduler.postTask(r, { priority: "background" }))),
-      );
+      await rested(page);
       const [gesture, tab, stream] = round[i % 4];
       await gesture(page);
       await page.waitForFunction((n) => (window as any).gaps.length === n, i + 1);
@@ -469,7 +474,44 @@ test("a stale copy of a tab is corrected once its stream connects", async ({ pag
   await expect(page.locator("main ul.recent").last()).toContainText("fresh");
 });
 
-test("a deleted note's notice does not follow the reader to another tab", async ({ page }) => {
+// The client holds parsed copies of the tabs beside the one shown, read from the worker's cache.
+test("a copy held ahead is read again after a sync, so a tab opens fresh offline", async ({ page, context }) => {
+  await page.goto(base + "/");
+  await synced(page, "/", RECENT);
+  await live(page, "/");
+  await rested(page);
+  await setHidden(page, true);
+  note("fresh", "# Fresh\n\nfresh text\n");
+  await expect.poll(async () => (await page.request.get(base + RECENT)).text()).toContain("fresh");
+  // Visible again, the stream opens and the worker syncs the Recent page.
+  await setHidden(page, false);
+  await expect.poll(() => cached(page, RECENT)).toContain("fresh");
+  // `queue` is the chain of jobs in `src/sw.js`. It settles when the sync has told the page.
+  await context.serviceWorkers()[0].evaluate("queue");
+  await cached(page, RECENT);
+  await rested(page);
+  await stop(server!);
+  await page.locator("header > a", { hasText: "Recent" }).click();
+  await shows(page, "Recent");
+  await expect(page.locator("main ul.recent").last()).toContainText("fresh");
+});
+
+test("the Today tab picks its note when it opens, not when its copy was read ahead", async ({ page }) => {
+  await page.goto(base + "/");
+  await synced(page, "/", TODAY, latest, `/days/${iso(2)}`);
+  await live(page, "/");
+  await rested(page);
+  // Three days on, the note planned for the day after tomorrow is the newest up to today.
+  await page.clock.setFixedTime(Date.now() + 3 * 864e5);
+  await page.locator("header > a", { hasText: "Today" }).click();
+  await expect(page.locator("main h1")).toHaveText("planned");
+  await expect(page).toHaveURL(base + TODAY);
+  await live(page, `/days/${iso(2)}`);
+});
+
+test("a deleted note's notice does not follow the reader to another tab", async ({ page, allowedErrors }) => {
+  // The cached Today list still names the note, so the copy read ahead of a switch finds it gone.
+  allowedErrors.push(/status of 404/);
   await page.clock.install();
   await page.goto(base + TODAY);
   await shows(page, "Today");
