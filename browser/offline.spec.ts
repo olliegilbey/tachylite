@@ -377,3 +377,67 @@ test("offline, a note with an html embed renders, and its link opens the page op
   await expect(page).toHaveURL(base + "/widget.html");
   await expect(page.locator("#out")).toHaveText("ran");
 });
+
+// One engine runs both projects, and the wait here is the worker's fetch timeout itself.
+test("a hung page fetch gives way to a push, and the next sync fetches it", async ({ page, context }, info) => {
+  test.skip(info.project.name === "phone", "the desktop project covers it");
+  test.setTimeout(90_000);
+  await visit(page, "/a");
+  await synced(page);
+  // The worker's fetch of /b never answers.
+  let hung = false;
+  await context.route(/\/b$/, () => void (hung = true));
+  note("b", "# B\n\nnew text\n");
+  await expect.poll(async () => (await page.request.get(base + "/b")).text()).toContain("new text");
+  await sync(page);
+  await expect.poll(() => hung).toBe(true);
+  note("a", "# A\n\npushed text\n");
+  await expect(page.locator("main")).toContainText("pushed text");
+  await expect.poll(() => cached(page, "/a"), { timeout: 60_000 }).toContain("pushed text");
+  await context.unroute(/\/b$/);
+  await sync(page);
+  await expect.poll(() => cached(page, "/b")).toContain("new text");
+});
+
+test("a refresh that lands after a push does not store over it", async ({ page, context }) => {
+  await visit(page, "/a");
+  await synced(page);
+  const older = await (await page.request.get(base + "/a")).text();
+  // The worker's refresh of /a waits until the push is stored, then brings the older copy.
+  let held: Route | null = null;
+  await context.route(/\/a$/, (route) => {
+    if (!route.request().serviceWorker()) return route.continue();
+    held = route;
+  });
+  await page.evaluate(() => fetch("/a"));
+  await expect.poll(() => held).not.toBeNull();
+  note("a", "# A\n\npushed text\n");
+  await expect(page.locator("main")).toContainText("pushed text");
+  await expect.poll(() => cached(page, "/a")).toContain("pushed text");
+  const landed = context.waitForEvent("requestfinished", (r) => r === held!.request());
+  await held!.fulfill({ status: 200, contentType: "text/html", body: older });
+  await landed;
+  // A round trip through the worker's cache, queued behind any store the refresh made.
+  await page.evaluate(() => fetch("/b"));
+  expect(await cached(page, "/a")).toContain("pushed text");
+});
+
+test("an upgraded worker caches Mermaid for a diagram page synced before", async ({ page }) => {
+  note("m", "# M\n\n```mermaid\ngraph TD\nA-->B\n```\n");
+  await expect.poll(async () => (await page.request.get(base + "/m")).status()).toBe(200);
+  await visit(page, "/a");
+  await synced(page);
+  // What an older worker left: every page, and no script.
+  const script = "/.tachylite/mermaid.js";
+  await page.evaluate((m) => caches.open("tachylite").then((c) => c.delete(m)), script);
+  // A new worker arrives with a deploy, over the cache the old one left.
+  await page.evaluate(() => navigator.serviceWorker.getRegistration().then((r) => r!.unregister()));
+  await page.goto(base + "/a");
+  await page.waitForFunction(() => navigator.serviceWorker.controller !== null);
+  expect(await has(page, "/m"), "the old cache stays").toBe(true);
+  await sync(page);
+  await expect.poll(() => has(page, script), { timeout: 15_000 }).toBe(true);
+  await stop(server!);
+  await page.goto(base + "/m");
+  await expect(page.locator("main pre.mermaid svg")).toBeVisible();
+});

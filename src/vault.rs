@@ -4,6 +4,7 @@ use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use rustix::fs::{Mode, OFlags, ResolveFlags, openat2};
 use rustix::io::Errno;
@@ -242,6 +243,21 @@ pub enum ReadError {
     /// A new file that may be half written. Its save is still to come, so the path keeps
     /// what is published for it.
     MidSave,
+}
+
+/// How long a path stays held as mid-save with no save event. A save by `link()` sends
+/// none, and neither does a note closed before its new folder's watch existed.
+const HOLD: Duration = Duration::from_secs(1);
+
+/// Sets the hold in milliseconds, so property tests do not wait out a second per case.
+const HOLD_ENV: &str = "TACHYLITE_HOLD_MS";
+
+/// The hold, from `TACHYLITE_HOLD_MS` when it is set.
+pub fn hold() -> Duration {
+    std::env::var(HOLD_ENV)
+        .ok()
+        .and_then(|ms| ms.parse().ok())
+        .map_or(HOLD, Duration::from_millis)
 }
 
 /// An open vault directory. Every read resolves beneath it and never follows a symlink.

@@ -17,7 +17,7 @@ use tokio::sync::broadcast;
 use crate::config::{self, Config, Exclude};
 use crate::output::Writer;
 use crate::site::{Change, Note, Push, Site, Source};
-use crate::vault::{ReadError, VaultDir, classify, scan_under};
+use crate::vault::{ReadError, VaultDir, classify, hold, scan_under};
 use crate::{Error, report};
 
 /// What the watch thread shares with the HTTP thread.
@@ -44,15 +44,8 @@ const MASK: WatchFlags = WatchFlags::CLOSE_WRITE
 /// folder can hold the config, so no other folder pays for the events.
 const ROOT_MASK: WatchFlags = MASK.union(WatchFlags::MODIFY);
 
-/// How long a path stays held as mid-save with no save event. A save by `link()` sends
-/// none, and neither does a note closed before its new folder's watch existed.
-const HOLD: Duration = Duration::from_secs(1);
-
 /// The longest a burst of events holds back the index pages and the manifest.
 const DERIVE_MAX: Duration = Duration::from_secs(1);
-
-/// Sets the hold in milliseconds, so property tests do not wait out a second per case.
-const HOLD_ENV: &str = "TACHYLITE_HOLD_MS";
 
 struct Event {
     wd: i32,
@@ -87,6 +80,8 @@ pub struct Watcher {
     since: Option<Instant>,
     /// Events a config reload read from the queue, still to be applied.
     pending: Vec<Event>,
+    /// The `hosts` of the config in force. The server reads it once, after the start.
+    hosts: Option<Vec<String>>,
 }
 
 fn join(dir: &str, name: &str) -> String {
@@ -144,6 +139,7 @@ impl Watcher {
                 source: e.into(),
             }
         })?;
+        let watched = config.exclude.clone();
         let mut watcher = Watcher {
             inotify,
             dirs: HashMap::new(),
@@ -152,12 +148,10 @@ impl Watcher {
             site: Site::new(config.exclude),
             live,
             held: HashMap::new(),
-            hold: std::env::var(HOLD_ENV)
-                .ok()
-                .and_then(|ms| ms.parse().ok())
-                .map_or(HOLD, Duration::from_millis),
+            hold: hold(),
             since: None,
             pending: Vec::new(),
+            hosts: config.hosts,
         };
         watcher.watch_tree("")?;
         // A config saved before the root watch existed sent no event. One still being saved
@@ -165,8 +159,11 @@ impl Watcher {
         loop {
             let from = watcher.pending.len();
             match watcher.reload_config()? {
+                // The tree was watched under `config`, so only other exclusions move a watch.
                 Reload::Loaded => {
-                    watcher.rewatch(&[""])?;
+                    if *watcher.site.exclude() != watched {
+                        watcher.rewatch(&[""])?;
+                    }
                     break;
                 }
                 Reload::Kept => break,
@@ -182,6 +179,11 @@ impl Watcher {
     /// The exclusions in force.
     pub fn exclude(&self) -> &Exclude {
         self.site.exclude()
+    }
+
+    /// The names the server answers, from the config the start ended with.
+    pub fn hosts(&self) -> Option<&[String]> {
+        self.hosts.as_deref()
     }
 
     /// Runs until a fatal error, which it returns.
@@ -354,15 +356,7 @@ impl Watcher {
         if reload {
             let previous = self.site.exclude().clone();
             if self.reload_config()? == Reload::Loaded {
-                let (changes, removed) = self.resync(removed)?;
-                // A write's event lands a moment after its bytes, so a writer stalled in
-                // between got past the first check. The scan gave it time to queue.
-                if self.config_written()? {
-                    self.site.set_exclude(previous);
-                    return self.resync(removed);
-                }
-                report::unmatched(&self.site.exclude().unmatched());
-                return Ok((changes, removed));
+                return self.resync_reloaded(previous, removed);
             }
         }
 
@@ -419,6 +413,7 @@ impl Watcher {
         match read {
             Ok(Some(config)) => {
                 self.site.set_exclude(config.exclude);
+                self.hosts = config.hosts;
                 Ok(Reload::Loaded)
             }
             Ok(None) => Ok(Reload::Kept),
@@ -484,6 +479,23 @@ impl Watcher {
             let (events, _) = self.read_batch(&mut buf)?;
             self.pending.extend(events);
         }
+    }
+
+    /// Resyncs under a config just loaded, or under `previous` if the config was written
+    /// before the rescan ended. A write's event lands a moment after its bytes, so a writer
+    /// stalled in between got past the reload's check. The rescan gave it time to queue.
+    fn resync_reloaded(
+        &mut self,
+        previous: Exclude,
+        removed: HashSet<String>,
+    ) -> Result<(Vec<Change>, HashSet<String>), Error> {
+        let (changes, removed) = self.resync(removed)?;
+        if self.config_written()? {
+            self.site.set_exclude(previous);
+            return self.resync(removed);
+        }
+        report::unmatched(&self.site.exclude().unmatched());
+        Ok((changes, removed))
     }
 
     /// Rewatches the tree under the current exclusions and resyncs the root.
@@ -599,8 +611,9 @@ impl Watcher {
         self.since = None;
         let mut writer = writer(&self.out, &self.vault, &self.live);
         self.site.derive_to(&mut writer);
-        // A derive copies no vault file, so it skips none.
-        writer.finish().map(|_| ())
+        // An index page whose path the output refuses is skipped.
+        report::skipped(&writer.finish()?);
+        Ok(())
     }
 }
 
@@ -750,6 +763,33 @@ mod tests {
         fs::set_permissions(&toml, fs::Permissions::from_mode(0o644)).unwrap();
         // Hangs if the attribute change hides the close.
         watcher.await_config_close(from).unwrap();
+    }
+
+    #[test]
+    fn a_config_written_during_the_rescan_keeps_the_previous_one() {
+        let (_tmp, vault) = vault();
+        let toml = vault.join(config::FILE);
+        fs::write(&toml, "exclude = [\"d\"]\n").unwrap();
+        let mut watcher = watcher(&vault);
+        let previous = watcher.site.exclude().clone();
+        fs::write(&toml, "exclude = []\n").unwrap();
+        // The save's own events, read as the batch that reloads it.
+        watcher.config_written().unwrap();
+        watcher.pending.clear();
+        assert_eq!(watcher.reload_config().unwrap(), Reload::Loaded);
+        // A write that slipped past the reload's check, queued by the rescan's end.
+        fs::write(&toml, "# half\n").unwrap();
+        watcher.resync_reloaded(previous, HashSet::new()).unwrap();
+        assert!(watcher.site.exclude().path("d/n.md"));
+    }
+
+    #[test]
+    fn the_start_takes_hosts_from_its_own_read() {
+        let (_tmp, vault) = vault();
+        fs::write(vault.join(config::FILE), "hosts = [\"notes.example\"]\n").unwrap();
+        // The helper passes the default config, as a first read of a half-written file gives.
+        let watcher = watcher(&vault);
+        assert_eq!(watcher.hosts(), Some(&["notes.example".to_string()][..]));
     }
 
     #[test]

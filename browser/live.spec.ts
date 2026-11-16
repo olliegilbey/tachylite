@@ -56,6 +56,17 @@ test("a push keeps a callout the reader opened open", async ({ page }, info) => 
   await expect(page.locator(".callout-content")).toBeVisible();
 });
 
+test("a push keeps the callout the reader opened open when one is added above it", async ({ page }, info) => {
+  const name = `fold-above-${info.project.name}`;
+  note(name, "# Fold\n\n> [!tip]- Kept\n> kept body\n\nfirst text\n");
+  await open(page, name, "first text");
+  await page.locator(".callout-title", { hasText: "Kept" }).click();
+  note(name, "# Fold\n\n> [!note]- Added\n> added body\n\n> [!tip]- Kept\n> kept body\n\nsecond text\n");
+  await expect(page.locator("main")).toContainText("second text");
+  await expect(page.getByText("kept body")).toBeVisible();
+  await expect(page.getByText("added body")).toBeHidden();
+});
+
 test("the page asks once to keep its storage, and shows an icon", async ({ page }, info) => {
   await page.addInitScript(() => {
     const w = window as any;
@@ -241,6 +252,36 @@ test("a Mermaid block draws, and only its page loads the script", async ({ page 
   await expect(page.locator("main h1")).toHaveText("Drawn again");
   await expect(page.locator("main pre.mermaid svg")).toBeVisible();
   expect(requested.length).toBe(1);
+});
+
+// A stand-in script: its first initialize throws and its first run rejects. It marks each
+// node it draws with the theme it was given.
+const flaky = `window.mermaid = {
+  themes: [], runs: 0,
+  initialize(c) { this.themes.push(c.theme); if (this.themes.length === 1) throw new Error("initialize"); },
+  run({ nodes }) {
+    if (++this.runs === 1) return Promise.reject(new Error("run"));
+    nodes.forEach((n) => (n.dataset.drawn = this.themes.at(-1)));
+    return Promise.resolve();
+  },
+};`;
+
+test("the Mermaid loader outlives a failed draw and reads the theme each time", async ({ page, context }, info) => {
+  await context.route(/\/\.tachylite\/mermaid\.js$/, (route) =>
+    route.fulfill({ contentType: "text/javascript", body: flaky }),
+  );
+  await page.emulateMedia({ colorScheme: "light" });
+  const name = `mermaid-flaky-${info.project.name}`;
+  const diagram = (title: string) => `# ${title}\n\n\`\`\`mermaid\ngraph TD\nA-->B\n\`\`\`\n`;
+  note(name, diagram("One"));
+  await open(page, name, "One");
+  await expect.poll(() => page.evaluate(() => (window as any).mermaid?.themes.length)).toBe(1);
+  note(name, diagram("Two"));
+  await expect.poll(() => page.evaluate(() => (window as any).mermaid.runs)).toBe(1);
+  await page.emulateMedia({ colorScheme: "dark" });
+  note(name, diagram("Three"));
+  await expect(page.locator("main h1")).toHaveText("Three");
+  await expect(page.locator("main pre.mermaid")).toHaveAttribute("data-drawn", "dark");
 });
 
 test("a page with a Mermaid block draws on first load", async ({ page }, info) => {

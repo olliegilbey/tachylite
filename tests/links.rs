@@ -185,6 +185,12 @@ fn path() -> impl Strategy<Value = String> {
     })
 }
 
+/// Aliases for one note: some unique, some another note's stem, some equal but for case.
+fn aliases() -> impl Strategy<Value = Vec<&'static str>> {
+    let alias = prop::sample::select(vec!["JD", "jd", "x", "Readme", "alias one"]);
+    prop::collection::vec(alias, 0..3)
+}
+
 fn link_text(path: &str) -> String {
     path.strip_suffix(".md").unwrap_or(path).to_string()
 }
@@ -193,9 +199,21 @@ proptest! {
     #[test]
     fn resolution_matches_the_spec(
         paths in prop::collection::btree_set(path(), 1..12),
+        names in prop::collection::vec(aliases(), 12),
         from in path(),
     ) {
-        let index = Index::new(paths.iter().map(String::as_str));
+        let plain = Index::new(paths.iter().map(String::as_str));
+        let mut index = plain.clone();
+        // Only notes carry aliases.
+        let aliased: Vec<(&String, Vec<String>)> = paths
+            .iter()
+            .zip(&names)
+            .filter(|(p, _)| p.ends_with(".md"))
+            .map(|(p, names)| (p, names.iter().map(|n| n.to_string()).collect()))
+            .collect();
+        for (path, names) in &aliased {
+            index.set_aliases(path, names);
+        }
         for p in &paths {
             if p.contains('/') {
                 prop_assert_eq!(resolve(&index, &from, &link_text(p)), found(p));
@@ -241,6 +259,30 @@ proptest! {
                     prop_assert_eq!(n, tied);
                 }
                 Resolved::Missing => prop_assert!(false, "{bare} from {from} is missing"),
+            }
+        }
+        // An alias resolves only where no basename has its key, to the nearest note with it.
+        for (_, names) in &aliased {
+            for alias in names {
+                let stems = paths.iter().filter(|q| key(q) == key(alias)).count();
+                let owners: Vec<&String> = aliased
+                    .iter()
+                    .filter(|(_, n)| n.iter().any(|a| key(a) == key(alias)))
+                    .map(|(q, _)| *q)
+                    .collect();
+                let nearest = owners.iter().map(|q| distance(&from, q)).min();
+                let tied: Vec<&&String> = owners
+                    .iter()
+                    .filter(|q| Some(distance(&from, q)) == nearest)
+                    .collect();
+                let got = resolve(&index, &from, alias);
+                if stems > 0 {
+                    prop_assert_eq!(got, resolve(&plain, &from, alias));
+                } else if let [one] = tied[..] {
+                    prop_assert_eq!(got, found(one));
+                } else {
+                    prop_assert_eq!(got, Resolved::Ambiguous(tied.len()));
+                }
             }
         }
     }

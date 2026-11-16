@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use crate::Error;
 use crate::site::{Push, Sink, Write};
-use crate::vault::{ReadError, Skipped, VaultDir};
+use crate::vault::{ReadError, SkipReason, Skipped, VaultDir};
 
 pub const MARKER: &str = ".tachylite-output";
 
@@ -42,11 +42,11 @@ pub struct Writer<'a, F: FnMut(Push)> {
     out: &'a Path,
     vault: &'a VaultDir,
     on_push: F,
-    /// Note pages written; generated index pages are not counted.
-    pub pages: usize,
-    /// Copies made or skipped.
+    /// Copies made.
     pub copies: usize,
     skipped: Vec<Skipped>,
+    /// The keys of the pages whose path was too long to write, so their pushes are dropped.
+    unwritten: Vec<String>,
     error: Option<Error>,
     /// Whether this batch has checked that the marker is still there.
     marked: bool,
@@ -58,24 +58,27 @@ impl<'a, F: FnMut(Push)> Writer<'a, F> {
             out,
             vault,
             on_push,
-            pages: 0,
             copies: 0,
             skipped: Vec::new(),
+            unwritten: Vec::new(),
             error: None,
             marked: false,
         }
     }
 
-    /// The copies skipped because their source could not be read, or the first error.
-    pub fn finish(self) -> Result<Vec<Skipped>, Error> {
-        match self.error {
-            Some(e) => Err(e),
-            None => Ok(self.skipped),
+    /// The copies skipped because their source could not be read, the pages and copies
+    /// skipped because their path was too long for the output, or the first error.
+    pub fn finish(mut self) -> Result<Vec<Skipped>, Error> {
+        if let Some(e) = self.error {
+            return Err(e);
         }
+        // A page written twice in one apply is skipped twice.
+        self.skipped.sort_by(|a, b| a.path.cmp(&b.path));
+        self.skipped.dedup();
+        Ok(self.skipped)
     }
 
     fn write_copy(&mut self, rel: &str, from: &str) -> Result<(), Error> {
-        self.copies += 1;
         match self.vault.open_file(from) {
             Ok(mut file) => write_via_tmp(&self.out.join(rel), |tmp| {
                 let mut to = fs::File::create(tmp)?;
@@ -83,7 +86,8 @@ impl<'a, F: FnMut(Push)> Writer<'a, F> {
                 // The asset's ETag is built from size and mtime, so the copy keeps the
                 // source's mtime and its tag holds across restarts.
                 to.set_modified(file.metadata()?.modified()?)
-            }),
+            })
+            .map(|()| self.copies += 1),
             // The source vanished; the watcher reports the removal next.
             Err(ReadError::Missing | ReadError::MidSave) => Ok(()),
             Err(ReadError::Skip(reason)) => {
@@ -115,26 +119,75 @@ impl<F: FnMut(Push)> Sink for Writer<'_, F> {
         if self.error.is_some() {
             return;
         }
-        let result = match write {
+        let (result, skip) = match write {
             Write::Page { out: rel, html } => {
-                self.pages += usize::from(!crate::site::generated(&rel));
-                write_via_tmp(&self.out.join(rel), |tmp| fs::write(tmp, html.as_bytes()))
+                let result =
+                    write_via_tmp(&self.out.join(&rel), |tmp| fs::write(tmp, html.as_bytes()));
+                (result, Some((source_of(&rel), Some(page_key(&rel)))))
             }
-            Write::Copy { out: rel, from } => self.write_copy(&rel, &from),
+            Write::Copy { out: rel, from } => (self.write_copy(&rel, &from), Some((from, None))),
             Write::Manifest { json } => {
-                write_via_tmp(&self.out.join(crate::site::MANIFEST), |tmp| {
+                let result = write_via_tmp(&self.out.join(crate::site::MANIFEST), |tmp| {
                     fs::write(tmp, json.as_bytes())
-                })
+                });
+                (result, None)
             }
         };
-        self.error = result.err();
+        match (result, skip) {
+            // A name or path the output's filesystem cannot hold skips its file alone: the
+            // site's 255-byte check cannot know every filesystem's limit, or the output's depth.
+            (Err(Error::Io { source, .. }), Some((path, key)))
+                if source.kind() == io::ErrorKind::InvalidFilename =>
+            {
+                self.skipped.push(Skipped {
+                    path: PathBuf::from(path),
+                    reason: SkipReason::NameTooLong,
+                });
+                self.unwritten.extend(key);
+            }
+            (result, _) => self.error = result.err(),
+        }
     }
 
     fn push(&mut self, push: Push) {
+        if let Push::Page { key, .. } = &push
+            && let Some(at) = self.unwritten.iter().position(|k| k == key)
+        {
+            self.unwritten.swap_remove(at);
+            return;
+        }
         if self.error.is_none() {
             (self.on_push)(push);
         }
     }
+
+    fn page(&mut self, rel: &str) -> Option<String> {
+        if self.error.is_some() {
+            return None;
+        }
+        fs::read_to_string(self.out.join(rel)).ok()
+    }
+}
+
+/// The push key of the page at `rel`, an output path under `pages/`.
+fn page_key(rel: &str) -> String {
+    if rel == "pages/.tachylite/home.html" {
+        return String::new();
+    }
+    let key = rel.strip_prefix("pages/").unwrap_or(rel);
+    let key = key
+        .strip_suffix("/.index.html")
+        .or_else(|| key.strip_suffix(".html"))
+        .unwrap_or(key);
+    key.to_string()
+}
+
+/// The vault path behind the page at `rel`: a note's path, or a generated page's output path.
+fn source_of(rel: &str) -> String {
+    if crate::site::generated(rel) {
+        return rel.to_string();
+    }
+    format!("{}.md", page_key(rel))
 }
 
 /// Removes one output file, then any parent folders it left empty, up to `pages/` or `files/`.
@@ -168,5 +221,9 @@ fn write_via_tmp(path: &Path, write: impl FnOnce(&Path) -> io::Result<()>) -> Re
     fs::create_dir_all(parent).map_err(io_err(parent))?;
     let tmp = parent.join(".tmp");
     write(&tmp).map_err(io_err(&tmp))?;
-    fs::rename(&tmp, path).map_err(io_err(path))
+    fs::rename(&tmp, path).map_err(|e| {
+        // A name the filesystem refuses fails here, after the temp file is written.
+        let _ = fs::remove_file(&tmp);
+        io_err(path)(e)
+    })
 }

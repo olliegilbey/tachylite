@@ -68,15 +68,19 @@ pub fn build(vault: &Path, out: &Path) -> Result<Summary, Error> {
         &mut writer,
     );
     site.derive_to(&mut writer);
-    let (notes, copies) = (writer.pages, writer.copies);
+    let copies = writer.copies;
     let failed = writer.finish()?;
+    let unwritten = failed
+        .iter()
+        .filter(|s| s.path.extension() == Some("md".as_ref()));
+    let notes = site.notes().saturating_sub(unwritten.count());
     let mut skipped = scan.skipped;
     skipped.extend(report.skipped);
     skipped.extend_from_slice(&failed);
     skipped.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(Summary {
         notes,
-        files: copies - failed.len(),
+        files: copies,
         skipped,
         broken: report.broken,
         unmatched,
