@@ -8,18 +8,21 @@
     mermaid ??= new Promise((resolve, reject) => {
       const script = document.createElement("script");
       script.src = "/.tachylite/mermaid.js";
-      script.onload = () => {
-        const dark = matchMedia("(prefers-color-scheme: dark)").matches;
-        window.mermaid.initialize({ startOnLoad: false, theme: dark ? "dark" : "default" });
-        resolve(window.mermaid);
-      };
+      script.onload = () => resolve(window.mermaid);
       script.onerror = reject;
       document.head.append(script);
     });
-    mermaid.then(
-      (m) => m.run({ nodes, suppressErrors: true }),
-      () => (mermaid = null),
-    );
+    // A script that failed to load is fetched again. A failed draw leaves its source as text.
+    mermaid
+      .then(
+        (m) => {
+          const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+          m.initialize({ startOnLoad: false, theme: dark ? "dark" : "default" });
+          return m.run({ nodes, suppressErrors: true });
+        },
+        () => (mermaid = null),
+      )
+      .catch(() => {});
   };
   diagrams();
 
@@ -168,9 +171,15 @@
       const main = next.querySelector("main");
       const current = document.querySelector("main");
       if (!main || !current) return;
-      // A callout stays as the reader left it.
-      const open = [...current.querySelectorAll("details")].map((d) => d.open);
-      main.querySelectorAll("details").forEach((d, i) => i in open && (d.open = open[i]));
+      // A callout stays as the reader left it, matched by its title and its place among
+      // callouts of that title, so one added above it takes nothing from it.
+      const fold = (root, n = {}) =>
+        [...root.querySelectorAll("details")].map((d) => {
+          const t = d.querySelector("summary")?.textContent;
+          return [t + "\n" + (n[t] = -~n[t]), d];
+        });
+      const open = new Map(fold(current).map(([k, d]) => [k, d.open]));
+      for (const [k, d] of fold(main)) if (open.has(k)) d.open = open.get(k);
       current.replaceWith(main);
       document.title = next.title;
       meta.content = e.lastEventId;
