@@ -593,9 +593,10 @@ pub fn serve(vault: &Path, out: &Path, port: u16) -> Result<(), Error> {
         pushes,
         versions: Arc::new(Mutex::new(HashMap::new())),
     };
-    let hosts = config.hosts.clone();
     let watcher = Watcher::start(vault, out.clone(), live.clone(), config)?;
-    // The start rereads the config, so only the watcher's copy saw the whole scan.
+    // The start rereads the config, and may wait out a save the first read saw half of.
+    // Only the watcher's copy is current, and only it saw the whole scan.
+    let hosts = watcher.hosts().map(<[String]>::to_vec);
     report::unmatched(&watcher.exclude().unmatched());
     let (failed_tx, failed_rx) = oneshot::channel();
     std::thread::spawn(move || {

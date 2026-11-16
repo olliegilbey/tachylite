@@ -905,3 +905,107 @@ fn a_tag_page_is_served_pushed_and_gone_with_its_last_note() {
     }
     assert_eq!(server.get(page).status, 404);
 }
+
+/// How many times the process opened folder `name` in `vault`, from the opens queued on `opens`.
+fn folder_opens(opens: &std::os::fd::OwnedFd, name: &str) -> usize {
+    use rustix::fs::inotify::{self, ReadFlags};
+    let mut buf = vec![std::mem::MaybeUninit::<u8>::uninit(); 4096];
+    let mut reader = inotify::Reader::new(opens, &mut buf);
+    let mut count = 0;
+    loop {
+        match reader.next() {
+            Ok(e) => {
+                let named = e
+                    .file_name()
+                    .is_some_and(|n| n.to_bytes() == name.as_bytes());
+                if named && e.events().contains(ReadFlags::OPEN | ReadFlags::ISDIR) {
+                    count += 1;
+                }
+            }
+            Err(rustix::io::Errno::AGAIN) => return count,
+            Err(e) => panic!("{e}"),
+        }
+    }
+}
+
+#[test]
+fn start_up_with_a_config_lists_each_folder_twice() {
+    use rustix::fs::inotify::{self, CreateFlags, WatchFlags};
+    let d = Dirs::empty();
+    fs::write(d.vault().join("tachylite.toml"), "exclude = [\"x\"]\n").unwrap();
+    fs::create_dir(d.vault().join("d")).unwrap();
+    fs::write(d.vault().join("d/n.md"), "# n").unwrap();
+    let opens = inotify::init(CreateFlags::CLOEXEC | CreateFlags::NONBLOCK).unwrap();
+    inotify::add_watch(&opens, d.vault(), WatchFlags::OPEN | WatchFlags::ONLYDIR).unwrap();
+    let _server = Server::start(&d.vault(), &d.out());
+    // Once to watch it and once to scan it. A config the start reads unchanged moves no watch.
+    assert_eq!(folder_opens(&opens, "d"), 2);
+}
+
+#[test]
+fn an_embedder_catches_up_when_a_note_rewritten_in_place_closes() {
+    use std::io::Write;
+    let (d, server) = with_notes(&[("x.md", "![[b]]"), ("b.md", "# b")]);
+    let mut x = server.subscribe("/x", &version(&server, "/x"), None);
+    // Rewritten in place, as `tool > b.md` does: no CREATE, so the path is not held.
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(d.vault().join("b.md"))
+        .unwrap();
+    file.write_all(b"# b\n\nhalf").unwrap();
+    // `x` renders while `b.md` is still open.
+    fs::write(d.vault().join("x.md"), "![[b]] again").unwrap();
+    next_page(&mut x);
+    finish(file, " and the rest");
+    let page = next_page(&mut x);
+    assert!(page.contains("half and the rest"), "{page}");
+}
+
+#[test]
+fn a_start_waits_for_a_config_save_that_truncated_it() {
+    use std::io::{BufRead, BufReader, Write};
+    let d = Dirs::empty();
+    fs::create_dir(d.vault().join("d")).unwrap();
+    fs::write(d.vault().join("d/n.md"), "# n").unwrap();
+    fs::write(d.vault().join("a.md"), "# a").unwrap();
+    // Truncated before the server starts, and written only once the server is waiting.
+    let mut config = fs::File::create(d.vault().join("tachylite.toml")).unwrap();
+    let mut child = Kill(
+        Command::new(env!("CARGO_BIN_EXE_tachylite"))
+            .arg("serve")
+            .arg(d.vault())
+            .arg(d.out())
+            .args(["--port", "0"])
+            .envs(LONG_HOLD.iter().copied())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut stderr = BufReader::new(child.0.stderr.take().unwrap()).lines();
+    let mut line = || stderr.next().expect("no line").unwrap();
+    assert_eq!(
+        line(),
+        "tachylite.toml is empty and was just modified; waiting for its save to finish"
+    );
+    config
+        .write_all(b"exclude = [\"d\"]\nhosts = [\"notes.example\"]\n")
+        .unwrap();
+    drop(config);
+    let serving = line();
+    let addr = serving.strip_prefix("serving http://").expect(&serving);
+    // The test's `Host` is not listed, so `hosts` from the finished save is in force.
+    assert_eq!(common::get(addr.parse().unwrap(), "/a", &[]).status, 421);
+    assert!(d.out().join("pages/a.html").is_file());
+    assert!(!d.out().join("pages/d").exists());
+}
+
+/// Kills its child on drop, so a failed assert leaves no process behind.
+struct Kill(std::process::Child);
+
+impl Drop for Kill {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
