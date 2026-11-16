@@ -25,7 +25,8 @@ Tachylite renders the vault into `<out>`, watches it, and serves the site on `ht
 
 - The app opens on a home page: the newest notes, then the vault's top folders.
 - Each folder has an index page, and each note links to its folders at the top. Notes whose title starts with an ISO date, such as daily notes, list newest first.
-- Recent lists the 50 newest notes.
+- Recent lists the 50 newest notes. Each folder's index links to its own recent list, which takes in its subfolders.
+- Today opens the newest daily note dated on or before the phone's today, offline too. It reads Obsidian's daily-notes settings, or `daily` in the config below.
 - Each `#tag` links to a page of the notes with that tag, or with a tag nested under it.
 - Find, or Ctrl-K, Cmd-K or `/`, opens a fuzzy switcher over titles, aliases and paths. It works offline.
 
@@ -99,6 +100,21 @@ exclude = ["private", "journal/*.md", "**/draft-*.md"]
 - A pattern that starts or ends with a space is an error. Each pattern that matches no published path is logged at start and on each save, since it is likely a typo.
 - A saved edit to `tachylite.toml` takes effect at once. If the edit does not parse, Tachylite logs the error and keeps the previous config. Deleting the file keeps its exclusions until the next start.
 - Save `tachylite.toml` by rename: write a temporary file beside it, then rename it over the config. A rename is atomic, so Tachylite never reads half a save. A script that writes the config in place, as `echo ... > tachylite.toml` does, can be read half written in rare cases, and a half-written config can publish what it excludes.
+
+## Shape the header
+
+These keys in `tachylite.toml` set the header on every page:
+
+```toml
+title = "Field notes"
+pins = ["Projects/Roadmap.md", "meetings", "maps/route.html|Route"]
+daily = { folder = "journal", format = "YYYY-MM-DD" }
+```
+
+- `title` names the site. It defaults to Tachylite.
+- `pins` adds links under the header. Each is a vault path. A path ending in `.md`, `.html` or another published type is a file; any other is a folder. Add `|label` to name it; the label defaults to the file or folder name. A pin to an excluded path is dropped, and a pin that matches nothing is logged.
+- `daily` sets where daily notes live and how they are named, and overrides Obsidian's own daily-notes settings. The format reads `YYYY`, `MM` and `DD`, with any separators and `/` for subfolders, as in `YYYY/MM/YYYY-MM-DD`. A format with another token, such as `ddd`, gives no Today page, and the log says why.
+- A change to any of them re-renders every page once, and every installed phone syncs every page once.
 
 ## Who it is for
 
