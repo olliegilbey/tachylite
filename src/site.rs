@@ -153,11 +153,11 @@ impl Done {
         self.unwritten.push_back(path.to_string());
     }
 
-    /// Drops the oldest held bodies until `held` fits `HOLD_MAX`. Returns those whose page is
-    /// not written yet, to be written at once.
-    fn spill(&mut self) -> Vec<(String, String)> {
+    /// Drops the oldest held bodies until `held` fits `max` bytes. Returns those whose page
+    /// is not written yet, to be written at once.
+    fn spill(&mut self, max: usize) -> Vec<(String, String)> {
         let mut spilled = Vec::new();
-        while self.bytes > HOLD_MAX {
+        while self.bytes > max {
             let Some(path) = self.order.pop_front() else {
                 break;
             };
@@ -178,7 +178,8 @@ impl Done {
 /// plus one batch. A full sync past it writes its oldest pages early,
 /// and a page whose backlinks change after takes its new footer from the written page. So a
 /// vault of any size builds in bounded memory, and a small one writes each page once.
-const HOLD_MAX: usize = 12 * 1024 * 1024;
+/// The budget vault's bodies come to 27 MB: under this, so its cold build writes no page twice.
+const HOLD_MAX: usize = 32 * 1024 * 1024;
 
 /// The note bytes an apply keeps from its first read. A save keeps its note, so its render
 /// reads it once; a full sync reads the rest again per batch, so it never holds every note.
@@ -270,6 +271,8 @@ pub struct Site {
     versions: BTreeMap<String, String>,
     /// Where each written note page holds its body: start and length in bytes.
     spans: HashMap<String, (usize, usize)>,
+    /// The rendered body bytes an apply holds, when not `HOLD_MAX`.
+    hold_max: Option<usize>,
     /// The winners, for link resolution. The graph shares its paths.
     index: Index,
     /// What each rendered note links to.
@@ -428,6 +431,11 @@ impl Site {
 
     pub fn exclude(&self) -> &Exclude {
         &self.exclude
+    }
+
+    /// Sets the rendered body bytes an apply holds. A test lowers it to reach the early writes.
+    pub fn hold_at_most(&mut self, bytes: usize) {
+        self.hold_max = Some(bytes);
     }
 
     /// How many note pages are published.
@@ -1191,7 +1199,7 @@ impl Site {
                 done.rendered.insert(path.to_string());
                 done.hold(path, body.html);
             }
-            let spilled = done.spill();
+            let spilled = done.spill(self.hold_max.unwrap_or(HOLD_MAX));
             let bodies: Vec<(&str, &str)> = spilled
                 .iter()
                 .map(|(p, b)| (p.as_str(), b.as_str()))

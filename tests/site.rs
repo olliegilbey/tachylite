@@ -1874,14 +1874,14 @@ fn a_pushed_page_links_to_no_page_of_its_apply_not_yet_written() {
     assert!(at("write files/f.html") < at("push a"), "{:?}", sink.0);
 }
 
-/// 300 notes of 50 KB pass the 12 MB of bodies an apply holds within their first batch of
-/// 256, so a full sync writes its oldest pages early. The notes of the next batch link to
-/// them, so those pages take their final footer from the page written.
+/// 300 notes pass the bodies this site holds within their first batch of 256, so a full
+/// sync writes its oldest pages early. The notes of the next batch link to them, so those
+/// pages take their final footer from the page written.
 #[test]
 fn a_full_build_past_the_held_bodies_equals_small_applies() {
     let names: Vec<String> = (0..300).map(|i| format!("n{i:03}")).collect();
     let links: String = names[..16].iter().map(|n| format!("[[{n}]] ")).collect();
-    let filler = "word ".repeat(10_000);
+    let filler = "word ".repeat(100);
     let notes: Vec<(String, String)> = names
         .iter()
         .map(|n| {
@@ -1896,7 +1896,11 @@ fn a_full_build_past_the_held_bodies_equals_small_applies() {
         .map(|(p, c)| (p.as_str(), c.as_str()))
         .collect();
     let mut mem = Mem::with(&pairs);
-    let (want, delta) = full(&mem);
+    let mut held = Site::new(Exclude::default());
+    held.hold_at_most(64 * 1024);
+    let delta = held.apply(vec![sync_all(&mem)], &mut mem.clone());
+    let mut want = Out::new();
+    fold(&mut want, &delta, &mem);
     // The first page was written before its backlinks were final, then again.
     let written = delta
         .writes
