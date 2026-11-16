@@ -201,22 +201,24 @@ fn a_build_waits_for_a_config_save_that_truncated_it() {
     std::fs::write(vault.join("private/secret.md"), "# secret").unwrap();
     // Truncated before the build starts, and written only once the build is waiting.
     let mut config = std::fs::File::create(vault.join("tachylite.toml")).unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_tachylite"))
-        .args([
-            "build".as_ref(),
-            vault.as_os_str(),
-            dir.path().join("out").as_os_str(),
-        ])
-        .env("TACHYLITE_HOLD_MS", "600000")
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut stderr = BufReader::new(child.stderr.take().unwrap()).lines();
+    let mut child = Kill(
+        Command::new(env!("CARGO_BIN_EXE_tachylite"))
+            .args([
+                "build".as_ref(),
+                vault.as_os_str(),
+                dir.path().join("out").as_os_str(),
+            ])
+            .env("TACHYLITE_HOLD_MS", "600000")
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut stderr = BufReader::new(child.0.stderr.take().unwrap()).lines();
     let first = stderr.next().expect("no line").unwrap();
     assert_eq!(first, WAITING);
     config.write_all(b"exclude = [\"private\"]\n").unwrap();
     drop(config);
-    assert!(child.wait().unwrap().success());
+    assert!(child.0.wait().unwrap().success());
     assert!(dir.path().join("out/pages").is_dir());
     assert!(!dir.path().join("out/pages/private").exists());
 }
@@ -245,4 +247,14 @@ fn an_empty_config_saved_just_now_still_builds() {
     let stderr = String::from_utf8_lossy(&run.stderr);
     assert!(stderr.starts_with(WAITING), "{stderr}");
     assert!(dir.path().join("out/pages/a.html").is_file());
+}
+
+/// Kills its child on drop, so a failed assert leaves no process behind.
+struct Kill(std::process::Child);
+
+impl Drop for Kill {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }

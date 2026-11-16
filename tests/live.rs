@@ -971,16 +971,18 @@ fn a_start_waits_for_a_config_save_that_truncated_it() {
     fs::write(d.vault().join("a.md"), "# a").unwrap();
     // Truncated before the server starts, and written only once the server is waiting.
     let mut config = fs::File::create(d.vault().join("tachylite.toml")).unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_tachylite"))
-        .arg("serve")
-        .arg(d.vault())
-        .arg(d.out())
-        .args(["--port", "0"])
-        .envs(LONG_HOLD.iter().copied())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut stderr = BufReader::new(child.stderr.take().unwrap()).lines();
+    let mut child = Kill(
+        Command::new(env!("CARGO_BIN_EXE_tachylite"))
+            .arg("serve")
+            .arg(d.vault())
+            .arg(d.out())
+            .args(["--port", "0"])
+            .envs(LONG_HOLD.iter().copied())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut stderr = BufReader::new(child.0.stderr.take().unwrap()).lines();
     let mut line = || stderr.next().expect("no line").unwrap();
     assert_eq!(
         line(),
@@ -993,10 +995,17 @@ fn a_start_waits_for_a_config_save_that_truncated_it() {
     let serving = line();
     let addr = serving.strip_prefix("serving http://").expect(&serving);
     // The test's `Host` is not listed, so `hosts` from the finished save is in force.
-    let status = common::get(addr.parse().unwrap(), "/a", &[]).status;
-    child.kill().unwrap();
-    child.wait().unwrap();
-    assert_eq!(status, 421);
+    assert_eq!(common::get(addr.parse().unwrap(), "/a", &[]).status, 421);
     assert!(d.out().join("pages/a.html").is_file());
     assert!(!d.out().join("pages/d").exists());
+}
+
+/// Kills its child on drop, so a failed assert leaves no process behind.
+struct Kill(std::process::Child);
+
+impl Drop for Kill {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }

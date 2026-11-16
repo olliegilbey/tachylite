@@ -189,8 +189,8 @@ impl Exclude {
 /// Equal when both hold the same patterns, as written, in the same order.
 impl PartialEq for Exclude {
     fn eq(&self, other: &Exclude) -> bool {
-        let texts = |e: &Exclude| e.globs.iter().map(|g| g.text.clone()).collect::<Vec<_>>();
-        texts(self) == texts(other)
+        let ours = self.globs.iter().map(|g| &g.text);
+        ours.eq(other.globs.iter().map(|g| &g.text))
     }
 }
 
