@@ -198,9 +198,16 @@ async function open(browser: Browser, profile: Profile, label: string, base: str
   return { label, base, context, page, quiet, errors };
 }
 
+/** A wait begun before its cause. If the sample throws first, the wait must not add an error of its own. */
+function ahead<T>(wait: Promise<T>): Promise<T> {
+  wait.catch(() => {});
+  return wait;
+}
+
 /** The worker's next fetch of the manifest: a page asks for a sync each time its event stream opens. */
 function nextSync(s: Session): Promise<unknown> {
-  return s.context.waitForEvent("requestfinished", (r) => !!r.serviceWorker() && new URL(r.url()).pathname === MANIFEST);
+  const manifest = (r: Request) => !!r.serviceWorker() && new URL(r.url()).pathname === MANIFEST;
+  return ahead(s.context.waitForEvent("requestfinished", manifest));
 }
 
 /** Waits until a newly shown page is at rest: its sync done, the worker idle, the page idle. */
@@ -348,7 +355,7 @@ async function warm(s: Session, scenario: Warm, vars: Vars): Promise<Sample | Sk
   const to = fill("navigation" in until ? until.navigation : until.restore, vars);
   const synced = nextSync(s);
   const from = cpu();
-  const there = page.waitForURL((url) => url.pathname === to, { waitUntil: "restore" in until ? "commit" : "load" });
+  const there = ahead(page.waitForURL((url) => url.pathname === to, { waitUntil: "restore" in until ? "commit" : "load" }));
   // The navigation can take the page away before the call returns.
   await page.evaluate(call(act, run, vars, KEY)).catch((e: Error) => {
     if (!/context was destroyed|navigation/i.test(e.message)) throw e;
@@ -358,7 +365,7 @@ async function warm(s: Session, scenario: Warm, vars: Vars): Promise<Sample | Sk
   if ("restore" in until) {
     if (!(await page.evaluate(() => (window as any).benchKept === true))) {
       await rest(s, synced);
-      return { skip: "the browser did not restore the page from its back/forward cache." };
+      return { skip: 'the browser did not restore the page from its back/forward cache. See "The Back scenario" in browser/bench/README.md.' };
     }
     const handle = await page.waitForFunction(() => (window as any).benchRestored);
     const at: { shown: number; painted: number } = await handle.jsonValue();
