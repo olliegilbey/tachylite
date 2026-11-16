@@ -322,6 +322,9 @@ pub struct Site {
     daily: Option<(String, Vec<indexes::Part>)>,
     /// Every page's header, from `nav` and `daily` alone.
     header: String,
+    /// What each folder's recent page was built from, hashed, so a derive rebuilds only the
+    /// pages of the folders a save reached.
+    scoped: HashMap<String, u64>,
 }
 
 /// One note's outgoing links.
@@ -907,6 +910,8 @@ impl Site {
     /// pushes the ones whose version changed. Returns whether any changed.
     fn indexes(&mut self, won: &BTreeSet<String>, sink: &mut impl Sink) -> bool {
         let mut built: Vec<(String, String, String)> = Vec::new();
+        let mut kept: Vec<String> = Vec::new();
+        let mut inputs: HashMap<String, u64> = HashMap::new();
         {
             let header = self.header.as_str();
             // Every folder that holds a page, with its subfolders and pages.
@@ -970,6 +975,23 @@ impl Site {
                     folder = parent(folder);
                 }
             }
+            // A folder whose list reads as it did needs no new page.
+            scoped.retain(|folder, places| {
+                let mut hasher = DefaultHasher::new();
+                header.hash(&mut hasher);
+                for &place in places.iter() {
+                    let (modified, path) = notes[place];
+                    (modified, path, self.title(path)).hash(&mut hasher);
+                }
+                let input = hasher.finish();
+                inputs.insert(folder.to_string(), input);
+                let same = self.scoped.get(*folder) == Some(&input)
+                    && self.generated.contains_key(&format!("{RECENT_IN}{folder}"));
+                if same {
+                    kept.push(format!("{RECENT_IN}{folder}"));
+                }
+                !same
+            });
             // Each listed note's row, made once.
             let mut rows: Vec<Option<String>> = vec![None; notes.len()];
             let places =
@@ -1004,7 +1026,7 @@ impl Site {
                 let (key, page) = if path.is_empty() {
                     (String::new(), indexes::home(header, site, &recent, &folder))
                 } else {
-                    let page = indexes::folder(header, &folder, scoped.contains_key(path));
+                    let page = indexes::folder(header, &folder, inputs.contains_key(path));
                     (format!("{FOLDERS}{path}"), page)
                 };
                 built.push((key, page.version, page.html));
@@ -1031,7 +1053,12 @@ impl Site {
             built.push((NOTES_JSON.into(), format!("{:016x}", hasher.finish()), json));
         }
 
-        let fresh: HashSet<String> = built.iter().map(|(key, ..)| key.clone()).collect();
+        self.scoped = inputs;
+        let fresh: HashSet<String> = built
+            .iter()
+            .map(|(key, ..)| key.clone())
+            .chain(kept)
+            .collect();
         // Tag pages derive only where a tag was added, removed or retitled, so a save that
         // changes no tag builds none.
         let mut gone: Vec<String> = self
