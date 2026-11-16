@@ -182,6 +182,14 @@ impl Exclude {
     }
 }
 
+/// Equal when both hold the same patterns, as written, in the same order.
+impl PartialEq for Exclude {
+    fn eq(&self, other: &Exclude) -> bool {
+        let texts = |e: &Exclude| e.globs.iter().map(|g| g.text.clone()).collect::<Vec<_>>();
+        texts(self) == texts(other)
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Config {
     pub exclude: Exclude,

@@ -905,3 +905,39 @@ fn a_tag_page_is_served_pushed_and_gone_with_its_last_note() {
     }
     assert_eq!(server.get(page).status, 404);
 }
+
+/// How many times the process opened folder `name` in `vault`, from the opens queued on `opens`.
+fn folder_opens(opens: &std::os::fd::OwnedFd, name: &str) -> usize {
+    use rustix::fs::inotify::{self, ReadFlags};
+    let mut buf = vec![std::mem::MaybeUninit::<u8>::uninit(); 4096];
+    let mut reader = inotify::Reader::new(opens, &mut buf);
+    let mut count = 0;
+    loop {
+        match reader.next() {
+            Ok(e) => {
+                let named = e
+                    .file_name()
+                    .is_some_and(|n| n.to_bytes() == name.as_bytes());
+                if named && e.events().contains(ReadFlags::OPEN | ReadFlags::ISDIR) {
+                    count += 1;
+                }
+            }
+            Err(rustix::io::Errno::AGAIN) => return count,
+            Err(e) => panic!("{e}"),
+        }
+    }
+}
+
+#[test]
+fn start_up_with_a_config_lists_each_folder_twice() {
+    use rustix::fs::inotify::{self, CreateFlags, WatchFlags};
+    let d = Dirs::empty();
+    fs::write(d.vault().join("tachylite.toml"), "exclude = [\"x\"]\n").unwrap();
+    fs::create_dir(d.vault().join("d")).unwrap();
+    fs::write(d.vault().join("d/n.md"), "# n").unwrap();
+    let opens = inotify::init(CreateFlags::CLOEXEC | CreateFlags::NONBLOCK).unwrap();
+    inotify::add_watch(&opens, d.vault(), WatchFlags::OPEN | WatchFlags::ONLYDIR).unwrap();
+    let _server = Server::start(&d.vault(), &d.out());
+    // Once to watch it and once to scan it. A config the start reads unchanged moves no watch.
+    assert_eq!(folder_opens(&opens, "d"), 2);
+}

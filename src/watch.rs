@@ -144,6 +144,7 @@ impl Watcher {
                 source: e.into(),
             }
         })?;
+        let watched = config.exclude.clone();
         let mut watcher = Watcher {
             inotify,
             dirs: HashMap::new(),
@@ -165,8 +166,11 @@ impl Watcher {
         loop {
             let from = watcher.pending.len();
             match watcher.reload_config()? {
+                // The tree was watched under `config`, so only other exclusions move a watch.
                 Reload::Loaded => {
-                    watcher.rewatch(&[""])?;
+                    if *watcher.site.exclude() != watched {
+                        watcher.rewatch(&[""])?;
+                    }
                     break;
                 }
                 Reload::Kept => break,
