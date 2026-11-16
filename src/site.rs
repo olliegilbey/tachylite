@@ -904,9 +904,10 @@ impl Site {
         pushes
     }
 
-    /// Writes and pushes each note page whose backlinks may have changed since this apply
-    /// last wrote it, with the new footer around its body: the one held, else the one its
-    /// written page holds. Returns the notes with neither.
+    /// Writes and pushes each note page whose backlinks or daily neighbours may have changed
+    /// since this apply last wrote it, with the new line of days and the new footer around
+    /// its body: the one held, else the one its written page holds. Returns the notes with
+    /// neither.
     fn refoot(&mut self, paths: &[String], done: &mut Done, sink: &mut impl Sink) -> Vec<String> {
         let mut lost = Vec::new();
         // Small batches keep a full sync from holding many pages read back at once.

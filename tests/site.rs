@@ -2557,7 +2557,8 @@ fn the_recent_page_lists_the_three_newest_daily_notes_then_the_other_notes() {
         "<li><a href=\"/d/2026-11-05\">2026-11-05</a> <span class=\"meta\">d · 1970-01-01</span></li>"
     ));
 
-    // Create, rename and delete each move the blocks, and the page is pushed and listed anew.
+    // Create, rename and delete each move the blocks. The create shows the push and the
+    // manifest's new version.
     let listed = |out: &Out| page_text(out, tachylite::site::MANIFEST);
     let before = listed(&out);
     mem.0.insert("d/2026-11-06.md".into(), b"x".to_vec());
@@ -2598,6 +2599,17 @@ fn the_recent_page_lists_the_three_newest_daily_notes_then_the_other_notes() {
     let page = blocks(&page_text(&out, RECENT));
     assert_eq!(page[0].1, ["/d/2026-11-01", "/d/2026-10-31"]);
     assert_eq!(page[1].1[0], "/n7");
+
+    // With no other note, the page has no Recent block.
+    let rest: Vec<String> = (1..=7).map(|i| format!("n{i}.md")).collect();
+    for path in &rest {
+        mem.0.remove(path);
+    }
+    let changes = rest.iter().map(|path| touch(path)).collect();
+    apply_kept(&mut site, changes, &mut mem, &mut out);
+    let page = blocks(&page_text(&out, RECENT));
+    assert_eq!(page.len(), 1, "{page:?}");
+    assert_eq!(page[0].0, "Daily");
 }
 
 #[test]
@@ -2669,7 +2681,8 @@ fn neighbours(out: &Out, path: &str) -> [Option<String>; 2] {
     ["prev", "next"].map(|rel| {
         let open = format!("<a rel=\"{rel}\" href=\"");
         let link = &html[html.find(&open)? + open.len()..];
-        let (url, rest) = link.split_once("\">")?;
+        let (url, rest) = link.split_once("\" aria-label")?;
+        let (_, rest) = rest.split_once("\">")?;
         Some(format!("{url} {}", rest.split_once("</a>")?.0))
     })
 }
@@ -2698,8 +2711,8 @@ fn a_daily_note_page_links_to_the_previous_and_the_next_daily_note() {
         page.contains(
             "<main>\n<nav class=\"crumbs\"><a href=\"/.tachylite/folders/d\">d</a></nav>\n\
              <nav class=\"days\" aria-label=\"Daily notes\">\
-             <a rel=\"prev\" href=\"/d/2026-11-02\">2026-11-02</a>\
-             <a rel=\"next\" href=\"/d/2026-11-04\">2026-11-04</a></nav>\n<p>x</p>"
+             <a rel=\"prev\" href=\"/d/2026-11-02\" aria-label=\"Previous: 2026-11-02\">2026-11-02</a>\
+             <a rel=\"next\" href=\"/d/2026-11-04\" aria-label=\"Next: 2026-11-04\">2026-11-04</a></nav>\n<p>x</p>"
         ),
         "{page}"
     );

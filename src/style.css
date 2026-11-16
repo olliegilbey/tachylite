@@ -69,12 +69,12 @@ header .pins {
 }
 header .pins a { padding: 0.35rem 0.6rem; color: var(--link); font-size: 0.9rem; }
 header button {
-  margin-left: auto; padding: 0.4rem 0.7rem; background: none; border: 1px solid var(--line); border-radius: 6px; cursor: pointer;
+  margin-left: auto; padding: 0.5rem 0.7rem; background: none; border: 1px solid var(--line); border-radius: 6px; cursor: pointer;
 }
 .crumbs { font-size: 0.9rem; color: var(--dim); margin-top: 0.5rem; }
 /* A daily note's neighbours: the previous day at the left edge, the next at the right. */
 .days { display: flex; font-size: 0.9rem; }
-.days a { padding: 0.5rem 0; }
+.days a { padding: 0.7rem 0; }
 .days [rel="prev"]::before { content: "‹ "; }
 .days [rel="next"] { margin-left: auto; }
 .days [rel="next"]::after { content: " ›"; }

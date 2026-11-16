@@ -116,7 +116,7 @@ daily = { folder = "journal", format = "YYYY-MM-DD" }
 - `title` names the home page. It defaults to Tachylite.
 - `pins` adds links under the header. Each is a vault path. A path ending in `.md`, `.html` or another published type is a file; any other is a folder. Add `|label` to name it; the label defaults to the file or folder name. A pin to an excluded path is dropped, and a pin that matches nothing is logged.
 - `daily` sets where daily notes live and how they are named. It replaces Obsidian's own daily-notes settings whole: with no `folder`, daily notes sit in the vault root. The format reads `YYYY`, `MM` and `DD`, with any separators and `/` for subfolders, as in `YYYY/MM/YYYY-MM-DD`. A format with another token, such as `ddd`, or an excluded daily folder gives no Today page, and the log says why.
-- A change to `pins`, or one that adds or removes the Today tab, changes every page, and every installed phone syncs every page once. A new `title` changes the home page alone.
+- A change to `pins`, or one that adds or removes the Today tab, changes every page, and every installed phone syncs every page once. A change to `daily` that keeps the Today tab changes the daily notes and the Home, Today and Recent pages. A new `title` changes the home page alone.
 
 ## Who it is for
 

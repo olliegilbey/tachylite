@@ -1076,9 +1076,9 @@ fn a_daily_note_that_comes_or_goes_reaches_its_open_neighbour_and_the_manifest()
     fs::write(d.vault().join("j/2026-11-03.md"), "b").unwrap();
     let event = events.expect("page");
     assert!(
-        event
-            .data
-            .contains("<a rel=\"next\" href=\"/j/2026-11-03\">2026-11-03</a>"),
+        event.data.contains(
+            "<a rel=\"next\" href=\"/j/2026-11-03\" aria-label=\"Next: 2026-11-03\">2026-11-03</a>"
+        ),
         "{}",
         event.data
     );

@@ -280,8 +280,10 @@ pub fn recent(header: &str, daily: &[&str], rows: &[&str]) -> Page {
         main.push_str("<h2>Daily</h2>\n");
         main.push_str(&recent_list(daily.iter().copied()));
     }
-    main.push_str("<h2>Recent</h2>\n");
-    main.push_str(&recent_list(rows.iter().take(RECENT).copied()));
+    if !rows.is_empty() {
+        main.push_str("<h2>Recent</h2>\n");
+        main.push_str(&recent_list(rows.iter().take(RECENT).copied()));
+    }
     shell(header, "Recent", &main)
 }
 

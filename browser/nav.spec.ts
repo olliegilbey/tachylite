@@ -252,7 +252,10 @@ test("a daily note links to the daily notes before and after it", async ({ page 
   const boxes = await days.evaluateAll((els) => els.map((e) => e.getBoundingClientRect().toJSON()));
   expect(boxes[0].right).toBeLessThan(boxes[1].left);
   expect(Math.round(boxes[0].top)).toBe(Math.round(boxes[1].top));
-  for (const box of boxes) expect(box.height).toBeGreaterThanOrEqual(40);
+  // Each is a touch target, as a tab is, and names its direction to a screen reader.
+  for (const box of boxes) expect(box.height).toBeGreaterThanOrEqual(48);
+  await expect(page.getByRole("link", { name: `Previous: ${iso(-3)}` })).toBeVisible();
+  await expect(page.getByRole("link", { name: `Next: ${iso(2)}` })).toBeVisible();
   await days.nth(1).click();
   await expect(page).toHaveURL(base + `/days/${iso(2)}`);
   await expect(days).toHaveText([iso(-1)]);
@@ -277,6 +280,8 @@ test("five pins keep the header on its lines and the page its width", async ({ p
   );
   expect(tabs.length).toBe(3);
   for (const side of tabs) expect(side).toBeGreaterThanOrEqual(48);
+  const find = await page.locator("header button.find").boundingBox();
+  expect(find!.height).toBeGreaterThanOrEqual(44);
   const pins = await page.locator("header .pins a").evaluateAll((els) =>
     els.map((e) => { const r = e.getBoundingClientRect(); return Math.round(r.top + r.height / 2); }),
   );
