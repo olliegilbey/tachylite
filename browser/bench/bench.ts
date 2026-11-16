@@ -49,7 +49,7 @@ export async function bench(browser: Browser, o: Options): Promise<Result> {
   const picked = pick(scenarios, o.scenarios, "scenario");
   const devices = pick(profiles, o.profiles, "profile");
   const servers: { label: string; server: Server }[] = [];
-  const load = loadavg()[0];
+  const loadBefore = loadavg()[0];
   try {
     for (const { label, path } of o.binaries) {
       const dir = join(o.dir, label);
@@ -62,7 +62,10 @@ export async function bench(browser: Browser, o: Options): Promise<Result> {
     for (const profile of devices) {
       const sessions: Session[] = [];
       try {
-        for (const { label, server } of servers) sessions.push(await open(browser, profile, label, server.base));
+        for (const { label, server } of servers) {
+          const first = open(browser, profile, label, server.base, sessions);
+          await within(first, `the first sync on ${profile.name}, ${label}`, 180);
+        }
         for (const scenario of picked) {
           const row = sessions.map((session) => ({
             session,
@@ -70,15 +73,15 @@ export async function bench(browser: Browser, o: Options): Promise<Result> {
           }));
           const quiet = (c: Cell) => c.samples.filter((s) => s.idle >= o.minIdle).length;
           const done = (c: Cell) => !!c.skipped || quiet(c) >= o.samples;
-          // One sample from each binary a round, so a change in host load reaches them alike.
-          for (let round = -o.warmup; round < o.samples * 4 && !row.every((r) => done(r.cell)); round++) {
+          // One sample from each binary a turn, so a change in host load reaches them alike.
+          for (let turn = -o.warmup; turn < o.samples * 4 && !row.every((r) => done(r.cell)); turn++) {
             for (const { session, cell } of row) {
               if (done(cell)) continue;
               const what = `${cell.scenario} on ${cell.profile}, ${cell.binary}`;
               const got = await within(sample(browser, profile, session, scenario, vars), what);
               if (session.errors.length) throw new Error(`${what}: the page threw: ${session.errors.join("; ")}`);
               if ("skip" in got) cell.skipped = got.skip;
-              else if (round >= 0) cell.samples.push(got);
+              else if (turn >= 0) cell.samples.push(got);
             }
           }
           for (const { cell } of row) {
@@ -101,7 +104,7 @@ export async function bench(browser: Browser, o: Options): Promise<Result> {
       chromium: browser.version(),
       samples: o.samples,
       minIdle: o.minIdle,
-      load: [load, loadavg()[0]],
+      load: [loadBefore, loadavg()[0]],
       binaries,
       cells,
     };
@@ -149,13 +152,13 @@ function ahead<T>(wait: Promise<T>): Promise<T> {
   return wait;
 }
 
-/** A sample that hangs names its cell and fails the run, rather than holding it for ever. */
-function within<T>(sample: Promise<T>, what: string): Promise<T> {
+/** A step that hangs names itself and fails the run, rather than holding it for ever. */
+function within<T>(step: Promise<T>, what: string, seconds = 60): Promise<T> {
   let timer: NodeJS.Timeout;
   const late = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${what}: no result within 60 s`)), 60_000);
+    timer = setTimeout(() => reject(new Error(`${what}: no result within ${seconds} s`)), seconds * 1000);
   });
-  return Promise.race([ahead(sample), late]).finally(() => clearTimeout(timer));
+  return Promise.race([ahead(step), late]).finally(() => clearTimeout(timer));
 }
 
 /** The host's CPU time so far, summed over its cores. */
@@ -172,11 +175,12 @@ function cpu() {
 /** The share of CPU time since `from` that was idle. The bench's own work counts as busy. */
 function idleSince(from: { idle: number; total: number }): number {
   const now = cpu();
-  return now.total > from.total ? (now.idle - from.idle) / (now.total - from.total) : 1;
+  if (now.total === from.total) return 1;
+  return Math.round(((now.idle - from.idle) / (now.total - from.total)) * 1000) / 1000;
 }
 
 /** A page the worker controls, with every listed page in its cache, at the profile's CPU speed. */
-async function open(browser: Browser, profile: Profile, label: string, base: string): Promise<Session> {
+async function open(browser: Browser, profile: Profile, label: string, base: string, sessions: Session[]) {
   const context = await browser.newContext({ ...profile.device, baseURL: base });
   const flying = new Set<Request>();
   let landed: (() => void) | null = null;
@@ -192,6 +196,8 @@ async function open(browser: Browser, profile: Profile, label: string, base: str
   const page = await context.newPage();
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
+  // Listed before the first wait, so a session that never syncs is still closed.
+  sessions.push({ label, base, context, page, quiet, errors });
   await page.goto("/");
   await page.waitForFunction(() => navigator.serviceWorker.controller !== null);
   const { pages } = await (await page.request.get(MANIFEST)).json();
@@ -202,11 +208,10 @@ async function open(browser: Browser, profile: Profile, label: string, base: str
       return urls.length === Object.keys(have).length && urls.every((url) => have[url] === want[url]);
     },
     [MANIFEST, pages] as const,
-    { polling: 100, timeout: 120_000 },
+    { polling: 100, timeout: 0 },
   );
   const cdp = await context.newCDPSession(page);
   await cdp.send("Emulation.setCPUThrottlingRate", { rate: profile.cpu });
-  return { label, base, context, page, quiet, errors };
 }
 
 /** The worker's next fetch of the manifest: a page asks for a sync each time its event stream opens. */
@@ -249,12 +254,14 @@ async function act(run: (vars: Vars) => void, vars: Vars, key: string) {
 async function paint(run: (vars: Vars) => void, vars: Vars, selector: string) {
   const old = new Set(document.querySelectorAll(selector));
   let dom = 0;
-  // Element Timing reports the paint of an element that carries the attribute before it paints.
+  // Element Timing reports a paint on an element that carried the attribute before it painted.
+  // It reports text on the block that holds it, which can be an ancestor of an inline match.
   const mark = () => {
     for (const match of document.querySelectorAll(selector)) {
       if (old.has(match)) continue;
       dom ||= performance.now();
-      for (const e of [match, ...match.querySelectorAll("*")]) e.setAttribute("elementtiming", "bench");
+      for (const e of match.querySelectorAll("*")) e.setAttribute("elementtiming", "bench");
+      for (let e: Element | null = match; e; e = e.parentElement) e.setAttribute("elementtiming", "bench");
     }
   };
   const added = new MutationObserver(mark);
@@ -288,12 +295,10 @@ async function arrived(key: string | null) {
   });
   const nav = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming;
   const from = key ? Number(sessionStorage.getItem(key)) - performance.timeOrigin : 0;
-  // A prerendered page paints before it is shown, and counts from the moment it is shown.
-  const shown = (nav as any).activationStart ?? 0;
   return {
-    ms: Math.max(fcp, shown) - from,
-    responseEnd: Math.max(nav.responseEnd - from, 0),
-    dom: Math.max(nav.domContentLoadedEventEnd - from, 0),
+    ms: fcp - from,
+    responseEnd: nav.responseEnd - from,
+    dom: nav.domContentLoadedEventEnd - from,
     deliveryType: (nav as any).deliveryType as string,
     transferSize: nav.transferSize,
     workerStart: nav.workerStart,
@@ -314,7 +319,7 @@ function awaitRestore() {
   });
 }
 
-const round = (ms: number) => Math.round(ms * 10) / 10;
+const tenth = (ms: number) => Math.round(ms * 10) / 10;
 
 async function sample(browser: Browser, profile: Profile, s: Session, scenario: Scenario, vars: Vars): Promise<Sample | Skip> {
   if ("first" in scenario) return first(browser, profile, s, fill(scenario.first, vars));
@@ -335,7 +340,7 @@ async function first(browser: Browser, profile: Profile, s: Session, path: strin
     if (at.workerStart !== 0 || at.transferSize === 0) {
       throw new Error(`${path} did not come from the network: ${JSON.stringify(at)}`);
     }
-    return { ms: round(at.ms), idle: round(idle), responseEnd: round(at.responseEnd), dom: round(at.dom) };
+    return { ms: tenth(at.ms), idle, responseEnd: tenth(at.responseEnd), dom: tenth(at.dom) };
   } finally {
     await context.close();
   }
@@ -344,7 +349,8 @@ async function first(browser: Browser, profile: Profile, s: Session, path: strin
 async function warm(s: Session, scenario: Warm, vars: Vars): Promise<Sample | Skip> {
   const { page } = s;
   const action = scenario.action;
-  const until: Until = scenario.until ?? { navigation: (action as { go: string }).go };
+  const until: Until | undefined = scenario.until ?? ("go" in action ? { navigation: action.go } : undefined);
+  if (!until) throw new Error(`${scenario.name}: a \`run\` action needs an \`until\``);
   const run = "go" in action ? `() => location.assign(${JSON.stringify(fill(action.go, vars))})` : `${action.run}`;
   if (scenario.before) {
     await load(s, fill(scenario.before, vars));
@@ -355,7 +361,7 @@ async function warm(s: Session, scenario: Warm, vars: Vars): Promise<Sample | Sk
   if ("paint" in until) {
     const from = cpu();
     const at: { ms: number; dom: number } = await page.evaluate(call(paint, run, vars, fill(until.paint, vars)));
-    return { ms: round(at.ms), idle: round(idleSince(from)), dom: round(at.dom) };
+    return { ms: tenth(at.ms), idle: idleSince(from), dom: tenth(at.dom) };
   }
 
   const to = fill("navigation" in until ? until.navigation : until.restore, vars);
@@ -364,7 +370,7 @@ async function warm(s: Session, scenario: Warm, vars: Vars): Promise<Sample | Sk
   const there = ahead(page.waitForURL((url) => url.pathname === to, { waitUntil: "restore" in until ? "commit" : "load" }));
   // The navigation can take the page away before the call returns.
   await page.evaluate(call(act, run, vars, KEY)).catch((e: Error) => {
-    if (!/context was destroyed|navigation/i.test(e.message)) throw e;
+    if (!e.message.includes("context was destroyed")) throw e;
   });
   await there;
 
@@ -378,7 +384,7 @@ async function warm(s: Session, scenario: Warm, vars: Vars): Promise<Sample | Sk
     const start = Number(await page.evaluate((key) => sessionStorage.getItem(key), KEY));
     const idle = idleSince(from);
     await rest(s, synced);
-    return { ms: round(at.painted - start), idle: round(idle), dom: round(at.shown - start) };
+    return { ms: tenth(at.painted - start), idle, dom: tenth(at.shown - start) };
   }
 
   const at = await page.evaluate(arrived, KEY);
@@ -387,5 +393,5 @@ async function warm(s: Session, scenario: Warm, vars: Vars): Promise<Sample | Sk
     throw new Error(`${scenario.name}: the worker's cache did not answer for ${to}: ${JSON.stringify(at)}`);
   }
   await rest(s, synced);
-  return { ms: round(at.ms), idle: round(idle), responseEnd: round(at.responseEnd), dom: round(at.dom) };
+  return { ms: tenth(at.ms), idle, responseEnd: tenth(at.responseEnd), dom: tenth(at.dom) };
 }

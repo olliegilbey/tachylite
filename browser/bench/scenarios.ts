@@ -45,13 +45,13 @@ export type Warm = {
   start: string;
   /** A page opened before `start`, so Back has somewhere to go. */
   before?: string;
-  action: Action;
-  /** Left out after `go`, it is the navigation to that path. */
-  until?: Until;
-};
+} & (
+  | { action: Extract<Action, { go: string }>; /** Left out, it is the navigation to that path. */ until?: Until }
+  | { action: Exclude<Action, { go: string }>; until: Until }
+);
 
 /**
- * A first load opens `first` in a new browser profile: no service worker, nothing cached.
+ * A first load opens `first` in a new browser context: no service worker, nothing cached.
  * Its clock runs from the start of the navigation to the first contentful paint.
  */
 export type First = { name: string; first: string };

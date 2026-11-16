@@ -23,6 +23,7 @@ export function serve(dir: string, port = 0, bin = binary): Promise<Server> {
       resolve({ child, port: Number(at[2]), base: at[1] });
     };
     child.stderr!.on("data", read);
+    child.on("error", reject);
     child.on("exit", (code) => reject(new Error(`serve exited with ${code}: ${log}`)));
   });
 }

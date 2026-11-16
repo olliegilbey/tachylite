@@ -10,7 +10,7 @@ It serves the budget vault from a release build. It drives headless Chromium at 
 make bench
 ```
 
-This builds the release binary, writes the budget vault, and starts a server on a free port. It runs every scenario under every profile, then stops the server. It prints a Markdown table, ready for a PR body. It writes every sample as JSON to `browser/bench/results/`, which git ignores.
+This builds the release binary, writes the budget vault, and starts a server on a free port. It runs every scenario under every profile, then stops the server. Each cell takes two samples to warm up, and throws them away. It prints a Markdown table, ready for a PR body. It writes every sample as JSON to `browser/bench/results/`, which git ignores.
 
 Variables narrow a run or widen it:
 
@@ -84,10 +84,10 @@ Add an entry to `scenarios` in `scenarios.ts`. A scenario is data:
   - `{ run: fn }` is any script: a tap, typed text, a swipe. It runs alone in the page, so it sees no variable from outside itself.
 - `until`: the milestone that ends the clock.
   - `{ navigation: path }`: the first contentful paint of a new document at that path. After `go`, leave `until` out.
-  - `{ paint: selector }`: the first paint of text or an image inside an element the action added. An element that was there before the action does not count.
+  - `{ paint: selector }`: the first paint of text or an image in an element the action added. An element that was there before the action does not count, so a change to one never ends the clock.
   - `{ restore: path }`: the page at that path, back from the back/forward cache.
 
-A scenario with `first: path` in place of these is a first load. It opens the path in a new browser profile, with no service worker and nothing cached.
+A scenario with `first: path` in place of these is a first load. It opens the path in a new browser context, with no service worker and nothing cached.
 
 Every other scenario is warm: it measures the cached path. Before the clock runs, the service worker controls the page and a sync has stored every listed page.
 
@@ -111,8 +111,9 @@ Full Chromium and the headless shell give different numbers for the same scenari
 ## Limits
 
 - **CPU throttling reaches the page only.** The service worker and the browser process run at full speed. So **Response end** is optimistic for a phone.
-- **The network is localhost.** A first load pays no latency and no bandwidth limit.
+- **The network is localhost.** A first load pays no latency and no bandwidth limit. No profile limits the network yet. CDP's `Network.emulateNetworkConditions` can, for a question that needs it.
 - **The clock starts in the page's script.** The browser's own handling of a touch, before the script sees it, is not counted.
+- **The clock starts at a random point in a frame.** A paint lands on a frame, 16.7 ms apart. A real tap comes at any point between two. So each sample waits a random time of up to 16 ms before it starts, and the frame grid averages out over the samples.
 - **Paint times come in steps of about 4 ms.** Chromium rounds them. A median can sit on a step, with the 90th percentile on the same one.
 - **A restored page reports no paint.** The second frame after `pageshow` stands in for it, so a Back time is good to about one frame.
 - **Headless Chromium on a desktop CPU is no phone.** Trust the bench for the order of two candidates and the size of the gap, not for the time a reader will see.

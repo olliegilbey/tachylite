@@ -12,6 +12,12 @@ const results = join(__dirname, "results");
 
 const list = (name: string) => process.env[name]?.split(",").filter(Boolean);
 
+function number(name: string, fallback: number, least: number): number {
+  const value = Number(process.env[name] || fallback);
+  if (!(value >= least)) throw new Error(`${name} takes a number of at least ${least}: ${process.env[name]}`);
+  return value;
+}
+
 /** This checkout's commit, to label its own build. */
 function commit(): string {
   try {
@@ -25,7 +31,7 @@ function commit(): string {
 /** `TACHYLITE_BIN`: one path, or `label=path` pairs. A path is absolute, or starts at the repo root. */
 function binaries(): { label: string; path?: string }[] {
   const named = list("TACHYLITE_BIN");
-  if (!named) return [{ label: commit() }];
+  if (!named?.length) return [{ label: commit() }];
   const all = named.map((entry) => {
     const [label, path] = entry.includes("=") ? entry.split(/=(.*)/) : ["bin", entry];
     if (!/^[\w.-]+$/.test(label)) throw new Error(`a label takes letters, digits, ".", "_" and "-": ${label}`);
@@ -47,9 +53,9 @@ test("client bench", async ({ browser }) => {
       binaries: binaries(),
       scenarios: list("BENCH_SCENARIOS"),
       profiles: list("BENCH_PROFILES"),
-      samples: Number(process.env.BENCH_SAMPLES ?? 30),
+      samples: Math.round(number("BENCH_SAMPLES", 30, 1)),
       warmup: 2,
-      minIdle: Number(process.env.BENCH_MIN_IDLE ?? 0.3),
+      minIdle: number("BENCH_MIN_IDLE", 0.3, 0),
       log: (line) => console.error(line),
     });
     mkdirSync(results, { recursive: true });

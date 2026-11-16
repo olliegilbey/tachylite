@@ -4,10 +4,10 @@ import { report } from "./bench/report";
 import { expect, run, test } from "./fixture";
 
 // The bench is not part of the gate, so this run keeps it working. A bench asserts no time.
-test("the client bench times a navigation, a first load and an in-page action", async ({ browser }, info) => {
+test("the client bench times a navigation, a first load, an in-page action and Back", async ({ browser }, info) => {
   test.skip(info.project.name !== "phone", "the bench brings its own profiles");
   test.setTimeout(120_000);
-  const names = ["home-to-recent", "note-first-load", "switcher-query"];
+  const names = ["home-to-note", "note-first-load", "switcher-query", "back-to-home"];
   const result = await bench(browser, {
     dir: join(run, "bench"),
     vault: join(__dirname, "..", "tests", "fixtures", "vault"),
@@ -18,13 +18,22 @@ test("the client bench times a navigation, a first load and an in-page action", 
     warmup: 0,
     minIdle: 0,
   });
-  expect(result.cells.map((c) => [c.scenario, c.profile, c.binary, c.samples.length])).toEqual(
-    names.map((name) => [name, "phone-4x", "suite", 1]),
+  expect(result.cells.map((c) => [c.scenario, c.profile, c.binary])).toEqual(
+    names.map((name) => [name, "phone-4x", "suite"]),
   );
-  for (const cell of result.cells) expect(cell.samples[0].ms, cell.scenario).toBeGreaterThan(0);
-  expect(result.cells[0].samples[0].responseEnd).toBeGreaterThan(0);
   const table = report(result);
-  for (const name of names) expect(table).toContain(`| ${name} | phone-4x | suite |`);
+  for (const cell of result.cells) {
+    // Back needs the back/forward cache. A browser without one skips it, and says why.
+    if (cell.skipped) {
+      expect(cell.scenario).toBe("back-to-home");
+      expect(table).toContain(`Skipped back-to-home on phone-4x, \`suite\`: ${cell.skipped}`);
+      continue;
+    }
+    expect(cell.samples.length, cell.scenario).toBe(1);
+    expect(cell.samples[0].ms, cell.scenario).toBeGreaterThan(0);
+    expect(table).toContain(`| ${cell.scenario} | phone-4x | suite |`);
+  }
+  expect(result.cells[0].samples[0].responseEnd).toBeGreaterThan(0);
 });
 
 test("the bench's table leaves out the samples taken under host load", () => {
