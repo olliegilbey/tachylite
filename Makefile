@@ -4,7 +4,7 @@ TARGET ?= x86_64-unknown-linux-gnu
 PLAYWRIGHT_INSTALL ?=
 SIZE_LIMIT := 5000000
 
-.PHONY: check browser budget release size upgrade mermaid
+.PHONY: check browser bench budget release size upgrade mermaid
 
 # The gate CI runs.
 check:
@@ -21,6 +21,13 @@ browser:
 	cargo build --release
 	cd browser && npm ci && npx playwright install $(PLAYWRIGHT_INSTALL) --only-shell chromium && \
 	BUDGET_SCALE=$(BUDGET_SCALE) npx playwright test
+
+# The client bench: times a reader's actions in headless Chromium on the budget vault. It
+# explores, and gates nothing. browser/bench/README.md lists its variables.
+bench:
+	cargo build --release --bins --example budget_vault
+	cd browser && npm ci && npx playwright install $(PLAYWRIGHT_INSTALL) --only-shell chromium && \
+	npx playwright test --config bench
 
 # Timed budgets at 1x, for the reference host.
 budget:

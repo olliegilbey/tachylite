@@ -3,6 +3,9 @@ import { defineConfig, devices } from "@playwright/test";
 // Workers inherit this, so every process of one run writes under the same results directory.
 process.env.TACHYLITE_RUN_ID ??= `${process.pid}`;
 
+/** The phone every phone test and bench profile emulates. */
+export const phone = devices["Pixel 7"];
+
 export default defineConfig({
   testDir: ".",
   outputDir: `test-results/${process.env.TACHYLITE_RUN_ID}`,
@@ -15,7 +18,7 @@ export default defineConfig({
     trace: "retain-on-failure",
   },
   projects: [
-    { name: "phone", use: { ...devices["Pixel 7"] } },
+    { name: "phone", use: { ...phone } },
     { name: "desktop", use: { ...devices["Desktop Chrome"] } },
   ],
 });

@@ -114,7 +114,7 @@ Look at a visual change before you call it done. A purely visual change, such as
 6. Stop the server by its PID.
 
 - A harness with a built-in browser can drive the same server interactively. Close any tab you opened.
-- Page weight and the timed budgets are tests: `make check` and `make budget`. To feel a slow phone, write a throwaway Playwright test under `browser/` that sets CDP `Network.emulateNetworkConditions` and `Emulation.setCPUThrottlingRate`, and prints timings from `performance.getEntriesByType("navigation")`. Delete it when done.
+- Page weight and the timed budgets are tests: `make check` and `make budget`. To time a reader's action on a slow phone, run `make bench`. It times scenarios in headless Chromium on the budget vault, at full CPU speed and at a quarter of it. Add a scenario when a change raises a new question: `browser/bench/README.md` says how.
 - Never commit captures or traces. Show them to the maintainer in chat, and describe them in the PR.
 
 ## Style
