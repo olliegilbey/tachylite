@@ -415,6 +415,35 @@ fn no_temp_files_remain() {
 }
 
 /// A temp vault holding only `files`, and an output path beside it.
+#[test]
+fn a_page_too_deep_for_the_output_is_skipped() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = dir.path().join("vault");
+    // The output's path is longer than the vault's, so a note the vault can hold at a depth
+    // near the system's 4,096-byte path limit has a page path past it.
+    let out = dir.path().join("o".repeat(200));
+    let room = 4050 - vault.as_os_str().len();
+    let deep = vec!["d".repeat(200); room / 201].join("/");
+    let note = format!("{deep}/deep.md");
+    for (path, body) in [(note.as_str(), "# deep"), ("a.md", "# a")] {
+        let path = vault.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, body).unwrap();
+    }
+    let summary = build(&vault, &out).unwrap();
+    assert!(
+        summary.skipped.contains(&tachylite::vault::Skipped {
+            path: PathBuf::from(&note),
+            reason: tachylite::vault::SkipReason::NameTooLong,
+        }),
+        "{:?}",
+        summary.skipped
+    );
+    assert_eq!(summary.notes, 1);
+    assert!(out.join("pages/a.html").is_file());
+    assert!(out.join(tachylite::site::MANIFEST).is_file());
+}
+
 fn bare(files: &[(&str, &str)]) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     for (path, body) in files {

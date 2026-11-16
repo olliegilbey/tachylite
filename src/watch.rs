@@ -611,8 +611,9 @@ impl Watcher {
         self.since = None;
         let mut writer = writer(&self.out, &self.vault, &self.live);
         self.site.derive_to(&mut writer);
-        // A derive copies no vault file, so it skips none.
-        writer.finish().map(|_| ())
+        // An index page whose path the output refuses is skipped.
+        report::skipped(&writer.finish()?);
+        Ok(())
     }
 }
 

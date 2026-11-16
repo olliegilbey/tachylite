@@ -20,7 +20,7 @@ pub fn reason(reason: SkipReason) -> String {
         SkipReason::Symlink => "symlink".to_string(),
         SkipReason::NonUtf8Name => "non-UTF-8 name".to_string(),
         SkipReason::UrlClash => "URL clash".to_string(),
-        SkipReason::NameTooLong => "name too long for its page".to_string(),
+        SkipReason::NameTooLong => "name or path too long for the output".to_string(),
         SkipReason::TooLarge => format!(
             "larger than the {} MB note limit",
             crate::vault::NOTE_MAX / 1024 / 1024

@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use proptest::prelude::*;
 use tachylite::config::Exclude;
 use tachylite::render::Broken;
-use tachylite::site::{Change, Delta, Note, Push, Site, Source, Write};
+use tachylite::site::{Change, Delta, Note, Push, Sink, Site, Source, Write};
 use tachylite::vault::{Entry, ReadError, SkipReason, Skipped, classify};
 
 /// An in-memory vault: path to bytes, and the modified times of the notes that set one.
@@ -177,6 +177,48 @@ fn full_with(mem: &Mem, exclude: Exclude) -> (Out, Delta) {
     let mut out = Out::new();
     fold(&mut out, &delta, mem);
     (out, delta)
+}
+
+/// A sink that reads pages back from the output earlier applies left, as the output
+/// directory does, so a page whose backlinks alone change takes a new footer unrendered.
+struct Kept<'a> {
+    delta: Delta,
+    out: &'a Out,
+}
+
+impl Sink for Kept<'_> {
+    fn delete(&mut self, out: String) {
+        self.delta.delete(out);
+    }
+    fn write(&mut self, write: Write) {
+        self.delta.write(write);
+    }
+    fn push(&mut self, push: Push) {
+        self.delta.push(push);
+    }
+    fn page(&mut self, out: &str) -> Option<String> {
+        let gone = self.delta.deletes.iter().any(|d| d == out);
+        self.delta.page(out).or_else(|| {
+            let page = self.out.get(out).filter(|_| !gone)?;
+            Some(String::from_utf8_lossy(page).into_owned())
+        })
+    }
+}
+
+/// Applies changes through a `Kept` over `out`, derives, and folds the delta into `out`.
+fn apply_kept(site: &mut Site, changes: Vec<Change>, mem: &mut Mem, out: &mut Out) -> Delta {
+    let mut source = mem.clone();
+    let mut kept = Kept {
+        delta: Delta::default(),
+        out,
+    };
+    let report = site.apply_to(changes, &mut source, &mut kept);
+    let mut delta = kept.delta;
+    site.derive_to(&mut delta);
+    delta.skipped = report.skipped;
+    delta.broken = report.broken;
+    fold(out, &delta, mem);
+    delta
 }
 
 fn touch(path: &str) -> Change {
@@ -521,7 +563,7 @@ fn create_makes_link_ambiguous() {
     assert!(html(&first, "y/a").contains("<a href=\"/x/r\">r</a>"));
     mem.0.insert("z/r.md".into(), b"# r".to_vec());
     let delta = site.apply(vec![touch("z/r.md")], &mut mem);
-    assert_eq!(pushed(&delta), ["z/r", "x/r", "y/a"]);
+    assert_eq!(pushed(&delta), ["z/r", "y/a", "x/r"]);
     assert!(html(&delta, "y/a").contains("<a class=\"broken-link\">r</a>"));
     assert!(!html(&delta, "x/r").contains("backlinks"));
     assert_eq!(delta.broken, [broken("y/a.md", "r", 2)]);
@@ -589,7 +631,7 @@ fn new_file_named_like_alias_takes_the_link() {
     let (mut site, _) = synced(&mut mem, Exclude::default());
     mem.0.insert("q/jd.md".into(), b"# other".to_vec());
     let delta = site.apply(vec![touch("q/jd.md")], &mut mem);
-    assert_eq!(pushed(&delta), ["q/jd", "a", "p/jane", "q/jd"]);
+    assert_eq!(pushed(&delta), ["q/jd", "a", "q/jd", "p/jane"]);
     assert!(html(&delta, "a").contains("<a href=\"/q/jd\">JD</a>"));
     assert!(!html(&delta, "p/jane").contains("backlinks"));
 }
@@ -836,8 +878,9 @@ proptest! {
                 changes.extend(apply_op(&mut mem, op));
             }
             let mut source = mem.clone();
-            let mut delta = Delta::default();
-            let report = site.apply_to(changes, &mut source, &mut delta);
+            let mut kept = Kept { delta: Delta::default(), out: &out };
+            let report = site.apply_to(changes, &mut source, &mut kept);
+            let mut delta = kept.delta;
             delta.skipped = report.skipped;
             if chunk[chunk.len() - 1].1 || i == chunks.len() - 1 {
                 site.derive_to(&mut delta);
@@ -1693,4 +1736,187 @@ fn an_embedded_notes_tags_are_not_its_embedders() {
         page.contains("\"/b\"") && !page.contains("\"/a\""),
         "{page}"
     );
+}
+
+/// A source that records each note it reads.
+struct Counted(Mem, Vec<String>);
+
+impl Source for Counted {
+    fn note(&mut self, path: &str) -> Result<Note, ReadError> {
+        self.1.push(path.to_string());
+        self.0.note(path)
+    }
+    fn file(&mut self, path: &str) -> Result<(), ReadError> {
+        self.0.file(path)
+    }
+}
+
+#[test]
+fn a_page_whose_backlinks_alone_change_is_not_rendered_again() {
+    let mut mem = Mem::with(&[("b.md", "# b body"), ("c.md", "[[b]]")]);
+    let mut site = Site::new(Exclude::default());
+    let mut out = Out::new();
+    apply_kept(&mut site, vec![sync_all(&mem)], &mut mem, &mut out);
+    // A new linker, a retitle, and a removed linker each change only `b`'s footer.
+    let steps: [(&str, Option<&str>); 3] = [
+        ("a.md", Some("[[b]]")),
+        ("a.md", Some("---\ntitle: Ay\n---\n[[b]]")),
+        ("c.md", None),
+    ];
+    for (path, text) in steps {
+        match text {
+            Some(text) => mem.0.insert(path.into(), text.as_bytes().to_vec()),
+            None => mem.0.remove(path),
+        };
+        let mut source = Counted(mem.clone(), Vec::new());
+        let mut kept = Kept {
+            delta: Delta::default(),
+            out: &out,
+        };
+        site.apply_to(vec![touch(path)], &mut source, &mut kept);
+        let mut delta = kept.delta;
+        site.derive_to(&mut delta);
+        fold(&mut out, &delta, &mem);
+        assert!(!source.1.contains(&"b.md".to_string()), "after {path}");
+        assert!(pushed(&delta).contains(&"b"), "after {path}");
+        assert_eq!(out, full(&mem).0, "after {path}");
+    }
+}
+
+#[test]
+fn a_saved_note_pushes_again_only_when_a_dependent_changes_its_page() {
+    // A new note that a dependent links to once it renders: its page gains the backlink.
+    let mut mem = Mem::with(&[("a.md", "[[b]]")]);
+    let (mut site, _) = synced(&mut mem, Exclude::default());
+    mem.0.insert("b.md".into(), b"# b".to_vec());
+    let delta = site.apply(vec![touch("b.md")], &mut mem);
+    assert_eq!(pushed(&delta), ["b", "a", "b"]);
+    let pages: Vec<&str> = delta
+        .pushes
+        .iter()
+        .filter_map(|p| match p {
+            Push::Page { key, html, .. } if key == "b" => Some(&**html),
+            _ => None,
+        })
+        .collect();
+    assert!(!pages[0].contains("backlinks"), "{}", pages[0]);
+    assert!(
+        pages[1].contains("<li><a href=\"/a\">a</a></li>"),
+        "{}",
+        pages[1]
+    );
+
+    // A retitle whose shown title stays the same leaves its target's page as it was.
+    let mut mem = Mem::with(&[("a.md", "---\ntitle: a\n---\n[[b]]"), ("b.md", "# b")]);
+    let (mut site, _) = synced(&mut mem, Exclude::default());
+    mem.0.insert("a.md".into(), b"[[b]]".to_vec());
+    let delta = site.apply(vec![touch("a.md")], &mut mem);
+    assert_eq!(pushed(&delta), ["a"]);
+}
+
+#[test]
+fn a_broken_link_is_reported_once_until_it_changes() {
+    let mut mem = Mem::with(&[("a.md", "[[x]] [[y]]")]);
+    let (mut site, first) = synced(&mut mem, Exclude::default());
+    assert_eq!(
+        first.broken,
+        [broken("a.md", "x", 0), broken("a.md", "y", 0)]
+    );
+    // `y.md` re-renders `a`, whose link to `x` stays broken.
+    mem.0.insert("y.md".into(), b"# y".to_vec());
+    let delta = site.apply(vec![touch("y.md")], &mut mem);
+    assert!(pushed(&delta).contains(&"a"));
+    assert!(delta.broken.is_empty(), "{:?}", delta.broken);
+    // A root sync of an unchanged vault reports none.
+    let delta = site.apply(vec![sync_all(&mem)], &mut mem);
+    assert!(delta.broken.is_empty(), "{:?}", delta.broken);
+    // Removing `y.md` breaks the link again.
+    mem.0.remove("y.md");
+    let delta = site.apply(vec![touch("y.md")], &mut mem);
+    assert_eq!(delta.broken, [broken("a.md", "y", 0)]);
+}
+
+/// A sink that records the order of writes and pushes.
+#[derive(Default)]
+struct Ordered(Vec<String>);
+
+impl Sink for Ordered {
+    fn delete(&mut self, _: String) {}
+    fn write(&mut self, write: Write) {
+        if let Write::Page { out, .. } | Write::Copy { out, .. } = write {
+            self.0.push(format!("write {out}"));
+        }
+    }
+    fn push(&mut self, push: Push) {
+        if let Push::Page { key, .. } = push {
+            self.0.push(format!("push {key}"));
+        }
+    }
+    fn page(&mut self, _: &str) -> Option<String> {
+        None
+    }
+}
+
+#[test]
+fn a_pushed_page_links_to_no_page_of_its_apply_not_yet_written() {
+    let mut mem = Mem::with(&[("old.md", "# old")]);
+    let (mut site, _) = synced(&mut mem, Exclude::default());
+    // One batch saves a note that links to a new note and a new html page.
+    mem.0
+        .insert("a.md".into(), b"[[z]] [[f.html]] [[old]]".to_vec());
+    mem.0.insert("z.md".into(), b"# z".to_vec());
+    mem.0.insert("f.html".into(), b"<p>f</p>".to_vec());
+    let mut sink = Ordered::default();
+    let changes = ["a.md", "z.md", "f.html"].map(touch).to_vec();
+    site.apply_to(changes, &mut mem.clone(), &mut sink);
+    let at = |event: &str| sink.0.iter().position(|e| e == event).unwrap();
+    assert!(at("write pages/z.html") < at("push a"), "{:?}", sink.0);
+    assert!(at("write files/f.html") < at("push a"), "{:?}", sink.0);
+}
+
+/// 300 notes pass the bodies this site holds within their first batch of 256, so a full
+/// sync writes its oldest pages early. The notes of the next batch link to them, so those
+/// pages take their final footer from the page written.
+#[test]
+fn a_full_build_past_the_held_bodies_equals_small_applies() {
+    let names: Vec<String> = (0..300).map(|i| format!("n{i:03}")).collect();
+    let links: String = names[..16].iter().map(|n| format!("[[{n}]] ")).collect();
+    let filler = "word ".repeat(100);
+    let notes: Vec<(String, String)> = names
+        .iter()
+        .map(|n| {
+            (
+                format!("{n}.md"),
+                format!("# {n}\n\n{links}\n\n{filler}{n}\n"),
+            )
+        })
+        .collect();
+    let pairs: Vec<(&str, &str)> = notes
+        .iter()
+        .map(|(p, c)| (p.as_str(), c.as_str()))
+        .collect();
+    let mut mem = Mem::with(&pairs);
+    let mut held = Site::new(Exclude::default());
+    held.hold_at_most(64 * 1024);
+    let delta = held.apply(vec![sync_all(&mem)], &mut mem.clone());
+    let mut want = Out::new();
+    fold(&mut want, &delta, &mem);
+    // The first page was written before its backlinks were final, then again.
+    let written = delta
+        .writes
+        .iter()
+        .filter(|w| matches!(w, Write::Page { out, .. } if out == "pages/n000.html"));
+    assert_eq!(written.count(), 2);
+    let first = String::from_utf8_lossy(&want["pages/n000.html"]).into_owned();
+    assert_eq!(first.matches("<li><a href=").count(), 299);
+
+    let mut site = Site::new(Exclude::default());
+    let mut got = Out::new();
+    for (path, _) in &notes {
+        apply_kept(&mut site, vec![touch(path)], &mut mem, &mut got);
+    }
+    assert_eq!(got.len(), want.len());
+    for (path, html) in &want {
+        assert!(got.get(path) == Some(html), "{path} differs");
+    }
 }
