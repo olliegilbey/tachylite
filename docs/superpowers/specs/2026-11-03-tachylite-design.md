@@ -209,6 +209,8 @@ The reference phone and a Raspberry Pi are checked by hand each release. A visua
 
 Release binaries are static glibc builds for `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`, linked with `crt-static`, with no runtime dependencies. They are not musl builds: musl's allocator serialises the render threads. On the budget vault, the musl cold build took 1.9-2.1 s against 0.33 s for static glibc. Static glibc costs about 0.9 MB of binary size over musl. CI checks both builds. A Raspberry Pi is a portability aim, checked by hand once per release. It has no budgets of its own.
 
+A render batch takes at most 8 threads. On a host with 8 cores and two threads per core, the cold build ran about as fast on 8 threads as on 16, for about 30% less CPU time and 3 MB less peak memory.
+
 ### Repository
 
 - Public on GitHub as `olliegilbey/tachylite`. Licence: MIT OR Apache-2.0.
