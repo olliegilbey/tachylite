@@ -122,6 +122,24 @@ fn decode(s: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
+/// The percent-decoded path, or the path as written when it does not decode.
+fn decoded(s: &str) -> String {
+    decode(s).unwrap_or_else(|| s.to_string())
+}
+
+/// True for a wikilink with no path and no heading, such as `[[]]` or `[[#]]`.
+fn empty(url: &str) -> bool {
+    let (path, heading) = split(url);
+    path.trim().is_empty() && heading.is_none_or(|h| h.trim().is_empty())
+}
+
+/// True for a node within an image's alt text.
+fn in_alt<'a>(node: &'a AstNode<'a>) -> bool {
+    node.ancestors()
+        .skip(1)
+        .any(|a| matches!(a.data().value, NodeValue::Image(_)))
+}
+
 /// A Markdown link into the vault: no scheme, and not from the site root or within the page.
 fn local(url: &str) -> bool {
     let scheme = url.find(':').is_some_and(|i| {
@@ -179,14 +197,14 @@ enum Embed {
     Link(String),
 }
 
-/// `![[raw]]` from `from`, at `depth` levels of embedding, with `label` as its text.
-/// `seen` holds the notes already on the page; each is transcluded once.
+/// `![[raw]]` from `from`, at `depth` levels of embedding, with `label` as its text. Without
+/// `block` room it is no `Embed::Block`. `seen` holds the notes already on the page; each is
+/// transcluded once.
 fn embed(
     body: &mut Body,
     (from, index, sources): (&str, &Index, &Sources),
     (depth, seen): (usize, &mut HashSet<String>),
-    raw: &str,
-    label: &str,
+    (raw, label, block): (&str, &str, bool),
 ) -> Embed {
     let (path, heading) = split(raw);
     let path = path.trim();
@@ -216,13 +234,13 @@ fn embed(
         }
         // The frame is network-only, as the worker never sees an opaque origin's requests.
         // Opened full screen, the page is cached and works offline.
-        Some(Kind::Html) => Embed::Block(format!(
+        Some(Kind::Html) if block => Embed::Block(format!(
             "<iframe class=\"embed-html\" sandbox=\"allow-scripts\" src=\"{src}\" \
              loading=\"lazy\"></iframe>\n\
              <p class=\"embed-open\"><a href=\"{src}\">Open {} full screen</a></p>\n",
             escape(target.rsplit('/').next().unwrap_or(&target))
         )),
-        Some(Kind::Note) if depth < EMBED_DEPTH && !seen.contains(&*target) => {
+        Some(Kind::Note) if block && depth < EMBED_DEPTH && !seen.contains(&*target) => {
             let Some(bytes) = sources.get(&*target) else {
                 body.missing.insert(target);
                 return link(body);
@@ -288,14 +306,18 @@ pub fn embed_targets(from: &str, markdown: &str, index: &Index) -> Vec<Arc<str>>
 pub const NAME_MAX: usize = 255;
 
 /// A tag's page key: the tag lowercased, as Obsidian matches tags in any case. A tag holds
-/// letters, digits, `_`, `-` and `/`, with at least one non-digit and no empty level. A tag
-/// longer than a page name may be is no tag, so no link points at a page that cannot be
-/// written, and no nesting runs a page's path past the filesystem's limit.
+/// letters, digits, `_`, `-` and `/`, with at least one letter or digit, at least one
+/// non-digit and no empty level. A tag longer than a page name may be is no tag, so no link
+/// points at a page that cannot be written, and no nesting runs a page's path past the
+/// filesystem's limit.
 pub fn tag_key(tag: &str) -> Option<String> {
     let chars = tag
         .chars()
         .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '/'));
-    if !chars || tag.chars().all(|c| c.is_ascii_digit() || c == '/') {
+    if !chars
+        || tag.chars().all(|c| c.is_ascii_digit() || c == '/')
+        || !tag.chars().any(char::is_alphanumeric)
+    {
         return None;
     }
     let key = tag.to_lowercase();
@@ -333,6 +355,9 @@ fn property(body: &mut Body, from: &str, index: &Index, key: &str, value: &str) 
     if front::one_link(value) {
         let inner = &value[2..value.len() - 2];
         let (target, label) = inner.split_once('|').unwrap_or((inner, inner));
+        if empty(target) {
+            return escape(value);
+        }
         let (path, heading) = split(target);
         let open = open(body, from, index, path.trim(), heading);
         return format!("{open}{}</a>", escape(label));
@@ -418,7 +443,11 @@ fn render(
     let mut scripted = Vec::new();
     let mut raw = Vec::new();
     let mut callouts = Vec::new();
+    let mut blanks = Vec::new();
+    // Set at the first image. Nodes come in document order, so none before it is in alt text.
+    let mut alt = false;
     for node in root.descendants() {
+        alt |= matches!(node.data().value, NodeValue::Image(_));
         match &node.data().value {
             NodeValue::Callout(c) if c.fold != CalloutFold::None => {
                 callouts.push(node);
@@ -433,10 +462,17 @@ fn render(
                 raw.push(node);
                 continue;
             }
+            // Obsidian shows a link to nothing as the text it is.
+            NodeValue::WikiLink(link) if empty(&link.url) => {
+                blanks.push(node);
+                continue;
+            }
             NodeValue::WikiLink(link) if link.embed => {
                 embeds.push((node, link.url.clone()));
                 continue;
             }
+            // Alt text is plain text, so a link or image in it points nowhere.
+            NodeValue::Image(_) | NodeValue::Link(_) if alt && in_alt(node) => continue,
             NodeValue::Image(link) if local(&link.url) => {
                 images.push((node, link.url.clone()));
                 continue;
@@ -477,7 +513,7 @@ fn render(
             }
             NodeValue::Link(link) if local(&link.url) => {
                 let (path, heading) = split(&link.url);
-                decode(path).map(|path| (path, heading.and_then(decode)))
+                Some((decoded(path), heading.map(decoded)))
             }
             NodeValue::Link(link) if link.url.starts_with('#') && link.url.len() > 1 => {
                 decode(&link.url[1..]).map(|heading| (String::new(), Some(heading)))
@@ -487,7 +523,13 @@ fn render(
         let Some((path, heading)) = link else {
             continue;
         };
-        let tag = open(&mut body, from, index, &path, heading.as_deref());
+        let mut tag = open(&mut body, from, index, &path, heading.as_deref());
+        if let NodeValue::Link(link) = &node.data().value
+            && !link.title.is_empty()
+            && let Some(start) = tag.strip_suffix('>')
+        {
+            tag = format!("{start} title=\"{}\">", escape(&link.title));
+        }
         rewrites.push((node, tag));
     }
     for node in scripted {
@@ -505,10 +547,21 @@ fn render(
     for (node, open) in rewrites {
         wrap(&arena, node, open, "</a>".to_string());
     }
-    for (node, src) in images {
-        let Some(path) = decode(split(&src).0) else {
+    for node in blanks {
+        let NodeValue::WikiLink(link) = &node.data().value else {
             continue;
         };
+        let (bang, label) = (if link.embed { "!" } else { "" }, node.collect_text());
+        let text = if label == link.url {
+            format!("{bang}[[{label}]]")
+        } else {
+            format!("{bang}[[{}|{label}]]", link.url)
+        };
+        node.insert_before(arena.alloc(AstNode::from(NodeValue::Text(Cow::Owned(text)))));
+        node.detach();
+    }
+    for (node, src) in images {
+        let path = decoded(split(&src).0);
         match resolve(index, from, &path) {
             Resolved::Found(target) => {
                 if let NodeValue::Image(link) = &mut node.data_mut().value {
@@ -521,12 +574,20 @@ fn render(
     }
     for (node, raw) in embeds {
         let label = node.collect_text();
+        // A block fits in a paragraph, which it splits, or in a table cell. Inline text and
+        // a title hold none, so there it is a link.
+        let block = node.parent().is_some_and(|p| match p.data().value {
+            NodeValue::TableCell => true,
+            NodeValue::Paragraph => !p
+                .parent()
+                .is_some_and(|t| matches!(t.data().value, NodeValue::CalloutTitle)),
+            _ => false,
+        });
         match embed(
             &mut body,
             (from, index, sources),
             (depth, &mut *seen),
-            &raw,
-            &label,
+            (&raw, &label, block),
         ) {
             Embed::Inline(html) => replace(&arena, node, html),
             Embed::Block(html) => {
@@ -541,9 +602,15 @@ fn render(
             Embed::Link(open) => wrap(&arena, node, open, "</a>".to_string()),
         }
     }
+    // A character reference can write `#`, which makes no tag. Only then are sources read.
+    let lines = (!texts.is_empty() && (markdown.contains("&#") || markdown.contains("&num;")))
+        .then(|| line_starts(&markdown));
     // Before the heading wrap, which gives a heading's first text a sibling.
     for node in texts {
-        link_tags(&arena, node, &mut body.tags);
+        let literal = lines
+            .as_ref()
+            .and_then(|lines| literal_hashes(&markdown, lines, node));
+        link_tags(&arena, node, literal.as_deref(), &mut body.tags);
     }
     for node in callouts {
         fold(&arena, node);
@@ -574,11 +641,115 @@ fn render(
     body
 }
 
+/// The byte offset of each line's start.
+fn line_starts(md: &str) -> Vec<usize> {
+    std::iter::once(0)
+        .chain(md.match_indices('\n').map(|(at, _)| at + 1))
+        .collect()
+}
+
+/// For each `#` in a text node, whether the note wrote it as `#` rather than as a character
+/// reference such as `&#35;`. `None` when the note's text is not found.
+fn literal_hashes(md: &str, lines: &[usize], node: &AstNode<'_>) -> Option<Vec<bool>> {
+    let NodeValue::Text(text) = &node.data().value else {
+        return None;
+    };
+    let pos = node.data().sourcepos.start;
+    let from = lines
+        .get(pos.line.saturating_sub(1))
+        .map_or(0, |line| line + pos.column.saturating_sub(1))
+        .min(md.len());
+    // After a link title that spans lines, comrak's position falls short of the text. The
+    // search is capped, so a text it cannot place costs no more than this.
+    let mut to = (from + SEARCH).min(md.len());
+    while !md.is_char_boundary(to) {
+        to -= 1;
+    }
+    let first = text.chars().next()?;
+    let window = md.get(from..to)?;
+    window
+        .match_indices([first, '&', '\\'])
+        .find_map(|(at, _)| spelled(&md[from + at..], text))
+}
+
+/// How far past comrak's position `literal_hashes` looks for a text, in bytes.
+const SEARCH: usize = 1024;
+
+/// For each `#` in `text`, whether `src` starts with `text` written with that `#` as itself.
+/// A reference stands for the one character in its place, and a backslash may escape
+/// punctuation, as in a table cell.
+fn spelled(mut src: &str, text: &str) -> Option<Vec<bool>> {
+    let mut literal = Vec::new();
+    for c in text.chars() {
+        if let Some((len, hash)) = reference(src) {
+            if (c == '#') != hash {
+                return None;
+            }
+            if hash {
+                literal.push(false);
+            }
+            src = &src[len..];
+        } else if let Some(len) = named(src)
+            && (c != '&' || src.starts_with("&amp;"))
+        {
+            // A name the parser does not know stays as text, and only `&amp;` writes `&`.
+            src = &src[len..];
+        } else if let Some(rest) = src.strip_prefix(c) {
+            if c == '#' {
+                literal.push(true);
+            }
+            src = rest;
+        } else {
+            src = src
+                .strip_prefix('\\')
+                .filter(|_| c.is_ascii_punctuation())?
+                .strip_prefix(c)?;
+            if c == '#' {
+                literal.push(false);
+            }
+        }
+    }
+    Some(literal)
+}
+
+/// The length of the named character reference, such as `&amp;`, that `s` starts with.
+fn named(s: &str) -> Option<usize> {
+    let name = s.strip_prefix('&')?;
+    let n = name.bytes().take_while(u8::is_ascii_alphanumeric).count();
+    (n > 0 && name.as_bytes().get(n) == Some(&b';')).then_some(n + 2)
+}
+
+/// The length of the numeric character reference or `&num;` that `s` starts with, and
+/// whether it writes `#`.
+fn reference(s: &str) -> Option<(usize, bool)> {
+    if s.starts_with("&num;") {
+        return Some((5, true));
+    }
+    let digits = s.strip_prefix("&#")?;
+    let (radix, digits, max) = match digits.strip_prefix(['x', 'X']) {
+        Some(hex) => (16, hex, 6),
+        None => (10, digits, 7),
+    };
+    let n = digits
+        .bytes()
+        .take_while(|&b| char::from(b).is_digit(radix))
+        .count();
+    if !(1..=max).contains(&n) || digits.as_bytes().get(n) != Some(&b';') {
+        return None;
+    }
+    let value = u32::from_str_radix(&digits[..n], radix).ok()?;
+    Some((s.len() - digits.len() + n + 1, value == 35))
+}
+
 /// The byte ranges of the `#tags` in `text`, `#` included. A tag starts the text or follows
-/// whitespace, and `tag_key` takes it.
-fn tags(text: &str, at_start: bool) -> Vec<(usize, usize)> {
+/// whitespace, and `tag_key` takes it. `literal`, when known, says which `#` the note wrote
+/// as itself.
+fn tags(text: &str, at_start: bool, literal: Option<&[bool]>) -> Vec<(usize, usize)> {
     let mut found = Vec::new();
-    for (i, _) in text.match_indices('#') {
+    for (k, (i, _)) in text.match_indices('#').enumerate() {
+        if literal.is_some_and(|literal| literal.get(k) == Some(&false)) {
+            continue;
+        }
         let boundary = text[..i]
             .chars()
             .next_back()
@@ -599,7 +770,12 @@ fn tags(text: &str, at_start: bool) -> Vec<(usize, usize)> {
 }
 
 /// Splits a text node around its tags, which become tag links.
-fn link_tags<'a>(arena: &'a Arena<'a>, node: &'a AstNode<'a>, tags_found: &mut BTreeSet<String>) {
+fn link_tags<'a>(
+    arena: &'a Arena<'a>,
+    node: &'a AstNode<'a>,
+    literal: Option<&[bool]>,
+    tags_found: &mut BTreeSet<String>,
+) {
     let at_start = node
         .previous_sibling()
         .is_none_or(|p| matches!(p.data().value, NodeValue::SoftBreak | NodeValue::LineBreak));
@@ -607,7 +783,7 @@ fn link_tags<'a>(arena: &'a Arena<'a>, node: &'a AstNode<'a>, tags_found: &mut B
         NodeValue::Text(text) => text.to_string(),
         _ => return,
     };
-    let found = tags(&text, at_start);
+    let found = tags(&text, at_start, literal);
     if found.is_empty() {
         return;
     }
@@ -700,11 +876,11 @@ fn parsed_in_code(md: &str, openers: &[usize]) -> bool {
 
 /// True when the only code in `md` is fences at column 0, which the stripper reads exactly
 /// as the parser does: no other backtick or tilde, no tab, no four-space run in a line's
-/// indent and container markers, no lone carriage return, no byte-order mark, and no HTML
-/// block that could hold a fence line. An HTML block that opens with `<!`, `<?`, `<pre`,
-/// `<script`, `<style` or `<textarea` may run past a blank line, so it rules the note out.
-/// Any other ends at a blank line, so it holds no fence line when its lines hold no
-/// backtick or tilde.
+/// indent and container markers or on a footnote definition or callout title line, no lone
+/// carriage return, no byte-order mark, and no HTML block that could hold a fence line. An
+/// HTML block that opens with `<!`, `<?`, `<pre`, `<script`, `<style` or `<textarea` may run
+/// past a blank line, so it rules the note out. Any other ends at a blank line, so it holds
+/// no fence line when its lines hold no backtick or tilde.
 fn plain_fences(md: &str) -> bool {
     const RAW: [&str; 6] = ["<!", "<?", "<pre", "<script", "<style", "<textarea"];
     // A lone `\r` ends a line for the parser but not for this scan, and the parser skips
@@ -764,7 +940,10 @@ fn plain_fences(md: &str) -> bool {
             .iter()
             .take_while(|b| b" >-*+0123456789.)".contains(b))
             .count();
-        if line[..prefix].contains("    ") {
+        // A footnote definition or a callout title may open indented code after its marker,
+        // as a list item does. With no tab, that takes four spaces in a row.
+        let marker = line[prefix..].starts_with("[^") || line[prefix..].starts_with("[!");
+        if line[..prefix].contains("    ") || (marker && line[prefix..].contains("    ")) {
             return false;
         }
         let rest = line.trim_start_matches(' ');
@@ -1324,6 +1503,15 @@ mod tests {
         "%%d",
         "\u{FEFF}",
         "[^1]: ",
+        "[^1]:",
+        "- [ ] ",
+        "> [!note] ",
+        "> [!note]- ",
+        "* ",
+        "+ ",
+        "2) ",
+        "     ",
+        "[",
         "\n",
         "\n",
         "\n\n",
@@ -1361,6 +1549,17 @@ mod tests {
         "x",
         "word ",
     ];
+
+    /// A list item in a footnote, and a callout title, hold indented code the stripper does
+    /// not see.
+    #[test]
+    fn a_footnote_or_callout_title_is_not_plain() {
+        for md in ["[^1]: -     %%\n[^1]: ", "> [!note]     %%"] {
+            let openers = strip_comments(md).openers;
+            assert!(parsed_in_code(md, &openers), "{md:?}");
+            assert!(!plain(md, &openers), "{md:?}");
+        }
+    }
 
     proptest::proptest! {
         #![proptest_config(proptest::prelude::ProptestConfig::with_cases(20_000))]

@@ -366,3 +366,12 @@ fn replacing_and_removing_aliases() {
     assert!(index.alias_bucket("two").is_empty());
     assert!(index.aliases("a.md").is_empty());
 }
+
+#[test]
+fn a_final_sigma_matches_with_or_without_md() {
+    let index = Index::new(["ΑΣ.md", "g/ΟΔΟΣ.md"]);
+    assert_eq!(resolve(&index, "a.md", "ΑΣ"), found("ΑΣ.md"));
+    assert_eq!(resolve(&index, "a.md", "ΑΣ.md"), found("ΑΣ.md"));
+    assert_eq!(resolve(&index, "a.md", "g/ΟΔΟΣ"), found("g/ΟΔΟΣ.md"));
+    assert_eq!(key("ΑΣ.md"), key("ΑΣ"));
+}
