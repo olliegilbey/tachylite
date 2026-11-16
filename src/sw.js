@@ -102,7 +102,7 @@ self.addEventListener("message", (e) => {
 
 const json = (value) => new Response(JSON.stringify(value), { headers: { "content-type": "application/json" } });
 
-// A page pushed to an open tab, stored with the headers of the copy it replaces, so its
+// A page pushed to an open browser tab, stored with the headers of the copy it replaces, so its
 // policy stays. The page has the HTML already, so the worker fetches nothing.
 async function store({ url, version, html }) {
   const cache = await caches.open(CACHE);

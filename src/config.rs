@@ -236,7 +236,7 @@ pub struct Config {
 /// What the page header shows. Every page holds it, so it comes from config alone.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Nav {
-    /// The site name.
+    /// The home page's name: its `<title>` and its screen-reader heading.
     pub title: Option<String>,
     /// Each a vault path, as written, with an optional `|label`.
     pub pins: Vec<String>,

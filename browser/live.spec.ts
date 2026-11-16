@@ -163,8 +163,8 @@ test("an HTTP error on the stream does not stop live updates", async ({ page, co
   await expect(page.locator("main")).toContainText("after error", { timeout: 15_000 });
 });
 
-// A browser allows six HTTP/1.1 connections per origin, so a hidden tab gives its stream up.
-test("a hidden tab closes its stream and catches up once visible", async ({ page }, info) => {
+// A browser allows six HTTP/1.1 connections per origin, so a hidden browser tab gives its stream up.
+test("a hidden browser tab closes its stream and catches up once visible", async ({ page }, info) => {
   const name = `hidden-${info.project.name}`;
   note(name, "# Hidden\n\nbefore hide\n");
   await open(page, name, "before hide");

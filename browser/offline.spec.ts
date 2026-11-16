@@ -268,7 +268,7 @@ test("an interrupted sync resumes, home and index pages first", async ({ page, c
   expect(fetched.filter(isNote)).toHaveLength(count - kept);
 });
 
-test("an open tab stores pushed pages, and syncs once visible again", async ({ page }) => {
+test("an open browser tab stores pushed pages, and syncs once visible again", async ({ page }) => {
   await visit(page, "/a");
   await synced(page);
   note("a", "# A\n\npushed text\n");

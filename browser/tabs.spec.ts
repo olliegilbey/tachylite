@@ -12,6 +12,8 @@ let server: Server | null = null;
 const TODAY = "/.tachylite/today";
 const RECENT = "/.tachylite/recent";
 const scale = Number(process.env.BUDGET_SCALE ?? "1");
+// The tab switch budget, in ms at 4x CPU. The design doc says how it was set.
+const BUDGET = 50;
 
 function note(name: string, body: string) {
   const path = join(dir, "vault", `${name}.md`);
@@ -322,6 +324,53 @@ test.describe("a swipe", () => {
     await right(page);
     await settled(page);
     await expect(page).toHaveURL(base + latest);
+  });
+
+  // The clock runs in the page, from the finger's release to the paint of the new tab's content.
+  test("switches tabs within budget", async ({ page }, info) => {
+    note(`days/${iso(-1)}`, "# latest\n\nyesterday's plan\n");
+    await expect.poll(async () => (await page.request.get(base + latest)).text()).not.toContain("mermaid");
+    await page.addInitScript(() => {
+      const gaps: number[] = ((window as any).gaps = []);
+      let released = 0;
+      addEventListener("touchend", () => (released = performance.now()), true);
+      // Element Timing reports a paint on an element that carried the attribute before it painted.
+      new MutationObserver(() => {
+        for (const e of document.querySelectorAll("main:not([elementtiming]), main :not([elementtiming])"))
+          e.setAttribute("elementtiming", "tab");
+      }).observe(document, { childList: true, subtree: true });
+      new PerformanceObserver((list) => {
+        const first = list.getEntries().find((e) => (e as any).renderTime > released);
+        if (released && first) gaps.push((first as any).renderTime - released);
+        if (first) released = 0;
+      }).observe({ type: "element" });
+    });
+    await page.goto(base + "/");
+    await synced(page, "/", TODAY, RECENT, latest);
+    await live(page, "/");
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
+    const round = [
+      [left, "Today", latest],
+      [left, "Recent", RECENT],
+      [right, "Today", latest],
+      [right, "Home", "/"],
+    ] as const;
+    for (let i = 0; i < 12; i++) {
+      // A reader rests on a tab before the next swipe: its stream is open and the page is idle.
+      await page.evaluate(
+        () => new Promise((r) => requestAnimationFrame(() => (window as any).scheduler.postTask(r, { priority: "background" }))),
+      );
+      const [gesture, tab, stream] = round[i % 4];
+      await gesture(page);
+      await page.waitForFunction((n) => (window as any).gaps.length === n, i + 1);
+      await shows(page, tab);
+      await live(page, stream);
+    }
+    const gaps: number[] = await page.evaluate(() => (window as any).gaps);
+    const median = [...gaps].sort((a, b) => a - b)[gaps.length >> 1];
+    console.log(`tab switch, ${info.project.name}, 4x CPU throttle: median ${median.toFixed(1)} ms of ${gaps.map((g) => g.toFixed(0))}`);
+    expect(median).toBeLessThanOrEqual(BUDGET * scale);
   });
 });
 

@@ -1,16 +1,23 @@
+import { cpSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { bench } from "./bench/bench";
 import { report } from "./bench/report";
 import { expect, run, test } from "./fixture";
 
 // The bench is not part of the gate, so this run keeps it working. A bench asserts no time.
-test("the client bench times a navigation, a first load, an in-page action and Back", async ({ browser }, info) => {
+test("the client bench times a navigation, a first load, an in-page action, Back and a tab switch", async ({ browser }, info) => {
   test.skip(info.project.name !== "phone", "the bench brings its own profiles");
   test.setTimeout(120_000);
-  const names = ["home-to-note", "note-first-load", "switcher-query", "back-to-home"];
+  const names = ["home-to-note", "note-first-load", "switcher-query", "back-to-home", "swipe-home-to-today", "tap-today-to-recent"];
+  // A daily note and its settings give the fixture vault a Today tab, as the bench's own vault has.
+  const vault = join(run, "bench-vault");
+  cpSync(join(__dirname, "..", "tests", "fixtures", "vault"), vault, { recursive: true });
+  mkdirSync(join(vault, "days"));
+  writeFileSync(join(vault, "days", "2020-01-01.md"), "# A day\n\nplans for the day\n");
+  writeFileSync(join(vault, "tachylite.toml"), 'daily = { folder = "days" }\n');
   const result = await bench(browser, {
     dir: join(run, "bench"),
-    vault: join(__dirname, "..", "tests", "fixtures", "vault"),
+    vault,
     binaries: [{ label: "suite" }],
     scenarios: names,
     profiles: ["phone-4x"],
