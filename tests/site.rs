@@ -2177,11 +2177,12 @@ fn pins_come_from_config_alone() {
         ("people/Jane Doe.md", "---\ntitle: Jane\n---\nx"),
         ("maps/route.html", "<p>map</p>"),
         ("a.md", "a"),
+        ("img/x.png", "png"),
         ("private/p.md", HUSHED),
     ]);
     let mut site = Site::new(hush());
     site.set_nav(nav(
-        "title = \"Notes & co\"\npins = [\"people/Jane Doe.md\", \"people/|Team\", \"maps/route.html\", \"private/p.md\", \"gone.md\"]",
+        "title = \"Notes & co\"\npins = [\"people/Jane Doe.md\", \"people/|Team\", \"maps/route.html\", \"private/p.md\", \"gone.md\", \"img\"]",
     ));
     let mut out = Out::new();
     let delta = site.apply(vec![sync_all(&mem)], &mut mem);
@@ -2193,7 +2194,8 @@ fn pins_come_from_config_alone() {
         page.contains(
             "<nav class=\"pins\"><a href=\"/people/Jane%20Doe\">Jane Doe</a>\
          <a href=\"/.tachylite/folders/people\">Team</a>\
-         <a href=\"/maps/route.html\">route</a><a href=\"/gone\">gone</a></nav>"
+         <a href=\"/maps/route.html\">route</a><a href=\"/gone\">gone</a>\
+         <a href=\"/.tachylite/folders/img\">img</a></nav>"
         ),
         "{page}"
     );
@@ -2207,7 +2209,11 @@ fn pins_come_from_config_alone() {
         notices.contains("\"gone.md\" matches no published"),
         "{notices}"
     );
-    assert_eq!(delta.notices.len(), 2, "{notices}");
+    assert!(
+        notices.contains("\"img\" matches no published"),
+        "{notices}"
+    );
+    assert_eq!(delta.notices.len(), 3, "{notices}");
 
     // Retitling a pinned note changes its own page, and no other note's.
     mem.0.insert(

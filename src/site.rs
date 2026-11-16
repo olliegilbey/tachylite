@@ -569,12 +569,17 @@ impl Site {
     }
 
     /// Whether a published path lies under `folder`.
+    /// Whether a published note or html page lies under `folder`, so it has an index.
     fn holds(&self, folder: &str) -> bool {
         let prefix = format!("{folder}/");
         self.winners
             .range(prefix.clone()..)
-            .next()
-            .is_some_and(|p| p.starts_with(&prefix))
+            .take_while(|p| p.starts_with(&prefix))
+            .any(|p| self.entries.get(p).is_some_and(|k| *k != Kind::Asset))
+    }
+
+    pub fn nav(&self) -> &Nav {
+        &self.nav
     }
 
     pub fn exclude(&self) -> &Exclude {

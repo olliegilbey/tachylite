@@ -256,3 +256,12 @@ test("five pins keep the header on its lines and the page its width", async ({ p
   await page.locator("header .pins a", { hasText: "Aye" }).click();
   await expect(page).toHaveURL(base + "/a");
 });
+
+test("Today opens a daily note made since the last sync", async ({ page }) => {
+  await daily(page);
+  await synced(page, "/a", "/.tachylite/today");
+  note(`days/${iso(0)}`, "# today\n\ntoday's plan\n");
+  await expect.poll(async () => (await page.request.get(base + "/.tachylite/today")).text()).toContain(iso(0));
+  await page.goto(base + "/.tachylite/today");
+  await expect(page).toHaveURL(base + `/days/${iso(0)}`);
+});

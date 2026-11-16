@@ -1121,3 +1121,24 @@ fn a_pin_saved_to_config_reaches_open_pages() {
         "{html}"
     );
 }
+
+#[test]
+fn an_obsidian_folder_made_after_start_is_read() {
+    let (d, server) = with_notes(&[("a.md", "# a"), ("j/2026-11-02.md", "b")]);
+    assert_eq!(server.get("/.tachylite/today").status, 404);
+    let mut events = server.subscribe("/a", &version(&server, "/a"), None);
+    fs::create_dir(d.vault().join(".obsidian")).unwrap();
+    fs::write(
+        d.vault().join(".obsidian/daily-notes.json"),
+        "{\"folder\":\"j\"}",
+    )
+    .unwrap();
+    let html = events.expect("page").data;
+    assert!(html.contains("/.tachylite/today"), "{html}");
+    assert!(
+        server
+            .get("/.tachylite/today")
+            .text()
+            .contains("/j/2026-11-02")
+    );
+}

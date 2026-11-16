@@ -14,7 +14,7 @@ use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::fs::inotify::{self, CreateFlags, ReadFlags, WatchFlags};
 use tokio::sync::broadcast;
 
-use crate::config::{self, Config, Exclude};
+use crate::config::{self, Config, Exclude, Nav};
 use crate::output::Writer;
 use crate::site::{Change, Note, Push, Site, Source};
 use crate::vault::{ReadError, VaultDir, classify, hold, scan_under};
@@ -299,6 +299,17 @@ impl Watcher {
                 continue;
             }
             let Some(name) = event.name else { continue };
+            // Obsidian's folder may come or go while the server runs.
+            if dir.is_empty() && name == ".obsidian" {
+                if event
+                    .flags
+                    .intersects(ReadFlags::CREATE | ReadFlags::MOVED_TO)
+                {
+                    self.watch_obsidian();
+                }
+                daily = true;
+                continue;
+            }
             if Exclude::segment(name.as_bytes()) {
                 continue;
             }
@@ -364,7 +375,7 @@ impl Watcher {
             paths.insert(path);
         }
         if reload {
-            let previous = self.site.exclude().clone();
+            let previous = (self.site.exclude().clone(), self.site.nav().clone());
             if self.reload_config()? == Reload::Loaded {
                 return self.resync_reloaded(previous, removed);
             }
@@ -501,12 +512,13 @@ impl Watcher {
     /// stalled in between got past the reload's check. The rescan gave it time to queue.
     fn resync_reloaded(
         &mut self,
-        previous: Exclude,
+        (exclude, nav): (Exclude, Nav),
         removed: HashSet<String>,
     ) -> Result<(Vec<Change>, HashSet<String>), Error> {
         let (changes, removed) = self.resync(removed)?;
         if self.config_written()? {
-            self.site.set_exclude(previous);
+            self.site.set_exclude(exclude);
+            self.site.set_nav(nav);
             return self.resync(removed);
         }
         report::unmatched(&self.site.exclude().unmatched());
@@ -572,19 +584,23 @@ impl Watcher {
 
     /// Adds a watch to `rel` and every published folder below it. A folder that vanished
     /// or cannot be read is left to the scan to report.
+    /// Obsidian's daily-notes settings name the Today page's notes. The folder is never
+    /// published, so its watch only reports changes to that file. A vault may have none.
+    fn watch_obsidian(&mut self) {
+        let obsidian = self.vault.root().join(".obsidian");
+        if let Ok(wd) = inotify::add_watch(&self.inotify, &obsidian, MASK) {
+            self.dirs.insert(wd, ".obsidian".to_string());
+        }
+    }
+
     fn watch_tree(&mut self, rel: &str) -> Result<(), Error> {
         let path = self.vault.root().join(rel);
         let mask = if rel.is_empty() { ROOT_MASK } else { MASK };
         match inotify::add_watch(&self.inotify, &path, mask) {
             Ok(wd) => {
                 self.dirs.insert(wd, rel.to_string());
-                // Obsidian's daily-notes settings name the Today page's notes. The folder is
-                // never published, so this watch only reports changes to that file.
                 if rel.is_empty() {
-                    let obsidian = path.join(".obsidian");
-                    if let Ok(wd) = inotify::add_watch(&self.inotify, &obsidian, MASK) {
-                        self.dirs.insert(wd, ".obsidian".to_string());
-                    }
+                    self.watch_obsidian();
                 }
             }
             Err(e) if rel.is_empty() || e == rustix::io::Errno::NOSPC => {
@@ -803,7 +819,9 @@ mod tests {
         assert_eq!(watcher.reload_config().unwrap(), Reload::Loaded);
         // A write that slipped past the reload's check, queued by the rescan's end.
         fs::write(&toml, "# half\n").unwrap();
-        watcher.resync_reloaded(previous, HashSet::new()).unwrap();
+        watcher
+            .resync_reloaded((previous, Nav::default()), HashSet::new())
+            .unwrap();
         assert!(watcher.site.exclude().path("d/n.md"));
     }
 

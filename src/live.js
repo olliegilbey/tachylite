@@ -1,13 +1,23 @@
 // Live updates: swap in pushed pages, catch up after a lost connection.
 (() => {
   // The Today page lists daily notes newest first, each with its date. Only this device knows
-  // its own today, so it opens the newest dated on or before it. Back skips the list.
+  // its own today, so it opens the newest dated on or before it. Back skips the list. The
+  // cached list can predate a note made since the last sync, so the network's comes first,
+  // if it answers quickly.
   if (location.pathname === "/.tachylite/today") {
     const d = new Date();
     const p = (n) => String(n).padStart(2, "0");
     const today = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-    const a = [...document.querySelectorAll("main a[data-date]")].find((a) => a.dataset.date <= today);
-    if (a) return location.replace(a.href);
+    const pick = (doc) =>
+      [...doc.querySelectorAll("main a[data-date]")].find((a) => a.dataset.date <= today);
+    fetch(location.pathname, { cache: "no-cache", signal: AbortSignal.timeout?.(1500) })
+      .then((r) => (r.ok ? r.text() : Promise.reject()))
+      .then((html) => pick(new DOMParser().parseFromString(html, "text/html")))
+      .catch(() => null)
+      .then((a) => {
+        a ??= pick(document);
+        if (a) location.replace(a.getAttribute("href"));
+      });
   }
 
   // Mermaid loads only once a page shows a diagram, and draws again after each swap.
@@ -193,7 +203,8 @@
       current.replaceWith(main);
       // A config change moves the header: the site name, Today and the pins.
       const header = next.querySelector("header");
-      if (header) document.querySelector("header")?.replaceWith(header);
+      const shown = document.querySelector("header");
+      if (header && shown && header.outerHTML !== shown.outerHTML) shown.replaceWith(header);
       document.title = next.title;
       meta.content = e.lastEventId;
       diagrams();
