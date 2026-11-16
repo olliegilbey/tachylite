@@ -23,8 +23,12 @@ export type Vars = {
 export type Action =
   /** A plain navigation, as a tapped link makes. */
   | { go: string }
-  /** Any script: a tap, typed text, a swipe. It runs alone in the page, so it sees no outer variable. */
-  | { run: (vars: Vars) => void };
+  /** Any script: a tap, typed text. It runs alone in the page, so it sees no outer variable. */
+  | { run: (vars: Vars) => void }
+  /** A tap on the header's tab for this path. */
+  | { tap: string }
+  /** One finger swiped across the middle of the page. To the left opens the tab to the right. The clock starts at the release. */
+  | { swipe: "left" | "right" };
 
 /** The milestone that ends the clock. */
 export type Until =
@@ -33,7 +37,9 @@ export type Until =
   /** The first paint of text or an image in an element the action added, matched by this selector. */
   | { paint: string }
   /** The page at this path, back on screen from the back/forward cache. */
-  | { restore: string };
+  | { restore: string }
+  /** The first paint of the tab page at this path, whether a new document brings it or the client puts it in place. */
+  | { tab: string };
 
 /**
  * A warm scenario runs the cached path. Before each sample the service worker controls
@@ -57,6 +63,18 @@ export type Warm = {
 export type First = { name: string; first: string };
 
 export type Scenario = Warm | First;
+
+const HOME = "/";
+const TODAY = "/.tachylite/today";
+const RECENT = "/.tachylite/recent";
+
+/** A switch from one tab page to the one beside it, by swipe and by tap. */
+function switches(from: string, start: string, to: string, tab: string, swipe: "left" | "right"): Scenario[] {
+  return [
+    { name: `swipe-${from}-to-${to}`, start, action: { swipe }, until: { tab } },
+    { name: `tap-${from}-to-${to}`, start, action: { tap: tab }, until: { tab } },
+  ];
+}
 
 export const scenarios: Scenario[] = [
   { name: "home-to-recent", start: "/", action: { go: "/.tachylite/recent" } },
@@ -83,4 +101,8 @@ export const scenarios: Scenario[] = [
     action: { run: () => history.back() },
     until: { restore: "/" },
   },
+  ...switches("home", HOME, "today", TODAY, "left"),
+  ...switches("today", TODAY, "home", HOME, "right"),
+  ...switches("today", TODAY, "recent", RECENT, "left"),
+  ...switches("recent", RECENT, "today", TODAY, "right"),
 ];
