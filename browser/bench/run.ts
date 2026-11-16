@@ -56,6 +56,7 @@ test("client bench", async ({ browser }) => {
       samples: Math.round(number("BENCH_SAMPLES", 30, 1)),
       warmup: 2,
       minIdle: number("BENCH_MIN_IDLE", 0.3, 0),
+      jitter: 16,
       log: (line) => console.error(line),
     });
     mkdirSync(results, { recursive: true });

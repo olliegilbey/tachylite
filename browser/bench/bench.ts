@@ -23,6 +23,8 @@ export type Options = {
   warmup: number;
   /** A sample taken with a smaller share of the host's CPU idle is dropped, and taken again. */
   minIdle: number;
+  /** The longest random wait before a sample's clock starts, in ms. Zero starts it at once. */
+  jitter: number;
   log?: (line: string) => void;
 };
 
@@ -78,7 +80,7 @@ export async function bench(browser: Browser, o: Options): Promise<Result> {
             for (const { session, cell } of row) {
               if (done(cell)) continue;
               const what = `${cell.scenario} on ${cell.profile}, ${cell.binary}`;
-              const got = await within(sample(browser, profile, session, scenario, vars), what);
+              const got = await within(sample(browser, profile, session, scenario, vars, o.jitter), what);
               if (session.errors.length) throw new Error(`${what}: the page threw: ${session.errors.join("; ")}`);
               if ("skip" in got) cell.skipped = got.skip;
               else if (turn >= 0) cell.samples.push(got);
@@ -243,15 +245,15 @@ const call = (fn: Function, action: string, ...data: unknown[]) =>
   `(${fn})(${[action, ...data.map((d) => JSON.stringify(d))].join(", ")})`;
 
 /** In the page: starts the clock, then acts. */
-async function act(run: (vars: Vars) => void, vars: Vars, key: string) {
+async function act(run: (vars: Vars) => void, vars: Vars, key: string, jitter: number) {
   // A real tap lands anywhere in a frame, so the clock starts at a random point in one.
-  await new Promise((r) => setTimeout(r, Math.random() * 16));
+  if (jitter) await new Promise((r) => setTimeout(r, Math.random() * jitter));
   sessionStorage.setItem(key, String(performance.timeOrigin + performance.now()));
   run(vars);
 }
 
 /** In the page: starts the clock, acts, and times the first paint inside a new match of `selector`. */
-async function paint(run: (vars: Vars) => void, vars: Vars, selector: string) {
+async function paint(run: (vars: Vars) => void, vars: Vars, selector: string, jitter: number) {
   const old = new Set(document.querySelectorAll(selector));
   let dom = 0;
   // Element Timing reports a paint on an element that carried the attribute before it painted.
@@ -274,7 +276,7 @@ async function paint(run: (vars: Vars) => void, vars: Vars, selector: string) {
       resolve((first as any).renderTime);
     }).observe({ type: "element" });
   });
-  await new Promise((r) => setTimeout(r, Math.random() * 16));
+  if (jitter) await new Promise((r) => setTimeout(r, Math.random() * jitter));
   const from = performance.now();
   run(vars);
   mark();
@@ -321,9 +323,9 @@ function awaitRestore() {
 
 const tenth = (ms: number) => Math.round(ms * 10) / 10;
 
-async function sample(browser: Browser, profile: Profile, s: Session, scenario: Scenario, vars: Vars): Promise<Sample | Skip> {
+async function sample(browser: Browser, profile: Profile, s: Session, scenario: Scenario, vars: Vars, jitter: number): Promise<Sample | Skip> {
   if ("first" in scenario) return first(browser, profile, s, fill(scenario.first, vars));
-  return warm(s, scenario, vars);
+  return warm(s, scenario, vars, jitter);
 }
 
 async function first(browser: Browser, profile: Profile, s: Session, path: string): Promise<Sample> {
@@ -346,7 +348,7 @@ async function first(browser: Browser, profile: Profile, s: Session, path: strin
   }
 }
 
-async function warm(s: Session, scenario: Warm, vars: Vars): Promise<Sample | Skip> {
+async function warm(s: Session, scenario: Warm, vars: Vars, jitter: number): Promise<Sample | Skip> {
   const { page } = s;
   const action = scenario.action;
   const until: Until | undefined = scenario.until ?? ("go" in action ? { navigation: action.go } : undefined);
@@ -360,7 +362,7 @@ async function warm(s: Session, scenario: Warm, vars: Vars): Promise<Sample | Sk
 
   if ("paint" in until) {
     const from = cpu();
-    const at: { ms: number; dom: number } = await page.evaluate(call(paint, run, vars, fill(until.paint, vars)));
+    const at: { ms: number; dom: number } = await page.evaluate(call(paint, run, vars, fill(until.paint, vars), jitter));
     return { ms: tenth(at.ms), idle: idleSince(from), dom: tenth(at.dom) };
   }
 
@@ -369,7 +371,7 @@ async function warm(s: Session, scenario: Warm, vars: Vars): Promise<Sample | Sk
   const from = cpu();
   const there = ahead(page.waitForURL((url) => url.pathname === to, { waitUntil: "restore" in until ? "commit" : "load" }));
   // The navigation can take the page away before the call returns.
-  await page.evaluate(call(act, run, vars, KEY)).catch((e: Error) => {
+  await page.evaluate(call(act, run, vars, KEY, jitter)).catch((e: Error) => {
     if (!e.message.includes("context was destroyed")) throw e;
   });
   await there;

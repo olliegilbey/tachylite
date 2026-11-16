@@ -113,7 +113,7 @@ Full Chromium and the headless shell give different numbers for the same scenari
 - **CPU throttling reaches the page only.** The service worker and the browser process run at full speed. So **Response end** is optimistic for a phone.
 - **The network is localhost.** A first load pays no latency and no bandwidth limit. No profile limits the network yet. CDP's `Network.emulateNetworkConditions` can, for a question that needs it.
 - **The clock starts in the page's script.** The browser's own handling of a touch, before the script sees it, is not counted.
-- **The clock starts at a random point in a frame.** A paint lands on a frame, 16.7 ms apart. A real tap comes at any point between two. So each sample waits a random time of up to 16 ms before it starts, and the frame grid averages out over the samples.
+- **The clock starts at a random point in a frame.** A paint lands on a frame, 16.7 ms apart. A real tap comes at any point between two. So each sample waits a random time of up to 16 ms before it starts, and the frame grid averages out over the samples. The smoke run in the browser suite takes one sample and skips the wait, so the suite waits on no timer.
 - **Paint times come in steps of about 4 ms.** Chromium rounds them. A median can sit on a step, with the 90th percentile on the same one.
 - **A restored page reports no paint.** The second frame after `pageshow` stands in for it, so a Back time is good to about one frame.
 - **Headless Chromium on a desktop CPU is no phone.** Trust the bench for the order of two candidates and the size of the gap, not for the time a reader will see.

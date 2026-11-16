@@ -17,6 +17,8 @@ test("the client bench times a navigation, a first load, an in-page action and B
     samples: 1,
     warmup: 0,
     minIdle: 0,
+    // One sample has no frame grid to average out, and the suite waits on no timer.
+    jitter: 0,
   });
   expect(result.cells.map((c) => [c.scenario, c.profile, c.binary])).toEqual(
     names.map((name) => [name, "phone-4x", "suite"]),
