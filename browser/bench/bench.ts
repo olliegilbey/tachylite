@@ -126,7 +126,12 @@ async function variables(base: string): Promise<Vars> {
   return { note, query: title.slice(0, 3).toLowerCase() };
 }
 
-const fill = (text: string, vars: Vars) => text.replace(/\{(\w+)\}/g, (_, name: keyof Vars) => vars[name]);
+function fill(text: string, vars: Vars): string {
+  return text.replace(/\{(\w+)\}/g, (_, name: keyof Vars) => {
+    if (!(name in vars)) throw new Error(`no variable named ${name} for ${text}`);
+    return vars[name];
+  });
+}
 
 /** The bytes of a client file as the server sends it to a client that takes gzip. */
 function gzipped(url: string): Promise<number> {
@@ -138,13 +143,19 @@ function gzipped(url: string): Promise<number> {
   });
 }
 
+/** A promise that may lose a race. If it rejects after the run has failed, it adds no second error. */
+function ahead<T>(wait: Promise<T>): Promise<T> {
+  wait.catch(() => {});
+  return wait;
+}
+
 /** A sample that hangs names its cell and fails the run, rather than holding it for ever. */
 function within<T>(sample: Promise<T>, what: string): Promise<T> {
   let timer: NodeJS.Timeout;
   const late = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new Error(`${what}: no result within 60 s`)), 60_000);
   });
-  return Promise.race([sample, late]).finally(() => clearTimeout(timer));
+  return Promise.race([ahead(sample), late]).finally(() => clearTimeout(timer));
 }
 
 /** The host's CPU time so far, summed over its cores. */
@@ -196,12 +207,6 @@ async function open(browser: Browser, profile: Profile, label: string, base: str
   const cdp = await context.newCDPSession(page);
   await cdp.send("Emulation.setCPUThrottlingRate", { rate: profile.cpu });
   return { label, base, context, page, quiet, errors };
-}
-
-/** A wait begun before its cause. If the sample throws first, the wait must not add an error of its own. */
-function ahead<T>(wait: Promise<T>): Promise<T> {
-  wait.catch(() => {});
-  return wait;
 }
 
 /** The worker's next fetch of the manifest: a page asks for a sync each time its event stream opens. */
@@ -312,14 +317,15 @@ function awaitRestore() {
 const round = (ms: number) => Math.round(ms * 10) / 10;
 
 async function sample(browser: Browser, profile: Profile, s: Session, scenario: Scenario, vars: Vars): Promise<Sample | Skip> {
-  if ("first" in scenario) return first(browser, profile, s.base, fill(scenario.first, vars));
+  if ("first" in scenario) return first(browser, profile, s, fill(scenario.first, vars));
   return warm(s, scenario, vars);
 }
 
-async function first(browser: Browser, profile: Profile, base: string, path: string): Promise<Sample> {
-  const context = await browser.newContext({ ...profile.device, baseURL: base, serviceWorkers: "block" });
+async function first(browser: Browser, profile: Profile, s: Session, path: string): Promise<Sample> {
+  const context = await browser.newContext({ ...profile.device, baseURL: s.base, serviceWorkers: "block" });
   try {
     const page = await context.newPage();
+    page.on("pageerror", (e) => s.errors.push(e.message));
     const cdp = await context.newCDPSession(page);
     await cdp.send("Emulation.setCPUThrottlingRate", { rate: profile.cpu });
     const from = cpu();

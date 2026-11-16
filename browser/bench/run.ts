@@ -42,7 +42,7 @@ test("client bench", async ({ browser }) => {
     const vault = join(dir, "vault");
     execFileSync(join(repo, "target", "release", "examples", "budget_vault"), [vault], { stdio: ["ignore", "ignore", "pipe"] });
     const result = await bench(browser, {
-      dir,
+      dir: join(dir, "serve"),
       vault,
       binaries: binaries(),
       scenarios: list("BENCH_SCENARIOS"),
