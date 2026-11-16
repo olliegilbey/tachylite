@@ -1896,7 +1896,13 @@ fn a_full_build_past_the_held_bodies_equals_small_applies() {
         .map(|(p, c)| (p.as_str(), c.as_str()))
         .collect();
     let mut mem = Mem::with(&pairs);
-    let (want, _) = full(&mem);
+    let (want, delta) = full(&mem);
+    // The first page was written before its backlinks were final, then again.
+    let written = delta
+        .writes
+        .iter()
+        .filter(|w| matches!(w, Write::Page { out, .. } if out == "pages/n000.html"));
+    assert_eq!(written.count(), 2);
     let first = String::from_utf8_lossy(&want["pages/n000.html"]).into_owned();
     assert_eq!(first.matches("<li><a href=").count(), 299);
 

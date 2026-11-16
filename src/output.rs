@@ -171,6 +171,9 @@ impl<F: FnMut(Push)> Sink for Writer<'_, F> {
 
 /// The push key of the page at `rel`, an output path under `pages/`.
 fn page_key(rel: &str) -> String {
+    if rel == "pages/.tachylite/home.html" {
+        return String::new();
+    }
     let key = rel.strip_prefix("pages/").unwrap_or(rel);
     let key = key
         .strip_suffix("/.index.html")
@@ -218,5 +221,9 @@ fn write_via_tmp(path: &Path, write: impl FnOnce(&Path) -> io::Result<()>) -> Re
     fs::create_dir_all(parent).map_err(io_err(parent))?;
     let tmp = parent.join(".tmp");
     write(&tmp).map_err(io_err(&tmp))?;
-    fs::rename(&tmp, path).map_err(io_err(path))
+    fs::rename(&tmp, path).map_err(|e| {
+        // A name the filesystem refuses fails here, after the temp file is written.
+        let _ = fs::remove_file(&tmp);
+        io_err(path)(e)
+    })
 }

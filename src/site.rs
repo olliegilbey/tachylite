@@ -174,7 +174,8 @@ impl Done {
     }
 }
 
-/// The rendered body bytes an apply holds. A full sync past it writes its oldest pages early,
+/// The rendered body bytes an apply holds after each render batch, so it holds at most this
+/// plus one batch. A full sync past it writes its oldest pages early,
 /// and a page whose backlinks change after takes its new footer from the written page. So a
 /// vault of any size builds in bounded memory, and a small one writes each page once.
 const HOLD_MAX: usize = 12 * 1024 * 1024;
