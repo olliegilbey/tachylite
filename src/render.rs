@@ -526,11 +526,9 @@ fn render(
         let mut tag = open(&mut body, from, index, &path, heading.as_deref());
         if let NodeValue::Link(link) = &node.data().value
             && !link.title.is_empty()
+            && let Some(start) = tag.strip_suffix('>')
         {
-            tag.insert_str(
-                tag.len() - 1,
-                &format!(" title=\"{}\"", escape(&link.title)),
-            );
+            tag = format!("{start} title=\"{}\">", escape(&link.title));
         }
         rewrites.push((node, tag));
     }
@@ -651,33 +649,56 @@ fn line_starts(md: &str) -> Vec<usize> {
 }
 
 /// For each `#` in a text node, whether the note wrote it as `#` rather than as a character
-/// reference such as `&#35;`. `None` when the node's source does not account for each `#`.
+/// reference such as `&#35;`. `None` when the note's text is not found.
 fn literal_hashes(md: &str, lines: &[usize], node: &AstNode<'_>) -> Option<Vec<bool>> {
-    let pos = node.data().sourcepos;
     let NodeValue::Text(text) = &node.data().value else {
         return None;
     };
-    if pos.start.line != pos.end.line {
-        return None;
-    }
-    let line = *lines.get(pos.start.line.checked_sub(1)?)?;
-    let mut rest = md.get(line + pos.start.column.checked_sub(1)?..line + pos.end.column)?;
+    let pos = node.data().sourcepos.start;
+    // After a link title that spans lines, comrak's position falls short of the text.
+    let from = lines
+        .get(pos.line.saturating_sub(1))
+        .map_or(0, |line| line + pos.column.saturating_sub(1))
+        .min(md.len());
+    (from..md.len())
+        .filter(|&at| md.is_char_boundary(at))
+        .find_map(|at| spelled(&md[at..], text))
+}
+
+/// For each `#` in `text`, whether `src` starts with `text` written with that `#` as itself.
+/// A reference stands for the one character in its place.
+fn spelled(mut src: &str, text: &str) -> Option<Vec<bool>> {
     let mut literal = Vec::new();
-    while let Some(at) = rest.find(['#', '&']) {
-        rest = &rest[at..];
-        if rest.starts_with('#') {
-            literal.push(true);
-            rest = &rest[1..];
-        } else if let Some((len, hash)) = reference(rest) {
+    for (i, c) in text.char_indices() {
+        if src.starts_with(&text[i..]) {
+            literal.extend(text[i..].matches('#').map(|_| true));
+            return Some(literal);
+        }
+        if let Some((len, hash)) = reference(src) {
+            if (c == '#') != hash {
+                return None;
+            }
             if hash {
                 literal.push(false);
             }
-            rest = &rest[len..];
+            src = &src[len..];
+        } else if let Some(len) = named(src) {
+            src = &src[len..];
         } else {
-            rest = &rest[1..];
+            src = src.strip_prefix(c)?;
+            if c == '#' {
+                literal.push(true);
+            }
         }
     }
-    (literal.len() == text.matches('#').count()).then_some(literal)
+    Some(literal)
+}
+
+/// The length of the named character reference, such as `&amp;`, that `s` starts with.
+fn named(s: &str) -> Option<usize> {
+    let name = s.strip_prefix('&')?;
+    let n = name.bytes().take_while(u8::is_ascii_alphanumeric).count();
+    (n > 0 && name.as_bytes().get(n) == Some(&b';')).then_some(n + 2)
 }
 
 /// The length of the numeric character reference or `&num;` that `s` starts with, and

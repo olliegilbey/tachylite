@@ -1224,6 +1224,17 @@ fn a_character_reference_writes_a_hash_but_no_tag() {
     ] {
         assert!(body.html.contains(text), "{text} not in {}", body.html);
     }
+    // A link title over two lines shifts the parser's positions on the lines after it.
+    let body = render_body(
+        "a.md",
+        "text [l](b.md \"multi\nline title\")\nnext &#35;a &amp; &#35;m #b\n",
+        &Index::default(),
+        &Sources::new(),
+    );
+    assert_eq!(
+        body.tags.iter().map(String::as_str).collect::<Vec<_>>(),
+        ["b"]
+    );
 }
 
 #[test]

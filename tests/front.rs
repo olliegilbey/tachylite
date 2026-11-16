@@ -167,11 +167,12 @@ fn a_byte_order_mark_before_the_fence_keeps_the_frontmatter() {
 #[test]
 fn a_flow_list_may_end_in_a_comment() {
     assert_eq!(
-        pairs("tags: [a, b] # c\nx: [a]   #c\nodd: [a]b]\n"),
+        pairs("tags: [a, b] # c\nx: [a]   #c\nodd: [a]b]\nq: [\"x] #y\", z] # c\n"),
         vec![
             kv("tags", list(&["a", "b"])),
             kv("x", list(&["a"])),
             kv("odd", list(&["a]b"])),
+            kv("q", list(&["x] #y", "z"])),
         ]
     );
 }
@@ -184,6 +185,10 @@ fn comment_lines_in_a_nested_block_are_dropped() {
             kv("place", text("city: Lisbon\nzip: 1000")),
             kv("l", list(&["a", "b"])),
         ]
+    );
+    assert_eq!(
+        pairs("place:\n  note: |\n    # heading\n    body\n"),
+        vec![kv("place", text("note: |\n  # heading\n  body"))]
     );
 }
 

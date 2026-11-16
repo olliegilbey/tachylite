@@ -113,11 +113,21 @@ fn flow(value: &str) -> Option<&str> {
     if let Some(inner) = inner.strip_suffix(']') {
         return Some(inner);
     }
-    let close = inner.match_indices(']').find(|&(at, _)| {
-        let after = &inner[at + 1..];
-        after.starts_with([' ', '\t']) && after.trim_start().starts_with('#')
-    })?;
-    Some(&inner[..close.0])
+    let mut quote = None;
+    for (at, c) in inner.char_indices() {
+        match (quote, c) {
+            (None, '"' | '\'') => quote = Some(c),
+            (Some(q), c) if c == q => quote = None,
+            (None, ']') => {
+                let after = &inner[at + 1..];
+                if after.starts_with([' ', '\t']) && after.trim_start().starts_with('#') {
+                    return Some(&inner[..at]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// `key: rest`, split at the first colon followed by a space, a tab or the line end, and
@@ -152,13 +162,21 @@ fn closing_quote(line: &str, q: u8) -> Option<usize> {
     None
 }
 
-/// A block under an empty value: a list if every line is an item, else raw text. Comment
-/// lines are neither.
+/// A block under an empty value: a list if every line is an item, else raw text. A comment
+/// line at the block's indent is neither; a deeper one may be a block scalar's text.
 fn nested(block: &[&str]) -> Value {
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let comment = |l: &str| l.trim_start().starts_with('#');
+    let base = block
+        .iter()
+        .filter(|l| !l.trim().is_empty() && !comment(l))
+        .map(|l| indent(l))
+        .min()
+        .unwrap_or(0);
     let lines: Vec<&str> = block
         .iter()
         .copied()
-        .filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))
+        .filter(|l| !l.trim().is_empty() && !(comment(l) && indent(l) <= base))
         .collect();
     if lines.is_empty() {
         return Value::Text(String::new());
