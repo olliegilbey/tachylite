@@ -16,7 +16,13 @@ use crate::vault::{ReadError, SkipReason, VaultDir};
 
 pub const FILE: &str = "tachylite.toml";
 
-/// The top-level keys the design names. `daily`, `pins` and `title` are read by later slices.
+/// Where Obsidian keeps its daily-notes settings. It is read, never published.
+pub const DAILY_NOTES: &str = ".obsidian/daily-notes.json";
+
+/// Obsidian's default daily-note format.
+const DAILY_FORMAT: &str = "YYYY-MM-DD";
+
+/// The top-level keys the design names.
 const KEYS: [&str; 5] = ["exclude", "daily", "pins", "title", "hosts"];
 
 // The publish list ignores case, so an exclusion must too, or `Day.MD` slips past `*.md`.
@@ -43,6 +49,10 @@ pub enum ConfigError {
         table: String,
     },
     NotStrings(&'static str),
+    NotString(&'static str),
+    /// A key inside `daily` other than `folder` and `format`.
+    DailyKey(String),
+    DailyTable,
     BadGlob {
         glob: String,
         message: String,
@@ -70,6 +80,14 @@ impl fmt::Display for ConfigError {
                 "exclude sits inside [{table}], where it does nothing; move it above the first table"
             ),
             ConfigError::NotStrings(key) => write!(f, "{key} must be a list of strings"),
+            ConfigError::NotString(key) => write!(f, "{key} must be a string"),
+            ConfigError::DailyTable => f.write_str(
+                "daily must be a table, as daily = { folder = \"journal\", format = \"YYYY-MM-DD\" }",
+            ),
+            ConfigError::DailyKey(key) => write!(
+                f,
+                "unknown key daily.{key}; daily takes folder and format, as strings"
+            ),
             ConfigError::BadGlob { glob, message } => write!(f, "exclude {glob:?}: {message}"),
             ConfigError::EmptyGlob(glob) => {
                 write!(f, "exclude {glob:?}: names no file or folder")
@@ -142,6 +160,16 @@ impl Exclude {
 
     /// True when the path, or any folder above it, is excluded.
     pub fn path(&self, rel: &str) -> bool {
+        self.hides(rel, true)
+    }
+
+    /// Like `path`, but marks no pattern as matched: for a path named in config, which
+    /// may name no file.
+    pub fn covers(&self, rel: &str) -> bool {
+        self.hides(rel, false)
+    }
+
+    fn hides(&self, rel: &str, mark: bool) -> bool {
         if rel.split('/').any(|s| Exclude::segment(s.as_bytes())) {
             return true;
         }
@@ -152,6 +180,9 @@ impl Exclude {
         for p in prefixes.chain([rel]) {
             for g in &self.globs {
                 if g.pattern.matches_with(p, MATCH) {
+                    if !mark {
+                        return true;
+                    }
                     g.hit.store(true, Ordering::Relaxed);
                     excluded = true;
                 }
@@ -199,6 +230,118 @@ pub struct Config {
     pub exclude: Exclude,
     /// The names the server answers besides `127.0.0.1` and `localhost`. `None` answers any.
     pub hosts: Option<Vec<String>>,
+    pub nav: Nav,
+}
+
+/// What the page header shows. Every page holds it, so it comes from config alone.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Nav {
+    /// The site name.
+    pub title: Option<String>,
+    /// Each a vault path, as written, with an optional `|label`.
+    pub pins: Vec<String>,
+    /// Overrides Obsidian's daily-notes settings.
+    pub daily: Option<Daily>,
+}
+
+/// Where daily notes live and how they are named.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Daily {
+    /// The folder, from the vault root, with no leading or trailing `/`.
+    pub folder: String,
+    /// A Moment.js format, as Obsidian writes it.
+    pub format: String,
+}
+
+impl Daily {
+    fn new(folder: &str, format: &str) -> Daily {
+        let format = if format.is_empty() {
+            DAILY_FORMAT
+        } else {
+            format
+        };
+        Daily {
+            folder: folder.trim_matches('/').to_string(),
+            format: format.to_string(),
+        }
+    }
+}
+
+/// Reads Obsidian's daily-notes settings, or `None` when they are missing or unreadable.
+pub fn obsidian_daily(vault: &VaultDir) -> Option<Daily> {
+    let bytes = vault.read(DAILY_NOTES).ok()?;
+    let pairs = json_strings(std::str::from_utf8(&bytes).ok()?)?;
+    let get = |key: &str| {
+        pairs
+            .iter()
+            .find(|(k, _)| k == key)
+            .map_or("", |(_, v)| v.as_str())
+    };
+    Some(Daily::new(get("folder"), get("format")))
+}
+
+/// The string members of a flat JSON object, or `None` if the text is not one. Other values
+/// are skipped. Obsidian writes this file; a JSON crate would cost more than the parse.
+fn json_strings(text: &str) -> Option<Vec<(String, String)>> {
+    let mut chars = text.trim().strip_prefix('{')?.chars().peekable();
+    let mut pairs = Vec::new();
+    let skip_ws = |chars: &mut std::iter::Peekable<std::str::Chars>| {
+        while chars.next_if(|c| c.is_whitespace()).is_some() {}
+    };
+    let string = |chars: &mut std::iter::Peekable<std::str::Chars>| -> Option<String> {
+        let mut out = String::new();
+        loop {
+            match chars.next()? {
+                '"' => return Some(out),
+                '\\' => match chars.next()? {
+                    'n' => out.push('\n'),
+                    't' => out.push('\t'),
+                    'r' => out.push('\r'),
+                    'b' => out.push('\u{8}'),
+                    'f' => out.push('\u{c}'),
+                    'u' => {
+                        let hex: String = chars.by_ref().take(4).collect();
+                        out.push(char::from_u32(u32::from_str_radix(&hex, 16).ok()?)?);
+                    }
+                    c => out.push(c),
+                },
+                c => out.push(c),
+            }
+        }
+    };
+    loop {
+        skip_ws(&mut chars);
+        match chars.next()? {
+            '}' => return Some(pairs),
+            ',' => continue,
+            '"' => {}
+            _ => return None,
+        }
+        let key = string(&mut chars)?;
+        skip_ws(&mut chars);
+        chars.next().filter(|c| *c == ':')?;
+        skip_ws(&mut chars);
+        if chars.next_if_eq(&'"').is_some() {
+            pairs.push((key, string(&mut chars)?));
+            continue;
+        }
+        // Any other value: skip to the comma or brace that ends it, outside strings.
+        let mut depth = 0usize;
+        loop {
+            match chars.peek()? {
+                ',' | '}' if depth == 0 => break,
+                '{' | '[' => depth += 1,
+                '}' | ']' => depth = depth.checked_sub(1)?,
+                '"' => {
+                    chars.next();
+                    string(&mut chars)?;
+                    continue;
+                }
+                _ => {}
+            }
+            chars.next();
+        }
+    }
 }
 
 /// Reads `tachylite.toml` from the vault root. A missing file is the default config.
@@ -346,7 +489,40 @@ pub fn parse(text: &str) -> Result<Config, ConfigError> {
     Ok(Config {
         exclude: Exclude::new(&exclude)?,
         hosts: strings(table, "hosts")?,
+        nav: Nav {
+            title: string(table, "title", "title")?,
+            pins: strings(table, "pins")?.unwrap_or_default(),
+            daily: daily(table)?,
+        },
     })
+}
+
+/// The string at `key`, or `None` when absent. `name` names the key in an error.
+fn string(table: &DeTable, key: &str, name: &'static str) -> Result<Option<String>, ConfigError> {
+    match table.get(key).map(|v| v.get_ref()) {
+        None => Ok(None),
+        Some(DeValue::String(s)) => Ok(Some(s.to_string())),
+        Some(_) => Err(ConfigError::NotString(name)),
+    }
+}
+
+/// `daily = { folder = "...", format = "..." }`. Either key may be left out.
+fn daily(table: &DeTable) -> Result<Option<Daily>, ConfigError> {
+    let Some(value) = table.get("daily") else {
+        return Ok(None);
+    };
+    let DeValue::Table(daily) = value.get_ref() else {
+        return Err(ConfigError::DailyTable);
+    };
+    for key in daily.keys() {
+        let key = key.get_ref().as_ref();
+        if key != "folder" && key != "format" {
+            return Err(ConfigError::DailyKey(key.to_string()));
+        }
+    }
+    let folder = string(daily, "folder", "daily.folder")?.unwrap_or_default();
+    let format = string(daily, "format", "daily.format")?.unwrap_or_default();
+    Ok(Some(Daily::new(&folder, &format)))
 }
 
 /// The value at `key` as a list of strings, or `None` when the key is absent.

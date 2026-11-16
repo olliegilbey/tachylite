@@ -8,6 +8,9 @@ use tachylite::render::{
     Body, Broken, Page, Sources, embed_targets, note_title, render_body, render_page,
 };
 
+/// The header of a site with no config.
+const HEADER: &str = "<header><a class=\"site\" href=\"/\">Tachylite</a><a href=\"/.tachylite/recent\">Recent</a><button type=\"button\" class=\"find\" title=\"Find a note (Ctrl-K)\">Find</button></header>\n";
+
 fn fixture(name: &str) -> String {
     std::fs::read_to_string(common::fixture().join(name)).unwrap()
 }
@@ -15,6 +18,7 @@ fn fixture(name: &str) -> String {
 /// A page with no links to resolve and no backlinks.
 fn render_note(title: &str, markdown: &str) -> Page {
     render_page(
+        HEADER,
         "x.md",
         title,
         &render_body("x.md", markdown, &Index::default(), &Sources::new()).html,
@@ -193,6 +197,7 @@ fn frontmatter_tabs_comma_tags_and_empty_items() {
 #[test]
 fn backlinks_list_at_the_foot_of_main() {
     let page = render_page(
+        HEADER,
         "b.md",
         "b",
         "<p>body</p>\n",
@@ -207,7 +212,7 @@ fn backlinks_list_at_the_foot_of_main() {
         page.html
     );
     assert!(
-        !render_page("b.md", "b", "<p>body</p>\n", &[])
+        !render_page(HEADER, "b.md", "b", "<p>body</p>\n", &[])
             .html
             .contains("backlinks")
     );
@@ -217,8 +222,8 @@ fn backlinks_list_at_the_foot_of_main() {
 fn version_covers_backlinks() {
     let link = [("a".to_string(), "/a".to_string())];
     assert_ne!(
-        render_page("b.md", "b", "x", &[]).version,
-        render_page("b.md", "b", "x", &link).version
+        render_page(HEADER, "b.md", "b", "x", &[]).version,
+        render_page(HEADER, "b.md", "b", "x", &link).version
     );
 }
 

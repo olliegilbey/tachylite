@@ -718,7 +718,7 @@ fn served(out: &Path, path: &str) -> Option<PathBuf> {
     let key = percent_decode(path.trim_start_matches('/'));
     let candidates = if key.is_empty() {
         vec![out.join("pages/.tachylite/home.html")]
-    } else if key.starts_with(".tachylite/folders/") {
+    } else if key.starts_with(".tachylite/folders/") || key.starts_with(".tachylite/recent/") {
         vec![out.join("pages").join(&key).join(".index.html")]
     } else {
         vec![

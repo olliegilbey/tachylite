@@ -37,6 +37,13 @@ pub fn unmatched<S: AsRef<str>>(patterns: &[S]) {
     }
 }
 
+/// Prints each notice as its own line.
+pub fn notices(list: &[String]) {
+    for notice in list {
+        eprintln!("{notice}");
+    }
+}
+
 /// Prints one line per vault-root file named like the config in another case.
 pub fn misnamed(names: &[String]) {
     for name in names {

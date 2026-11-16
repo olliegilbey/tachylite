@@ -131,7 +131,7 @@ fn page_urls(out: &Out) -> std::collections::BTreeSet<String> {
 fn page_out(key: &str) -> String {
     if key.is_empty() {
         HOME.into()
-    } else if key.starts_with(".tachylite/folders/") {
+    } else if key.starts_with(".tachylite/folders/") || key.starts_with(".tachylite/recent/") {
         format!("pages/{key}/.index.html")
     } else {
         format!("pages/{key}.html")

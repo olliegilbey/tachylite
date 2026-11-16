@@ -140,12 +140,15 @@ impl Watcher {
             }
         })?;
         let watched = config.exclude.clone();
+        let mut site = Site::new(config.exclude);
+        site.set_nav(config.nav);
+        site.set_obsidian(config::obsidian_daily(&vault));
         let mut watcher = Watcher {
             inotify,
             dirs: HashMap::new(),
             vault,
             out,
-            site: Site::new(config.exclude),
+            site,
             live,
             held: HashMap::new(),
             hold: hold(),
@@ -270,6 +273,7 @@ impl Watcher {
         // Each folder with an event, and whether one was a create.
         let mut folders: BTreeMap<String, bool> = BTreeMap::new();
         let mut reload = false;
+        let mut daily = false;
         let now = Instant::now();
         for event in events {
             if event.flags.contains(ReadFlags::QUEUE_OVERFLOW) {
@@ -300,6 +304,12 @@ impl Watcher {
             }
             let Some(name) = name.to_str() else { continue };
             let path = join(&dir, name);
+            if path == config::DAILY_NOTES {
+                daily |= !event
+                    .flags
+                    .intersects(ReadFlags::MODIFY | ReadFlags::CREATE);
+                continue;
+            }
             if path == config::FILE {
                 // Only a save reloads: mid-save, the file can be missing, empty or half
                 // written, and each would publish what it excludes. A write after the save
@@ -359,6 +369,10 @@ impl Watcher {
                 return self.resync_reloaded(previous, removed);
             }
         }
+        // Every page's header shows whether there is a Today page, so a change renders all.
+        if daily && self.site.set_obsidian(config::obsidian_daily(&self.vault)) {
+            return self.resync(removed);
+        }
 
         // The folders as they stand now, each once: a parent's sync covers its children.
         let mut tops: Vec<&str> = Vec::new();
@@ -413,6 +427,7 @@ impl Watcher {
         match read {
             Ok(Some(config)) => {
                 self.site.set_exclude(config.exclude);
+                self.site.set_nav(config.nav);
                 self.hosts = config.hosts;
                 Ok(Reload::Loaded)
             }
@@ -563,6 +578,14 @@ impl Watcher {
         match inotify::add_watch(&self.inotify, &path, mask) {
             Ok(wd) => {
                 self.dirs.insert(wd, rel.to_string());
+                // Obsidian's daily-notes settings name the Today page's notes. The folder is
+                // never published, so this watch only reports changes to that file.
+                if rel.is_empty() {
+                    let obsidian = path.join(".obsidian");
+                    if let Ok(wd) = inotify::add_watch(&self.inotify, &obsidian, MASK) {
+                        self.dirs.insert(wd, ".obsidian".to_string());
+                    }
+                }
             }
             Err(e) if rel.is_empty() || e == rustix::io::Errno::NOSPC => {
                 return Err(Error::Watch {
@@ -600,6 +623,7 @@ impl Watcher {
         let mut writer = writer(&self.out, &self.vault, &self.live);
         let report = self.site.apply_to(changes, &mut batch, &mut writer);
         let failed = writer.finish()?;
+        report::notices(&report.notices);
         report::skipped(&report.skipped);
         report::skipped(&failed);
         report::broken(&report.broken);
