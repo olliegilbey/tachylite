@@ -1186,3 +1186,285 @@ fn embedded_ids_stay_unique_and_their_links_stay_inside() {
         assert!(ids.contains(&id), "{id} not in {ids:?}");
     }
 }
+
+#[test]
+fn a_tag_needs_a_letter_or_digit() {
+    let body = render_body(
+        "a.md",
+        "#- #_ #-_/ #a- #1-2 #_x\n",
+        &Index::default(),
+        &Sources::new(),
+    );
+    assert_eq!(
+        body.tags.iter().map(String::as_str).collect::<Vec<_>>(),
+        ["1-2", "_x", "a-"]
+    );
+    for gone in ["tags/-\"", "tags/_\"", "tags/-_"] {
+        assert!(!body.html.contains(gone), "{gone} in {}", body.html);
+    }
+}
+
+#[test]
+fn a_character_reference_writes_a_hash_but_no_tag() {
+    let body = render_body(
+        "a.md",
+        "&#35;a &#x23;b &#X0023;c &num;d #e &#36;#f &#;g *&#35;h* #i&#35;j\n\n# &#35;k #l\n",
+        &Index::default(),
+        &Sources::new(),
+    );
+    assert_eq!(
+        body.tags.iter().map(String::as_str).collect::<Vec<_>>(),
+        ["e", "i", "l"]
+    );
+    for text in [
+        "#a ",
+        "#b ",
+        "#c ",
+        "#d ",
+        "$#f",
+        "&amp;#;g",
+        "<em>#h</em>",
+        "#j",
+        "#k",
+    ] {
+        assert!(body.html.contains(text), "{text} not in {}", body.html);
+    }
+    // A link title over two lines shifts the parser's positions on the lines after it.
+    let body = render_body(
+        "a.md",
+        "text [l](b.md \"multi\nline title\")\nnext &#35;a &amp; &#35;m &zebra; &#35;n #b\n\n\
+         | t |\n|---|\n| x \\| &#35;p &amp; #q |\n",
+        &Index::default(),
+        &Sources::new(),
+    );
+    assert_eq!(
+        body.tags.iter().map(String::as_str).collect::<Vec<_>>(),
+        ["b", "q"]
+    );
+}
+
+#[test]
+fn a_flow_list_of_tags_may_end_in_a_comment() {
+    let body = render_body(
+        "a.md",
+        "---\ntags: [a, b] # why\n---\nx\n",
+        &Index::default(),
+        &Sources::new(),
+    );
+    assert_eq!(
+        body.tags.iter().map(String::as_str).collect::<Vec<_>>(),
+        ["a", "b"]
+    );
+}
+
+#[test]
+fn a_byte_order_mark_keeps_the_properties() {
+    let html = plain("\u{FEFF}---\ntitle: T\n---\nbody\n");
+    assert!(
+        html.starts_with("<dl class=\"properties\"><dt>title</dt><dd>T</dd></dl>\n<p>body</p>"),
+        "{html}"
+    );
+}
+
+#[test]
+fn a_link_that_does_not_decode_resolves_as_written() {
+    let index = Index::new(["50%.md", "img/a%z.png", "b.md"]);
+    let body = render_body(
+        "n.md",
+        "[x](50%.md) [y](gone%zz.md) ![i](a%z.png) ![j](no%zz.png) [h](b.md#%zz)\n",
+        &index,
+        &Sources::new(),
+    );
+    for want in [
+        "<a href=\"/50%25\">x</a>",
+        "<a class=\"broken-link\">y</a>",
+        "src=\"/img/a%25z.png\"",
+        "<a href=\"/b#zz\">h</a>",
+    ] {
+        assert!(body.html.contains(want), "{want} not in {}", body.html);
+    }
+    assert_eq!(paths(&body.targets), ["50%.md", "b.md", "img/a%z.png"]);
+    let missing: Vec<&str> = body.broken.iter().map(|b| b.target.as_str()).collect();
+    assert_eq!(missing, ["gone%zz.md", "no%zz.png"]);
+}
+
+#[test]
+fn an_empty_wikilink_stays_text() {
+    let body = render_body(
+        "a.md",
+        "[[]] [[ ]] [[#]] [[ # ]] ![[]] [[|x]] [[#h]]\n",
+        &Index::new(["a.md"]),
+        &Sources::new(),
+    );
+    assert_eq!(
+        body.html, "<p>[[]] [[]] [[#]] [[#]] ![[]] [[|x]] <a href=\"#h\">#h</a></p>\n",
+        "the parser trims a wikilink's spaces"
+    );
+    assert!(body.targets.is_empty() && body.broken.is_empty());
+    let html = plain("---\nup: \"[[#]]\"\n---\n");
+    assert!(html.contains("<dd>[[#]]</dd>"), "{html}");
+}
+
+#[test]
+fn a_markdown_link_keeps_its_title() {
+    let index = Index::new(["b.md"]);
+    let body = render_body(
+        "a.md",
+        "[x](b.md \"Bee <&>\") [y](gone.md 'Gone') [z](https://e.com \"Web\") [n](b.md)\n",
+        &index,
+        &Sources::new(),
+    );
+    for want in [
+        "<a href=\"/b\" title=\"Bee &lt;&amp;&gt;\">x</a>",
+        "<a class=\"broken-link\" title=\"Gone\">y</a>",
+        "<a href=\"https://e.com\" title=\"Web\">z</a>",
+        "<a href=\"/b\">n</a>",
+    ] {
+        assert!(body.html.contains(want), "{want} not in {}", body.html);
+    }
+}
+
+#[test]
+fn a_link_in_alt_text_links_nothing() {
+    let index = Index::new(["b.md", "c.md", "x.png"]);
+    let body = render_body(
+        "a.md",
+        "![see [b](b.md) and [[c]]](x.png) ![w [b](b.md)](https://e.com/w.png) ![g [b](gone.md)](x.png)\n",
+        &index,
+        &Sources::new(),
+    );
+    assert_eq!(paths(&body.targets), ["x.png"]);
+    assert!(body.broken.is_empty(), "{:?}", body.broken);
+    assert!(
+        body.html.contains("alt=\"see b and [[c]]\""),
+        "{}",
+        body.html
+    );
+}
+
+/// Panics where a block element opens inside one that holds phrasing content only.
+fn assert_nests(html: &str) {
+    const BLOCK: &[&str] = &[
+        "div",
+        "p",
+        "ul",
+        "ol",
+        "li",
+        "pre",
+        "table",
+        "details",
+        "blockquote",
+        "dl",
+        "section",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "hr",
+    ];
+    const PHRASING: &[&str] = &[
+        "p", "h1", "h2", "h3", "h4", "h5", "h6", "em", "strong", "del", "mark", "a", "span",
+        "summary", "code",
+    ];
+    const VOID: &[&str] = &["img", "br", "hr", "input"];
+    let mut open: Vec<&str> = Vec::new();
+    for piece in html.split('<').skip(1) {
+        let tag = &piece[..piece.find([' ', '>', '\n']).unwrap()];
+        if let Some(name) = tag.strip_prefix('/') {
+            assert_eq!(open.pop(), Some(name), "misnested in {html}");
+            continue;
+        }
+        if BLOCK.contains(&tag)
+            && let Some(outer) = open.iter().find(|t| PHRASING.contains(t))
+        {
+            panic!("<{tag}> inside <{outer}> in {html}");
+        }
+        if !VOID.contains(&tag) {
+            open.push(tag);
+        }
+    }
+    assert!(open.is_empty(), "{open:?} left open in {html}");
+}
+
+#[test]
+fn an_embed_in_inline_text_or_a_title_is_a_link() {
+    let body = embed(
+        "a.md",
+        "*![[b]]*\n\n**x ![[b]] y**\n\n# ![[b]]\n\n![[b]]\n===\n\n> [!note]- ![[b]]\n> body\n\n\
+         > [!tip] ![[b]]\n> body\n\n## ![[route.html]]\n\n*![[dot.png]]*\n\n| t |\n|---|\n| ![[b]] |\n",
+        &[("b.md", "Bee")],
+        &["maps/route.html", "img/dot.png"],
+    );
+    assert_nests(&body.html);
+    assert_eq!(
+        body.html.matches("<a href=\"/b\">b</a>").count(),
+        6,
+        "{}",
+        body.html
+    );
+    assert_eq!(
+        body.html.matches("<p>Bee</p>").count(),
+        1,
+        "the table cell transcludes"
+    );
+    assert_eq!(paths(&body.embeds), ["b.md"]);
+    insta::assert_snapshot!(body.html);
+}
+
+#[test]
+fn an_excluded_note_embedded_in_a_title_reaches_no_output() {
+    let tmp = tempfile::tempdir().unwrap();
+    let vault = tmp.path().join("vault");
+    for (path, text) in [
+        ("tachylite.toml", "exclude = [\"private\"]\n"),
+        ("private/secret.md", "# zebra-secret"),
+        (
+            "a.md",
+            "*![[secret]]*\n\n# ![[private/secret]]\n\n> [!note]- ![[secret]]\n> body\n",
+        ),
+    ] {
+        let path = vault.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    build(&vault, &tmp.path().join("out")).unwrap();
+    let page = std::fs::read_to_string(tmp.path().join("out/pages/a.html")).unwrap();
+    assert_eq!(
+        page.matches("<a class=\"broken-link\">").count(),
+        3,
+        "{page}"
+    );
+    for file in walk(&tmp.path().join("out")) {
+        let text = String::from_utf8_lossy(&std::fs::read(&file).unwrap()).into_owned();
+        assert!(!text.contains("zebra"), "an excluded note reached {file:?}");
+    }
+}
+
+fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            files.extend(walk(&path));
+        } else {
+            files.push(path);
+        }
+    }
+    files
+}
+
+#[test]
+fn a_comment_after_code_in_a_footnote_or_callout_title_stays_hidden() {
+    for md in [
+        "Text[^1].\n\nvisible %% zebra %% after\n\n[^1]: -     %% code\n",
+        "Text[^1].\n\n[^1]: -     %% code\n\nvisible %% zebra %% after\n",
+        "> Text[^1].\n>\n> [^1]: -     %% code\n\nvisible %% zebra %% after\n",
+        "> [!note]     %% code\n\nvisible %% zebra %% after\n",
+    ] {
+        let html = plain(md);
+        assert!(!html.contains("zebra"), "{md:?} gave {html}");
+        assert!(html.contains("comment-error"), "{md:?} gave {html}");
+    }
+}
