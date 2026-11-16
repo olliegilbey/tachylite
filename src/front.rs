@@ -163,21 +163,34 @@ fn closing_quote(line: &str, q: u8) -> Option<usize> {
 }
 
 /// A block under an empty value: a list if every line is an item, else raw text. A comment
-/// line at the block's indent is neither; a deeper one may be a block scalar's text.
+/// line is neither, unless it is a block scalar's text.
 fn nested(block: &[&str]) -> Value {
     let indent = |l: &str| l.len() - l.trim_start().len();
-    let comment = |l: &str| l.trim_start().starts_with('#');
-    let base = block
-        .iter()
-        .filter(|l| !l.trim().is_empty() && !comment(l))
-        .map(|l| indent(l))
-        .min()
-        .unwrap_or(0);
-    let lines: Vec<&str> = block
-        .iter()
-        .copied()
-        .filter(|l| !l.trim().is_empty() && !(comment(l) && indent(l) <= base))
-        .collect();
+    // The indent of the line that opened a block scalar, while its text runs.
+    let mut opener = None;
+    let mut lines = Vec::new();
+    for &line in block {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if opener.is_some_and(|at| indent(line) > at) {
+            lines.push(line);
+            continue;
+        }
+        opener = None;
+        if line.trim_start().starts_with('#') {
+            continue;
+        }
+        let end = line.trim_end();
+        let opens = ["|", "|-", "|+", ">", ">-", ">+"].iter().any(|ind| {
+            end.strip_suffix(ind)
+                .is_some_and(|before| before.ends_with([' ', '\t']) || before.trim().is_empty())
+        });
+        if opens {
+            opener = Some(indent(line));
+        }
+        lines.push(line);
+    }
     if lines.is_empty() {
         return Value::Text(String::new());
     }

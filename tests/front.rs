@@ -187,8 +187,12 @@ fn comment_lines_in_a_nested_block_are_dropped() {
         ]
     );
     assert_eq!(
-        pairs("place:\n  note: |\n    # heading\n    body\n"),
-        vec![kv("place", text("note: |\n  # heading\n  body"))]
+        pairs("place:\n  note: |\n    # heading\n    body\n  # gone\n  k: v\n"),
+        vec![kv("place", text("note: |\n  # heading\n  body\nk: v"))]
+    );
+    assert_eq!(
+        pairs("l:\n  - a\n    # c\n  - b\np:\n    # top\n  k: v\n"),
+        vec![kv("l", list(&["a", "b"])), kv("p", text("k: v"))]
     );
 }
 

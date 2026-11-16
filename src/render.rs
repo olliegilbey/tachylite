@@ -655,25 +655,32 @@ fn literal_hashes(md: &str, lines: &[usize], node: &AstNode<'_>) -> Option<Vec<b
         return None;
     };
     let pos = node.data().sourcepos.start;
-    // After a link title that spans lines, comrak's position falls short of the text.
     let from = lines
         .get(pos.line.saturating_sub(1))
         .map_or(0, |line| line + pos.column.saturating_sub(1))
         .min(md.len());
-    (from..md.len())
-        .filter(|&at| md.is_char_boundary(at))
-        .find_map(|at| spelled(&md[at..], text))
+    // After a link title that spans lines, comrak's position falls short of the text. The
+    // search is capped, so a text it cannot place costs no more than this.
+    let mut to = (from + SEARCH).min(md.len());
+    while !md.is_char_boundary(to) {
+        to -= 1;
+    }
+    let first = text.chars().next()?;
+    let window = md.get(from..to)?;
+    window
+        .match_indices([first, '&', '\\'])
+        .find_map(|(at, _)| spelled(&md[from + at..], text))
 }
 
+/// How far past comrak's position `literal_hashes` looks for a text, in bytes.
+const SEARCH: usize = 1024;
+
 /// For each `#` in `text`, whether `src` starts with `text` written with that `#` as itself.
-/// A reference stands for the one character in its place.
+/// A reference stands for the one character in its place, and a backslash may escape
+/// punctuation, as in a table cell.
 fn spelled(mut src: &str, text: &str) -> Option<Vec<bool>> {
     let mut literal = Vec::new();
-    for (i, c) in text.char_indices() {
-        if src.starts_with(&text[i..]) {
-            literal.extend(text[i..].matches('#').map(|_| true));
-            return Some(literal);
-        }
+    for c in text.chars() {
         if let Some((len, hash)) = reference(src) {
             if (c == '#') != hash {
                 return None;
@@ -682,12 +689,23 @@ fn spelled(mut src: &str, text: &str) -> Option<Vec<bool>> {
                 literal.push(false);
             }
             src = &src[len..];
-        } else if let Some(len) = named(src) {
+        } else if let Some(len) = named(src)
+            && (c != '&' || src.starts_with("&amp;"))
+        {
+            // A name the parser does not know stays as text, and only `&amp;` writes `&`.
             src = &src[len..];
-        } else {
-            src = src.strip_prefix(c)?;
+        } else if let Some(rest) = src.strip_prefix(c) {
             if c == '#' {
                 literal.push(true);
+            }
+            src = rest;
+        } else {
+            src = src
+                .strip_prefix('\\')
+                .filter(|_| c.is_ascii_punctuation())?
+                .strip_prefix(c)?;
+            if c == '#' {
+                literal.push(false);
             }
         }
     }
