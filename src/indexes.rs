@@ -44,8 +44,10 @@ fn dated(name: &str) -> bool {
         })
 }
 
-pub const HOME_RECENT: usize = 10;
+pub const HOME_RECENT: usize = 5;
 pub const RECENT: usize = 50;
+/// The newest daily notes that open the Recent page, and that the home page leaves out.
+pub const DAILY: usize = 3;
 /// The daily notes the Today page lists. Enough to reach back two months, and small.
 pub const TODAY: usize = 60;
 
@@ -60,16 +62,37 @@ pub struct Pin {
     pub url: String,
 }
 
-/// The header every page carries: the site link, Today when there is a Today page, Recent,
-/// Find, and then the pins. It comes from config alone, so a save never changes it.
-pub fn header(site: &str, today: bool, pins: &[Pin]) -> String {
-    let mut html = format!("<header><a class=\"site\" href=\"/\">{}</a>", escape(site));
-    if today {
-        html.push_str("<a href=\"/.tachylite/today\">Today</a>");
+/// A tab: a top-level page the header links to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tab {
+    Home,
+    Today,
+    Recent,
+}
+
+/// The header every page carries: the tab bar of Home, Today when there is a Today page,
+/// and Recent; then Find, and then the pins. A tab page marks its own tab as `current`. It
+/// comes from config alone, so a save never changes it.
+pub fn header(today: bool, pins: &[Pin], current: Option<Tab>) -> String {
+    let mut html = String::from("<header>");
+    for (tab, url, name) in [
+        (Tab::Home, "/", "Home"),
+        (Tab::Today, "/.tachylite/today", "Today"),
+        (Tab::Recent, "/.tachylite/recent", "Recent"),
+    ] {
+        if tab == Tab::Today && !today {
+            continue;
+        }
+        // Written here, so the tab shows as current with no script.
+        let mark = if current == Some(tab) {
+            " aria-current=\"page\""
+        } else {
+            ""
+        };
+        html.push_str(&format!("<a href=\"{url}\"{mark}>{name}</a>"));
     }
     html.push_str(
-        "<a href=\"/.tachylite/recent\">Recent</a>\
-         <button type=\"button\" class=\"find\" title=\"Find a note (Ctrl-K)\">Find</button>",
+        "<button type=\"button\" class=\"find\" title=\"Find a note (Ctrl-K)\">Find</button>",
     );
     if !pins.is_empty() {
         html.push_str("<nav class=\"pins\">");
@@ -211,14 +234,13 @@ fn recent_list<'a>(rows: impl IntoIterator<Item = &'a str>) -> String {
     html
 }
 
-/// `/`: the newest notes, then the root folder. The header names the site, so the
-/// page's heading is for screen readers only.
+/// `/`: the newest of `recent`, then the root folder. The Home tab names the page, so its
+/// heading is for screen readers only.
 pub fn home(header: &str, site: &str, recent: &[&str], root: &Folder) -> Page {
     let mut main = format!("<h1 class=\"sr\">{}</h1>\n", escape(site));
     if !recent.is_empty() {
         main.push_str("<h2>Recent</h2>\n");
         main.push_str(&recent_list(recent.iter().take(HOME_RECENT).copied()));
-        main.push_str("<p><a href=\"/.tachylite/recent\">All recent notes</a></p>\n");
     }
     main.push_str(&listing(root));
     shell(header, site, &main)
@@ -249,10 +271,19 @@ pub fn tag<'a>(header: &str, tag: &str, rows: impl IntoIterator<Item = &'a str>)
     shell(header, &format!("#{tag}"), &main)
 }
 
-/// `/.tachylite/recent`, given its `recent_row`s newest first.
-pub fn recent(header: &str, rows: &[&str]) -> Page {
-    let mut main = String::from("<h1>Recent</h1>\n");
-    main.push_str(&recent_list(rows.iter().take(RECENT).copied()));
+/// `/.tachylite/recent`: a Daily block of the newest daily notes when there are any, then
+/// the other notes, newest first. Both are `recent_row`s. The Recent tab names the page,
+/// as the Home tab names the home page.
+pub fn recent(header: &str, daily: &[&str], rows: &[&str]) -> Page {
+    let mut main = String::from("<h1 class=\"sr\">Recent notes</h1>\n");
+    if !daily.is_empty() {
+        main.push_str("<h2>Daily</h2>\n");
+        main.push_str(&recent_list(daily.iter().copied()));
+    }
+    if !rows.is_empty() {
+        main.push_str("<h2>Recent</h2>\n");
+        main.push_str(&recent_list(rows.iter().take(RECENT).copied()));
+    }
     shell(header, "Recent", &main)
 }
 
@@ -267,7 +298,7 @@ pub fn recent_in<'a>(header: &str, folder: &str, rows: impl IntoIterator<Item = 
 
 /// `/.tachylite/today`: the daily notes as `(date, title, url)`, newest first. Each link
 /// carries its ISO date, so the client opens the newest dated on or before its own today.
-pub fn today(header: &str, days: &[(String, &str, String)]) -> Page {
+pub fn today(header: &str, days: &[(&str, &str, String)]) -> Page {
     let mut main = String::from("<h1>Daily notes</h1>\n");
     if days.is_empty() {
         main.push_str("<p>No daily notes yet.</p>\n");

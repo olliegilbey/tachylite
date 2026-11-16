@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use common::{Dirs, Server};
 use proptest::prelude::*;
 
-const PATHS: [&str; 11] = [
+const PATHS: [&str; 13] = [
     "a.md",
     "a.MD",
     "x.html",
@@ -21,6 +21,8 @@ const PATHS: [&str; 11] = [
     "d/e/m.md",
     ".h.md",
     "d/2026-01-02.md",
+    "d/2026-01-03.md",
+    "d/2026-01-05.md",
 ];
 const CONTENTS: [&str; 15] = [
     "# one",
@@ -53,7 +55,13 @@ enum Op {
     /// Writes `tachylite.toml`, excluding `d`, or excluding nothing and naming pins and a
     /// daily folder in `d`.
     Config(bool),
+    /// Writes a daily note, or deletes it, so daily notes come and go beside their
+    /// neighbours.
+    Day(usize, bool),
 }
+
+/// The daily notes: the last three of `PATHS`.
+const DAYS: usize = 3;
 
 fn op() -> impl Strategy<Value = Op> {
     prop_oneof![
@@ -66,6 +74,7 @@ fn op() -> impl Strategy<Value = Op> {
         1 => Just(Op::DeleteFolder),
         1 => Just(Op::Burst),
         1 => any::<bool>().prop_map(Op::Config),
+        3 => (0..DAYS, any::<bool>()).prop_map(|(d, write)| Op::Day(d, write)),
     ]
 }
 
@@ -109,6 +118,10 @@ fn apply(vault: &Path, op: &Op) {
         }
         Op::DeleteFolder => {
             let _ = fs::remove_dir_all(vault.join("d"));
+        }
+        Op::Day(d, true) => write(path(PATHS.len() - DAYS + d), b"day"),
+        Op::Day(d, false) => {
+            let _ = fs::remove_file(path(PATHS.len() - DAYS + d));
         }
         Op::Config(exclude) => {
             let text = if *exclude {
@@ -162,6 +175,13 @@ proptest! {
     fn live_output_equals_full_build(ops in prop::collection::vec((op(), any::<bool>()), 1..12)) {
         let d = Dirs::empty();
         fs::write(d.vault().join("zz-barrier.md"), "# 0").unwrap();
+        // Two daily notes that link to each other from the start, until a config op says
+        // otherwise. So most cases move a neighbour.
+        fs::write(d.vault().join("tachylite.toml"), "daily = { folder = \"d\" }\n").unwrap();
+        fs::create_dir(d.vault().join("d")).unwrap();
+        for day in [PATHS.len() - DAYS, PATHS.len() - 1] {
+            fs::write(d.vault().join(PATHS[day]), "day").unwrap();
+        }
         // A short hold, so a case does not wait out a second for a note in a new folder.
         let server = Server::start_with(&d.vault(), &d.out(), &[("TACHYLITE_HOLD_MS", "20")]);
         let mut barrier = server.subscribe("/zz-barrier", "", None);
