@@ -111,6 +111,21 @@ test("whole name matches come first, then text matches newest first, then loose 
   await expect(rows(page).nth(3).locator(".snippet")).toHaveText("Moss Grows under a fern.");
 });
 
+test("a whole path match comes first when more than 20 titles hold the query's letters", async ({ page }) => {
+  // Each `Big end` title holds b, e, d in order. `Quince` holds `bed` whole, in its path alone.
+  for (let n = 0; n < 21; n++) note(`logs/Big end ${String(n).padStart(2, "0")}`, "tally\n", 10);
+  note("bed/Quince", "# Quince\n\nripe\n", 8);
+  server = await serve(dir);
+  base = server.base;
+  await synced(page, "/a");
+  await find(page, "bed");
+  await expect(rows(page)).toHaveCount(20);
+  await expect(rows(page).nth(0).locator("a")).toHaveText(/^Quince/);
+  // `Rose` holds the word in its text.
+  await expect(rows(page).nth(1).locator("a")).toHaveText(/^Rose/);
+  await expect(rows(page).nth(2).locator("a")).toHaveText(/^Big end/);
+});
+
 test("past 20 matches, the 20 newest notes show, newest first", async ({ page }) => {
   const two = (n: number) => String(n).padStart(2, "0");
   // The newest note comes last in path order, so path order is not the answer.

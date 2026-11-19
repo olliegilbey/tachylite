@@ -45,9 +45,12 @@
     }
     return runs * 1000 + start;
   };
-  // A title match outranks any alias or path match.
-  const rank = (query, [title, , ...rest]) =>
-    Math.min(score(query, title), 1e6 + Math.min(...rest.map((t) => score(query, t))));
+  // A title match outranks an alias or path match of its kind. A whole match, under 1000,
+  // outranks a loose one of two runs or more, so the top 20 never drop it.
+  const rank = (query, [title, , ...rest]) => {
+    const other = Math.min(...rest.map((t) => score(query, t)));
+    return Math.min(score(query, title), (other < 1000 ? 1000 : 1e6) + other);
+  };
   let dialog = null;
   let notes = null;
   let events = null;
