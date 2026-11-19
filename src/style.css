@@ -91,9 +91,23 @@ table { display: block; overflow-x: auto; border-collapse: collapse; margin: 1em
 th, td { border: 1px solid var(--line); padding: 0.35rem 0.6rem; text-align: left; }
 th { background: var(--raise); }
 
-li:has(> input[type="checkbox"]) { list-style: none; margin-left: -1.4em; }
-input[type="checkbox"] { margin-right: 0.4em; }
-li > input[type="checkbox"] + p { display: inline; }
+/* A task's status reads by shape: an empty box, a half-filled box, a ticked box, and a dash before a struck line. */
+[data-task] { list-style: none; margin-left: -1.4em; }
+[data-task] > input {
+  appearance: none; width: 1em; height: 1em; margin: 0 0.4em 0 0; vertical-align: -0.12em;
+  border: 1.5px solid; border-radius: 3px; color: inherit;
+}
+[data-task] > input + p { display: inline; }
+[data-task="doing"] > input { background: linear-gradient(90deg, currentColor 50%, #0000 0); }
+[data-task="done"] > input { color: var(--dim); background: currentColor; }
+[data-task="done"] > input::before {
+  content: ""; display: block; width: 0.25em; height: 0.5em; margin: 0 0 0 0.3em;
+  border: solid var(--bg); border-width: 0 2px 2px 0; transform: rotate(45deg);
+}
+[data-task="cancelled"] { color: var(--dim); text-decoration: line-through; }
+[data-task="cancelled"] > input { background: linear-gradient(currentColor, currentColor) center / 60% 1.5px no-repeat; }
+/* A line-through stops at an inline block, so a list under a cancelled task keeps its own look. */
+[data-task="cancelled"] > :is(ul, ol) { display: inline-block; width: 100%; color: var(--fg); }
 
 .properties {
   display: grid; grid-template-columns: fit-content(40%) minmax(0, 1fr); gap: 0.15rem 1rem; margin: 0 0 1rem;
