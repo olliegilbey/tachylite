@@ -94,14 +94,14 @@ th { background: var(--raise); }
 /* A task's status reads by shape: an empty box, a half-filled box, a ticked box, and a dash before a struck line. */
 [data-task] { list-style: none; margin-left: -1.4em; }
 [data-task] > input {
-  appearance: none; width: 1em; height: 1em; margin: 0 0.4em 0 0; vertical-align: -0.12em;
-  border: 1.5px solid; border-radius: 3px; color: inherit;
+  appearance: none; width: 0.8em; height: 0.8em; margin: 0 0.4em 0 0; vertical-align: -0.08em;
+  border: 1.5px solid; border-radius: 3px; color: inherit; font-size: inherit; opacity: 1;
 }
 [data-task] > input + p { display: inline; }
 [data-task="doing"] > input { background: linear-gradient(90deg, currentColor 50%, #0000 0); }
 [data-task="done"] > input { color: var(--dim); background: currentColor; }
 [data-task="done"] > input::before {
-  content: ""; display: block; width: 0.25em; height: 0.5em; margin: 0 0 0 0.3em;
+  content: ""; display: block; width: 0.2em; height: 0.4em; margin: 0 0 0 0.23em;
   border: solid var(--bg); border-width: 0 2px 2px 0; transform: rotate(45deg);
 }
 [data-task="cancelled"] { color: var(--dim); text-decoration: line-through; }

@@ -1041,17 +1041,21 @@ fn outside_code(html: &str) -> String {
 
 /// The parser's own reading of a note, comments and all, with Tachylite's extensions.
 fn raw_html(md: &str) -> String {
+    parsed(md, true)
+}
+
+/// `raw_html`, with task lists or without.
+fn parsed(md: &str, tasks: bool) -> String {
     let mut options = comrak::Options::default();
     options.extension.strikethrough = true;
     options.extension.table = true;
     options.extension.autolink = true;
-    options.extension.tasklist = true;
+    options.extension.tasklist = tasks;
     options.extension.footnotes = true;
     options.extension.wikilinks_title_after_pipe = true;
     options.extension.ofm_callouts = true;
     options.extension.highlight = true;
     options.parse.escaped_char_spans = true;
-    options.parse.relaxed_tasklist_matching = true;
     options.render.r#unsafe = true;
     comrak::markdown_to_html(md, &options)
 }
@@ -1607,5 +1611,56 @@ proptest::proptest! {
         proptest::prop_assert!(html.contains(&item), "{item} not in {html}");
         proptest::prop_assert_eq!(html.matches("data-task").count(), usize::from(status.is_some()));
         proptest::prop_assert_eq!(html.matches("<input").count(), usize::from(status.is_some()));
+    }
+}
+
+/// List items that open with a checkbox, in every shape that moves its text. `@` stands for
+/// the character in the box.
+const BOXES: &[&str] = &[
+    "- [@] text\n",
+    "- [@]  two spaces\n",
+    "- [@]\ttab\n",
+    "- [@] text\n\n  more\n",
+    "- [@]\n",
+    "- [@]\n\n  more\n",
+    "- [@]\n  - sub\n",
+    "- [@]\nmore\n",
+    "- [@] *em* text\n",
+    "- [@]*em*\n",
+    "- [@]text\n",
+    "- [@] a\n- [@] b\n",
+    "* [@] star\n",
+    "1. [@] numbered\n",
+    "- parent\n  - [@] text\n",
+    "> - [@] text\n",
+    "> [!note]\n> - [@] text\n",
+];
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(2000))]
+
+    /// A checkbox with any character but the four statuses renders as the parser renders
+    /// it with task lists off: as written.
+    #[test]
+    fn a_checkbox_with_no_status_renders_as_written(
+        symbol in proptest::prop_oneof![proptest::char::range('!', '~'), proptest::char::any()],
+        shape in proptest::sample::select(BOXES),
+    ) {
+        proptest::prop_assume!(!symbol.is_control() && !" /xX-\\]<".contains(symbol));
+        let md = shape.replace('@', &symbol.to_string());
+        proptest::prop_assert_eq!(plain(&md), parsed(&md, false), "md={:?}", md);
+    }
+
+    /// `[/]` and `[-]` make a task wherever `[x]` makes one, with the same text.
+    #[test]
+    fn doing_and_cancelled_parse_as_done_does(
+        (symbol, status) in proptest::sample::select(vec![('/', "doing"), ('-', "cancelled")]),
+        shape in proptest::sample::select(BOXES),
+    ) {
+        let done = plain(&shape.replace('@', "x"))
+            .replace("data-task=\"done\"", &format!("data-task=\"{status}\""))
+            .replace(" checked", "")
+            .replace("[x]", &format!("[{symbol}]"));
+        proptest::prop_assert_eq!(plain(&shape.replace('@', &symbol.to_string())), done);
     }
 }

@@ -146,7 +146,7 @@ Notes are trusted content, but agents write them, and a prompt-injected agent co
 
 A vault already holds tasks, so Tachylite shows them. It adds no format of its own.
 
-- A task is a list item that starts with a checkbox, anywhere in a note. It has one of four statuses: `- [ ]` todo, `- [/]` doing, `- [x]` or `- [X]` done, `- [-]` cancelled. Any other character between the brackets makes no task, and the line renders as written. comrak's relaxed task list matching parses any one character there, and Tachylite's formatter keeps the four.
+- A task is a list item that starts with a checkbox, anywhere in a note. It has one of four statuses: `- [ ]` todo, `- [/]` doing, `- [x]` or `- [X]` done, `- [-]` cancelled. Any other character between the brackets makes no task, and the line renders as written. comrak's task lists read `[ ]` and `[x]`. Tachylite reads `[/]` and `[-]` by the same rule, so both pairs make a task in the same places.
 - The note a task lives in is its task list. Line order is priority.
 - `#tags` on a task line filter it. A `[[link]]` on the line points to detail.
 - No due dates and no plugin fields (Tasks or Dataview syntax).

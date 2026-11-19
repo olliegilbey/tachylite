@@ -53,7 +53,7 @@ aliases: [plot plan]
 
 **Other syntax that renders:**
 
-- CommonMark and GitHub Markdown: tables with column alignment, `~~strikethrough~~`, bare URLs as links, fenced code. A wide table scrolls sideways.
+- CommonMark and GitHub Markdown: tables, `~~strikethrough~~`, bare URLs as links, fenced code. A wide table scrolls sideways.
 - Footnotes: `text[^1]`, then `[^1]: The footnote.` on its own line.
 - Callouts: `> [!note] Title`, with any type name. `> [!tip]- Title` starts folded, and `> [!tip]+ Title` starts open.
 - `==highlight==`.
@@ -94,7 +94,7 @@ Tachylite rebuilds raw HTML from an allowlist.
 - **Tags kept:** `a abbr b bdi bdo blockquote br caption center cite code col colgroup dd del details dfn div dl dt em figcaption figure h1 h2 h3 h4 h5 h6 hr i img ins kbd li mark ol p pre q rp rt ruby s samp small span strike strong sub summary sup table tbody td tfoot th thead time tr tt u ul var wbr`.
 - **Attributes kept:** `align class dir id lang title` on any tag; `href` on `a`; `src alt width height loading` on `img`; `colspan rowspan` on `td` and `th`; `span` on `col` and `colgroup`; `start` on `ol`; `open` on `details`; `datetime` on `time`.
 - **Dropped with their content:** `script style iframe noscript noembed noframes textarea title xmp plaintext template svg math`.
-- **Dropped:** every other tag, with its text kept. Every other attribute: `style`, event handlers such as `onclick`, `data-*`, `target`. An `href` or `src` that is not `http:`, `https:`, `mailto:`, a path or a relative URL. HTML comments.
+- **Dropped:** every other tag, with its text kept. Every other attribute: `style`, event handlers such as `onclick`, `data-*`, `target`. An `href` or `src` that is not `http:`, `https:`, `mailto:`, a path from `/`, or a relative URL with no `&`. HTML comments.
 - Leave a blank line after an opening tag and before its closing tag. Markdown and `[[links]]` between them then render:
 
 ```markdown
@@ -117,7 +117,7 @@ The pH is **6.5**. See [[garden plan]].
 - **Offline.** A page the reader has opened full screen once stays on the phone and opens offline. A page never opened does not. An embedded frame always needs the network, so the link under it is the offline way in. A library or map tile loaded from the web fails offline: inline what the page needs. Inline an image as a `data:` URL.
 - **Fit a phone.** Add `<meta name="viewport" content="width=device-width, initial-scale=1">`. Lay it out for a screen 360 px wide, with touch targets.
 - **Follow light and dark.** Add `<meta name="color-scheme" content="dark light">`. Style for dark first, and switch under `@media (prefers-color-scheme: light)`. The page cannot use Tachylite's stylesheet.
-- An open page does not update when you save it. The reader reloads it.
+- An open page does not update when you save it. The phone shows its saved copy first and fetches the new one behind it, so a change can take two opens to show.
 
 ## What does not render
 
@@ -126,7 +126,7 @@ Each of these shows as plain text, or as said.
 - Math: `$x^2$` and `$$` blocks. `$` is a literal character.
 - Dataview and other plugins: a `dataview` fence shows as code, and `key:: value` as text.
 - Block references: `^block-id` shows as text. `[[note#^block-id]]` opens the note at its top.
-- Image sizes: `![[photo.png|100]]` shows at full size.
+- Image sizes: `![[photo.png|100]]` shows at full size. Column alignment in a table: every cell aligns left.
 - Inline footnotes `^[text]`, emoji codes `:smile:`, definition lists, and colours in code fences.
 - A single newline: it joins the two lines. Leave a blank line between paragraphs. End a line with `\` to break it.
 - `~text~` strikes text out, as `~~text~~` does. Write `H2O`, not `H~2~O`.

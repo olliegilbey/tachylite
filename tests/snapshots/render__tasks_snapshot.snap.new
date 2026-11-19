@@ -1,0 +1,77 @@
+---
+source: tests/render.rs
+assertion_line: 1481
+expression: "built(\"chores/week\")"
+---
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<link rel="manifest" href="/.tachylite/app.webmanifest">
+<link rel="icon" href="/.tachylite/icon.svg">
+<link rel="stylesheet" href="/.tachylite/style.css">
+<meta name="tachylite-version" content="31bc60cb7bd939ef">
+<title>Week chores</title>
+<script src="/.tachylite/live.js" defer></script>
+</head>
+<body>
+<header><a href="/">Home</a><a href="/.tachylite/recent">Recent</a><button type="button" class="find" title="Find a note (Ctrl-K)">Find</button></header>
+<main>
+<nav class="crumbs"><a href="/.tachylite/folders/chores">chores</a></nav>
+<dl class="properties"><dt>title</dt><dd>Week chores</dd></dl>
+<h1 id="week-chores">Week chores</h1>
+<ul>
+<li data-task="todo"><input type="checkbox" disabled> Water the fern</li>
+<li data-task="doing"><input type="checkbox" disabled>  Repot the basil <a class="tag" href="/.tachylite/tags/shed">#shed</a></li>
+<li data-task="done"><input type="checkbox" checked disabled> Sweep the porch</li>
+<li data-task="done"><input type="checkbox" checked disabled> Oil the gate</li>
+<li data-task="cancelled"><input type="checkbox" disabled>  Paint the fence, see <a href="/chores/errands">errands</a></li>
+<li>[?] Not a task</li>
+<li>A plain item</li>
+</ul>
+<h2 id="nested">Nested</h2>
+<ul>
+<li data-task="doing"><input type="checkbox" disabled>  Tidy the shed
+<ul>
+<li data-task="done"><input type="checkbox" checked disabled> Sort the tools</li>
+<li data-task="todo"><input type="checkbox" disabled> Hang the rake</li>
+<li data-task="cancelled"><input type="checkbox" disabled>  Sell the mower
+<ul>
+<li>A line under a cancelled task</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+<ol>
+<li data-task="todo"><input type="checkbox" disabled> First on a numbered list</li>
+</ol>
+<ul>
+<li data-task="todo"><input type="checkbox" disabled> 
+<p>A task with a second paragraph</p>
+<p>More about the task.</p>
+</li>
+</ul>
+<div class="callout" data-callout="tip" data-callout-fold="none">
+<div class="callout-title">
+Before the weekend
+</div>
+<div class="callout-content">
+<ul>
+<li data-task="todo"><input type="checkbox" disabled> Buy seeds</li>
+<li data-task="doing"><input type="checkbox" disabled>  Mend the hose</li>
+</ul>
+</div>
+</div>
+<div class="embed"><a class="embed-link" href="/chores/errands">errands</a>
+<h1 id="e1.errands">Errands</h1>
+<ul>
+<li data-task="doing"><input type="checkbox" disabled>  Post the parcel</li>
+<li data-task="cancelled"><input type="checkbox" disabled>  Return the ladder</li>
+</ul>
+</div>
+</main>
+</body>
+</html>

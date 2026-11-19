@@ -86,7 +86,6 @@ Notes render close to Obsidian's reading view:
 - Callouts, `==highlight==` and `#tags`.
 - Mermaid diagrams, drawn in the browser. The script loads only on a page that has one.
 - `%%comments%%` are never published. When a comment is left open, Tachylite hides everything after it rather than risk showing it, and a notice says so.
-- An agent that writes the vault can load [`skills/tachylite-vault/SKILL.md`](skills/tachylite-vault/SKILL.md). It says which form to write and what renders.
 
 ## Keep notes private
 
@@ -122,7 +121,7 @@ daily = { folder = "journal", format = "YYYY-MM-DD" }
 
 ## Who it is for
 
-Anyone with an Obsidian-style vault: Markdown, YAML frontmatter and `[[wikilinks]]`. It is tuned on one large vault that AI agents write. It supports standard Obsidian features, not plugins. PRs welcome.
+Anyone with an Obsidian-style vault: Markdown, YAML frontmatter and `[[wikilinks]]`. It is tuned on one large vault that AI agents write. It supports standard Obsidian features, not plugins. An agent that writes the vault can load [`skills/tachylite-vault/SKILL.md`](skills/tachylite-vault/SKILL.md), which says what form to write and what renders. PRs welcome.
 
 ## Licence
 

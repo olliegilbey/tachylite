@@ -8,7 +8,7 @@ use comrak::html::{
     ChildRendering, Context, dangerous_url, format_document_with_formatter, format_node_default,
 };
 use comrak::nodes::Sourcepos;
-use comrak::nodes::{AstNode, CalloutFold, NodeValue};
+use comrak::nodes::{AstNode, CalloutFold, NodeTaskItem, NodeValue};
 use comrak::options::Plugins;
 use comrak::{Anchorizer, Arena, Options, parse_document};
 
@@ -30,8 +30,6 @@ fn options() -> Options<'static> {
     options.extension.table = true;
     options.extension.autolink = true;
     options.extension.tasklist = true;
-    // Any character may sit in a checkbox, so `[/]` and `[-]` parse. `format_node` keeps four.
-    options.parse.relaxed_tasklist_matching = true;
     options.extension.footnotes = true;
     options.extension.wikilinks_title_after_pipe = true;
     options.extension.ofm_callouts = true;
@@ -448,6 +446,7 @@ fn render(
     let mut raw = Vec::new();
     let mut callouts = Vec::new();
     let mut blanks = Vec::new();
+    let mut boxes = Vec::new();
     // Set at the first image. Nodes come in document order, so none before it is in alt text.
     let mut alt = false;
     for node in root.descendants() {
@@ -455,6 +454,10 @@ fn render(
         match &node.data().value {
             NodeValue::Callout(c) if c.fold != CalloutFold::None => {
                 callouts.push(node);
+                continue;
+            }
+            NodeValue::Item(_) => {
+                boxes.extend(checkbox(node).map(|symbol| (node, symbol)));
                 continue;
             }
             NodeValue::Heading(heading) => {
@@ -535,6 +538,10 @@ fn render(
             tag = format!("{start} title=\"{}\">", escape(&link.title));
         }
         rewrites.push((node, tag));
+    }
+    // Before the tags, so a tag after the checkbox starts its text.
+    for (node, symbol) in boxes {
+        check(node, symbol);
     }
     for node in scripted {
         if let NodeValue::Image(link) = &mut node.data_mut().value {
@@ -645,20 +652,65 @@ fn render(
     body
 }
 
-/// A task's status, from the character in its checkbox. Any other character makes no task.
-fn task_status(symbol: Option<char>) -> Option<&'static str> {
+/// The character in the checkbox that opens a list item, when it is `/` or `-`. comrak's
+/// task lists take a space and `x` alone, and leave these as text. As comrak asks of `[x]`,
+/// a space, a tab or the end of the text follows the box.
+fn checkbox<'a>(item: &'a AstNode<'a>) -> Option<char> {
+    let first = item
+        .first_child()
+        .filter(|p| matches!(p.data().value, NodeValue::Paragraph))?
+        .first_child()?;
+    let NodeValue::Text(text) = &first.data().value else {
+        return None;
+    };
+    let symbol = ['/', '-']
+        .into_iter()
+        .find(|&c| text.strip_prefix('[').is_some_and(|t| t.starts_with(c)))?;
+    let after = text[2..].strip_prefix(']')?;
+    (after.is_empty() || after.starts_with([' ', '\t'])).then_some(symbol)
+}
+
+/// Makes the list item `checkbox` found a task, as comrak makes one of `[x]`: the box and
+/// the space after it leave the text, and a paragraph left empty goes.
+fn check<'a>(item: &'a AstNode<'a>, symbol: char) {
+    let Some(paragraph) = item.first_child() else {
+        return;
+    };
+    let Some(first) = paragraph.first_child() else {
+        return;
+    };
+    let empty = match &mut first.data_mut().value {
+        NodeValue::Text(text) => {
+            *text = Cow::Owned(text[text.len().min(4)..].to_string());
+            text.is_empty()
+        }
+        _ => false,
+    };
+    if empty {
+        first.detach();
+        if paragraph.first_child().is_none() {
+            paragraph.detach();
+        }
+    }
+    let symbol_sourcepos = item.data().sourcepos;
+    item.data_mut().value = NodeValue::TaskItem(NodeTaskItem {
+        symbol: Some(symbol),
+        symbol_sourcepos,
+    });
+}
+
+/// A task's status, from the character in its checkbox.
+fn task_status(symbol: Option<char>) -> &'static str {
     match symbol {
-        None => Some("todo"),
-        Some('/') => Some("doing"),
-        Some('x' | 'X') => Some("done"),
-        Some('-') => Some("cancelled"),
-        Some(_) => None,
+        None => "todo",
+        Some('/') => "doing",
+        Some('-') => "cancelled",
+        Some(_) => "done",
     }
 }
 
-/// comrak's HTML for a node, but for a list item with a checkbox. A task's item carries its
-/// status in `data-task`, which no raw HTML can write. A checkbox with any other character
-/// renders as the note wrote it.
+/// comrak's HTML for a node, but for a task: its list item carries its status in
+/// `data-task`, which no raw HTML can write.
 fn format_node<'a>(
     context: &mut Context,
     node: &'a AstNode<'a>,
@@ -668,9 +720,8 @@ fn format_node<'a>(
     let NodeValue::TaskItem(item) = &node.data().value else {
         return format_node_default(context, node, entering);
     };
-    if !entering {
-        context.write_str("</li>\n")?;
-    } else if let Some(status) = task_status(item.symbol) {
+    if entering {
+        let status = task_status(item.symbol);
         context.cr()?;
         context.write_str("<li data-task=\"")?;
         context.write_str(status)?;
@@ -680,10 +731,7 @@ fn format_node<'a>(
             "\"><input type=\"checkbox\" disabled> "
         })?;
     } else {
-        context.cr()?;
-        context.write_str("<li>[")?;
-        context.escape(item.symbol.unwrap_or(' ').encode_utf8(&mut [0; 4]))?;
-        context.write_str("] ")?;
+        context.write_str("</li>\n")?;
     }
     Ok(ChildRendering::HTML)
 }
