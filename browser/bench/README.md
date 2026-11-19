@@ -17,7 +17,7 @@ Variables narrow a run or widen it:
 | Variable | Default | Meaning |
 |---|---|---|
 | `BENCH_SCENARIOS` | every scenario | Scenario names, with commas between. |
-| `BENCH_PROFILES` | every profile | Profile names, with commas between: `phone-1x`, `phone-4x`. |
+| `BENCH_PROFILES` | every profile | Profile names, with commas between: `phone-1x`, `phone-4x`, `phone-4x-2core`. |
 | `BENCH_SAMPLES` | 30 | The samples to keep in each cell. |
 | `BENCH_MIN_IDLE` | 0.3 | A sample taken with a smaller share of the host's CPU idle is dropped. |
 | `TACHYLITE_BIN` | this checkout's build | The binary to serve, or several. See "Compare two binaries". |
@@ -37,9 +37,10 @@ A row is one cell: a scenario, under a profile, against a binary. Every time is 
   - A navigation ends at the new page's first contentful paint.
   - An in-page action ends at the first paint inside the element it adds.
   - A tab switch ends at the first paint of the new tab's content.
+  - A search ends at the first paint of the rows that answer the query, or at the second frame after an answer with no row.
   - Back ends at the second frame after the browser restores the page.
 - **Response end**: the median `responseEnd` of a navigation.
-- **DOM ready**: the median time at which the DOM held the result. For a navigation it is `domContentLoadedEventEnd`. For an in-page action it is the moment the element arrived. For a tab switch it is the moment the tab's content arrived. For Back it is `pageshow`.
+- **DOM ready**: the median time at which the DOM held the result. For a navigation it is `domContentLoadedEventEnd`. For an in-page action it is the moment the element arrived. For a tab switch it is the moment the tab's content arrived. For a search it is the moment the answer's rows arrived. For Back it is `pageshow`.
 - **n**: the samples kept. **Dropped**: the samples taken under host load, and left out.
 
 The bench checks where each navigation's response came from. A warm navigation must come from the service worker's cache, and a first load from the network. A sample that breaks this fails the run.
@@ -84,11 +85,13 @@ Add an entry to `scenarios` in `scenarios.ts`. A scenario is data:
   - `{ go: path }` is a plain navigation, as a tapped link makes.
   - `{ run: fn }` is any script: a tap, typed text. It runs alone in the page, so it sees no variable from outside itself.
   - `{ tap: path }` is a tap on the header's tab for that path.
+  - `{ type: query }` types a query into the open quick switcher as one input event. Before the clock runs, the bench opens the switcher and waits until its search workers hold every note's text. With `open: true` the switcher starts closed, and the action taps Find first: a cold open.
   - `{ swipe: "left" }` or `{ swipe: "right" }` is one finger swiped across the middle of the page, as touch events. A swipe to the left opens the tab to the right. The clock starts at the release.
 - `until`: the milestone that ends the clock.
   - `{ navigation: path }`: the first contentful paint of a new document at that path. After `go`, leave `until` out.
   - `{ paint: selector }`: the first paint of text or an image in an element the action added. An element that was there before the action does not count, so a change to one never ends the clock.
   - `{ restore: path }`: the page at that path, back from the back/forward cache.
+  - `{ answered: selector }`: the first paint of a row in the list at that selector, once the list says `aria-busy="false"`: every search worker has answered. A row drawn before the answer does not end the clock.
   - `{ tab: path }`: the first paint of text or an image in the `<main>` of the tab page at that path. The content may come with a new document or be put in place by the client. Both end the clock the same way, so two ways to switch tabs compare fairly.
 
 A scenario with `first: path` in place of these is a first load. It opens the path in a new browser context, with no service worker and nothing cached.
@@ -101,7 +104,9 @@ Navigate by path. A scenario that taps a link by a selector breaks when the head
 
 The `swipe-*` and `tap-*` scenarios time a switch between each pair of neighbouring tabs, each way. `tap-home-to-recent` and `tap-recent-to-home` time a tap across the Today tab. They use `tap`, `swipe` and `tab`.
 
-A profile is a device and a CPU rate. Add one to `profiles` in the same file.
+The `search-*` scenarios time one query each in the quick switcher: one letter, a common word, a rare word, two words, two rare words, no match, and a near miss. `search-cold-open` times a rare word from a closed switcher. They use `type` and `answered`, and they skip a binary that has no search.
+
+A profile is a device, a CPU rate and, with `cores`, the core count the page sees. Add one to `profiles` in the same file. `phone-4x-2core` gives the page two cores, so the switcher starts one search worker. See "Limits".
 
 ## The Back scenario
 
@@ -117,6 +122,7 @@ Full Chromium and the headless shell give different numbers for the same scenari
 ## Limits
 
 - **CPU throttling reaches the page only.** The service worker and the browser process run at full speed. So **Response end** is optimistic for a phone.
+- **A search worker runs at full speed too.** Chromium refuses the throttle on a worker. So a `search-*` time at 4x is the page's share at a quarter speed, plus the scan at full speed. `phone-4x-2core` makes up for it: one worker scans every note alone, which takes as long as four workers on cores four times slower. That is the pool a phone with five cores or more gets. For another pool, redo the sum: the page's share, plus the scan at full speed times four, over the workers. The budget test in `browser/search.spec.ts` logs both parts.
 - **The network is localhost.** A first load pays no latency and no bandwidth limit. No profile limits the network yet. CDP's `Network.emulateNetworkConditions` can, for a question that needs it.
 - **The clock starts in the page's script.** The browser's own handling of a touch, before the script sees it, is not counted. A swipe is two touch events made in the page, so the browser's pan never runs.
 - **A sleeping service worker is never timed.** Every warm sample starts with the worker awake. On a phone the browser stops an idle worker, and its next fetch waits for it to start.

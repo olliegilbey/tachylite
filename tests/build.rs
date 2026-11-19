@@ -787,6 +787,106 @@ fn obsidian_daily_settings_build_a_today_page_and_stay_unpublished() {
     assert_eq!(summary.notices.len(), 1, "{:?}", summary.notices);
 }
 
+// Search: each note's text, in shards.
+
+/// Every search row in the output, by URL: the modified time and the text.
+fn search_rows(out: &Path) -> std::collections::BTreeMap<String, (i64, String)> {
+    let dir = out.join("files/.tachylite/search");
+    let mut rows = std::collections::BTreeMap::new();
+    for shard in files_under(&dir) {
+        let text = fs::read_to_string(dir.join(&shard)).unwrap();
+        assert!(text.ends_with('\n'), "{shard:?} ends mid-row");
+        for row in text.lines() {
+            let fields: Vec<&str> = row.split('\t').collect();
+            assert_eq!(fields.len(), 3, "{shard:?} holds a row of {fields:?}");
+            let old = rows.insert(
+                fields[0].to_string(),
+                (fields[1].parse().unwrap(), fields[2].to_string()),
+            );
+            assert!(old.is_none(), "{} has two rows", fields[0]);
+        }
+    }
+    rows
+}
+
+#[test]
+fn each_note_has_one_search_row_of_the_text_a_reader_sees() {
+    let dir = bare(&[
+        (
+            "a/first.md",
+            "---\nstatus: draft-zeta\n---\n# Heading one\n\nSome *loud* text, with a [[second]] \
+             link and `code-word`.\n\n- item alpha\n- item beta\n\n%%hidden-comment%%\n\n\
+             ![[second]]\n",
+        ),
+        ("second.md", "Embedded body-omega &amp; <b>bold</b>ly.\n"),
+        ("map.html", "<p>html-page-text</p>"),
+    ]);
+    let (vault, out) = (dir.path().join("vault"), dir.path().join("out"));
+    build(&vault, &out).unwrap();
+    let rows = search_rows(&out);
+    assert_eq!(rows.keys().collect::<Vec<_>>(), ["/a/first", "/second"]);
+
+    let (modified, second) = &rows["/second"];
+    // Entities are decoded, an inline tag joins its text, and no backlink is in it.
+    assert_eq!(second, "Embedded body-omega & boldly.");
+    let saved = fs::metadata(vault.join("second.md")).unwrap().modified();
+    let saved = saved.unwrap().duration_since(SystemTime::UNIX_EPOCH);
+    assert_eq!(*modified, saved.unwrap().as_secs() as i64);
+
+    let (_, first) = &rows["/a/first"];
+    // Properties lead, and no breadcrumb comes before them.
+    assert!(
+        first.starts_with("status draft-zeta Heading one"),
+        "{first}"
+    );
+    for part in [
+        "Some loud text, with a second link and code-word.",
+        "item alpha item beta",
+        "Embedded body-omega & boldly.",
+    ] {
+        assert!(first.contains(part), "{part:?} is not in {first:?}");
+    }
+    for part in ["hidden-comment", "<", ">", "  ", "html-page-text"] {
+        assert!(!first.contains(part), "{part:?} is in {first:?}");
+    }
+}
+
+#[test]
+fn the_manifest_lists_each_search_shard_with_its_version() {
+    let dir = bare(&[("a.md", "aye"), ("b/c.md", "sea"), ("d.md", "dee")]);
+    let (vault, out) = (dir.path().join("vault"), dir.path().join("out"));
+    build(&vault, &out).unwrap();
+    let manifest = fs::read_to_string(out.join("files/.tachylite/manifest.json")).unwrap();
+    let shards = files_under(&out.join("files/.tachylite/search"));
+    assert!(!shards.is_empty());
+    for shard in &shards {
+        let url = format!("\"/.tachylite/search/{}\":\"", shard.display());
+        let at = manifest.find(&url).unwrap_or_else(|| panic!("no {url}"));
+        let version = &manifest[at + url.len()..];
+        let version = &version[..version.find('"').unwrap()];
+        assert_eq!(version.len(), 8, "{version}");
+        assert!(version.bytes().all(|b| b.is_ascii_hexdigit()), "{version}");
+    }
+    assert_eq!(
+        manifest.matches("\"/.tachylite/search/").count(),
+        shards.len()
+    );
+}
+
+#[test]
+fn an_excluded_note_is_in_no_search_shard() {
+    let dir = bare(&[
+        ("tachylite.toml", "exclude = [\"private\"]\n"),
+        ("private/plan.md", "the hidden-plan text"),
+        ("open.md", "shown text, and ![[private/plan]]"),
+    ]);
+    let (vault, out) = (dir.path().join("vault"), dir.path().join("out"));
+    build(&vault, &out).unwrap();
+    let rows = search_rows(&out);
+    assert_eq!(rows.keys().collect::<Vec<_>>(), ["/open"]);
+    assert!(!rows["/open"].1.contains("hidden-plan"), "{rows:?}");
+}
+
 // Html pages: a sync downloads each one that fits, and the recent lists show them.
 
 fn manifest_of(out: &Path) -> String {

@@ -32,6 +32,7 @@ use crate::{Error, output, report};
 pub const DEFAULT_PORT: u16 = 7420;
 const LIVE_JS: &str = include_str!("live.js");
 const SW_JS: &str = include_str!("sw.js");
+const SEARCH_JS: &str = include_str!("search.js");
 const APP_MANIFEST: &str = include_str!("app.webmanifest");
 const ICON_SVG: &str = include_str!("icon.svg");
 const ICON_MASKABLE_SVG: &str = include_str!("icon-maskable.svg");
@@ -108,8 +109,9 @@ fn content_type(path: &Path) -> &'static str {
     match ext.as_str() {
         "html" => "text/html; charset=utf-8",
         "js" => "text/javascript",
-        // Generated only: the vault publishes no json.
+        // Generated only: the vault publishes no json and no txt.
         "json" => "application/json",
+        "txt" => "text/plain; charset=utf-8",
         "webmanifest" => "application/manifest+json",
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
@@ -400,6 +402,10 @@ async fn live_js(headers: HeaderMap) -> Response {
     embedded(LIVE_JS, "text/javascript", &headers)
 }
 
+async fn search_js(headers: HeaderMap) -> Response {
+    embedded(SEARCH_JS, "text/javascript", &headers)
+}
+
 /// The worker lives under `/.tachylite/`, so it may control the whole site only with this
 /// header.
 async fn sw_js(headers: HeaderMap) -> Response {
@@ -566,6 +572,7 @@ pub fn router(app: App) -> Router {
     Router::new()
         .route("/.tachylite/live.js", get(live_js))
         .route("/.tachylite/sw.js", get(sw_js))
+        .route("/.tachylite/search.js", get(search_js))
         .route("/.tachylite/app.webmanifest", get(app_manifest))
         .route("/.tachylite/icon.svg", get(icon_svg))
         .route("/.tachylite/icon-maskable.svg", get(icon_maskable_svg))

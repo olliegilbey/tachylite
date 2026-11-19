@@ -186,6 +186,10 @@ impl<F: FnMut(Push)> Sink for Writer<'_, F> {
         }
         fs::read_to_string(self.out.join(rel)).ok()
     }
+
+    fn keeps(&self) -> bool {
+        true
+    }
 }
 
 /// A modified time as the clock type, or `None` for one the clock cannot hold.

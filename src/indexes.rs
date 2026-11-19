@@ -380,3 +380,127 @@ pub fn date(seconds: i64) -> String {
     let year = yoe + era * 400 + i64::from(month <= 2);
     format!("{year:04}-{month:02}-{day:02}")
 }
+
+/// How many search shards there are. A fixed count, so a note that comes or goes moves no
+/// other note to a new shard. `docs/plans/2026-11-19-search.md` says how it was picked.
+pub const SHARDS: u32 = 512;
+
+/// The search shard a note's text lives in: FNV-1a of its path.
+pub fn shard(path: &str) -> u32 {
+    let hash = path.bytes().fold(2_166_136_261_u32, |hash, byte| {
+        (hash ^ u32::from(byte)).wrapping_mul(16_777_619)
+    });
+    hash % SHARDS
+}
+
+/// The URL key of a search shard.
+pub fn shard_key(shard: u32) -> String {
+    format!(".tachylite/search/{shard:03x}.txt")
+}
+
+/// Tags that sit inside a word or a sentence. One leaves no gap in the text, so
+/// `<b>bold</b>ly` reads `boldly`. Any other tag leaves a space.
+const INLINE: [&str; 28] = [
+    "a", "abbr", "b", "bdi", "bdo", "cite", "code", "del", "dfn", "em", "i", "ins", "kbd", "mark",
+    "q", "s", "samp", "small", "span", "strike", "strong", "sub", "sup", "time", "tt", "u", "var",
+    "wbr",
+];
+
+/// Appends a note's search row: its URL, its modified time and the text of `body`, with a
+/// tab between and a newline after. The text is the HTML with tags dropped, character
+/// references decoded and each run of whitespace made one space, so it holds neither.
+pub fn search_row(out: &mut String, url: &str, modified: i64, body: &str) {
+    out.push_str(url);
+    out.push('\t');
+    out.push_str(&modified.to_string());
+    out.push('\t');
+    let start = out.len();
+    let bytes = body.as_bytes();
+    let mut gap = false;
+    let mut at = 0;
+    while at < bytes.len() {
+        let special = |b: &u8| *b <= b' ' || matches!(*b, b'<' | b'&' | 0x7f);
+        let run = bytes[at..]
+            .iter()
+            .position(special)
+            .unwrap_or(bytes.len() - at);
+        if run > 0 {
+            if gap && out.len() > start {
+                out.push(' ');
+            }
+            gap = false;
+            // A run ends at an ASCII byte, so it ends on a character boundary.
+            out.push_str(&body[at..at + run]);
+            at += run;
+            continue;
+        }
+        let (decoded, len) = match bytes[at] {
+            b'<' => {
+                let (len, inline) = element(&body[at..]);
+                (if inline { None } else { Some(' ') }, len)
+            }
+            b'&' => reference(&body[at..]),
+            _ => (Some(' '), 1),
+        };
+        at += len;
+        match decoded {
+            Some(c) if c <= ' ' || c == '\u{7f}' => gap = true,
+            Some(c) => {
+                if gap && out.len() > start {
+                    out.push(' ');
+                }
+                gap = false;
+                out.push(c);
+            }
+            None => {}
+        }
+    }
+    out.push('\n');
+}
+
+/// The length of the tag that starts `html`, and whether it is an inline one. A `>` inside
+/// a quoted attribute does not end it. A tag with no end runs to the end.
+fn element(html: &str) -> (usize, bool) {
+    let name = html[1..].trim_start_matches('/');
+    let name = &name[..name
+        .bytes()
+        .position(|b| !b.is_ascii_alphanumeric())
+        .unwrap_or(name.len())];
+    let inline = INLINE.iter().any(|t| t.eq_ignore_ascii_case(name));
+    let mut quote = None;
+    for (at, byte) in html.bytes().enumerate().skip(1) {
+        match (quote, byte) {
+            (None, b'>') => return (at + 1, inline),
+            (None, b'"' | b'\'') => quote = Some(byte),
+            (Some(q), _) if q == byte => quote = None,
+            _ => {}
+        }
+    }
+    (html.len(), inline)
+}
+
+/// The character that the reference at the start of `html` names, and the reference's
+/// length. Anything else is a literal `&`.
+fn reference(html: &str) -> (Option<char>, usize) {
+    let end = html.bytes().take(12).position(|b| b == b';');
+    let decoded = end.and_then(|end| {
+        let c = match &html[1..end] {
+            "amp" => '&',
+            "lt" => '<',
+            "gt" => '>',
+            "quot" => '"',
+            "apos" => '\'',
+            "nbsp" => ' ',
+            name => {
+                let number = name.strip_prefix('#')?;
+                let code = match number.strip_prefix(['x', 'X']) {
+                    Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+                    None => number.parse().ok()?,
+                };
+                char::from_u32(code)?
+            }
+        };
+        Some((Some(c), end + 1))
+    });
+    decoded.unwrap_or((Some('&'), 1))
+}

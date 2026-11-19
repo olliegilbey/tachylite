@@ -25,13 +25,14 @@ The smallest thing that works, made fast, beats the clever thing. Fight scope cr
 
 - **vault**: the folder of Markdown that Tachylite reads.
 - **note**: one `.md` file in the vault.
-- **page**: a note page or an index page. The manifest's `pages` lists each one with its version, and the switcher list `notes.json` and each html page up to 1 MB too. Clients cache everything in `pages` for offline use.
+- **page**: a note page or an index page. The manifest's `pages` lists each one with its version, and the switcher list `notes.json`, the search shards and each html page up to 1 MB too. Clients cache everything in `pages` for offline use.
 - **note page**: the page rendered from one note.
 - **html page**: an `.html` file from the vault, served with its content unchanged and a sandbox header. One up to 1 MB has a version, and a sync downloads it. A larger one loads like an asset.
 - **index page**: a page generated from many notes: a tag page, a folder index, recent notes, the board. Index pages live under the reserved prefix `/.tachylite/`, except the home page at `/`.
 - **asset**: an image or PDF from the vault. The manifest's `files` lists each asset and html page. An asset has no version: a client fetches it on first open and keeps it cached. The files built into the binary, such as the JS and CSS, are client assets, a separate thing.
 - **output**: the directory Tachylite writes. It lives outside the vault.
 - **manifest**: the list of every page and every html page up to 1 MB with its content hash, and of every asset and html page by URL. Clients sync against it.
+- **search shard**: a text file with the search text of some notes, one row for each. Clients sync the shards with the pages, and search them offline.
 - **push**: new page HTML sent to open clients over Server-Sent Events.
 - **client**: a browser showing Tachylite, usually the installed PWA on a phone.
 - **fixture vault**: the small hand-written vault in the repo that snapshot tests run against.

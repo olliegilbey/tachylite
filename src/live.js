@@ -45,36 +45,86 @@
     }
     return runs * 1000 + start;
   };
-  // A title match outranks any alias or path match.
-  const rank = (query, [title, , ...rest]) =>
-    Math.min(score(query, title), 1e6 + Math.min(...rest.map((t) => score(query, t))));
+  // A title match outranks an alias or path match of its kind. A whole match, under 1000,
+  // outranks a loose one of two runs or more, so the top 20 never drop it.
+  const rank = (query, [title, , ...rest]) => {
+    const other = Math.min(...rest.map((t) => score(query, t)));
+    return Math.min(score(query, title), (other < 1000 ? 1000 : 1e6) + other);
+  };
   let dialog = null;
   let notes = null;
   let events = null;
-  const show = () => {
+  // Full-text search: workers hold the text of every note and scan it off this thread, so a
+  // keystroke never waits for a scan. They start when the switcher first opens.
+  let pool = null;
+  // The newest query's number, the answers it still waits for, its hits so far, and its rows.
+  let asked = 0;
+  let left = 0;
+  let hits = [];
+  let draw = () => {};
+  const answer = (e) => {
+    if (e.data.id !== asked) return;
+    hits.push(...e.data.hits);
+    // Newest first, as each worker's own hits are.
+    if (!--left) draw(hits.sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)));
+  };
+  const row = (url, title, path, snippet) => {
+    const a = document.createElement("a");
+    a.href = url;
+    a.textContent = title;
+    const meta = document.createElement("span");
+    meta.className = "meta";
+    meta.textContent = path;
+    a.append(meta);
+    if (snippet) {
+      const text = document.createElement("span");
+      text.className = "snippet";
+      const mark = document.createElement("mark");
+      mark.textContent = snippet[1];
+      text.append(snippet[0], mark, snippet[2]);
+      a.append(text);
+    }
+    const li = document.createElement("li");
+    li.append(a);
+    return li;
+  };
+  // `again` is true for the query in the box asked again, once fresh data is in.
+  const show = (again) => {
     const query = dialog.input.value.trim().toLowerCase();
+    const id = ++asked;
     notes.then((list) => {
-      const hits = query
+      if (id !== asked) return;
+      const names = query
         ? list
             .map((n) => [rank(query, n), n])
             .filter(([r]) => r < Infinity)
             .sort((a, b) => a[0] - b[0] || a[1][0].length - b[1][0].length)
             .slice(0, 20)
         : [];
-      dialog.list.replaceChildren(
-        ...hits.map(([, [title, url, path]]) => {
-          const a = document.createElement("a");
-          a.href = url;
-          a.textContent = title;
-          const meta = document.createElement("span");
-          meta.className = "meta";
-          meta.textContent = path;
-          a.append(meta);
-          const li = document.createElement("li");
-          li.append(a);
-          return li;
-        }),
-      );
+      // Three groups, 20 rows in all: the names that hold the query whole, then the notes
+      // whose text holds its words, then the names that hold only its letters in order.
+      // The last group waits for the text rows, so no row moves once it is drawn.
+      const whole = names.filter(([, [title, , ...rest]]) => [title, ...rest].some((t) => score(query, t) < 1000));
+      draw = (found) => {
+        const seen = new Set();
+        const rows = [];
+        const add = (url, ...rest) => seen.size < 20 && !seen.has(url) && seen.add(url) && rows.push(row(url, ...rest));
+        for (const [, [title, url, path]] of whole) add(url, title, path);
+        for (const [url, , ...snippet] of found ?? []) {
+          const note = (list.by ??= new Map(list.map((n) => [n[1], n]))).get(url);
+          if (note) add(url, note[0], note[2], snippet);
+        }
+        if (found) for (const [, [title, url, path]] of names) add(url, title, path);
+        dialog.list.replaceChildren(...rows);
+        dialog.list.setAttribute("aria-busy", !found);
+      };
+      const search = query && whole.length < 20 && pool.length;
+      // Asked again, the rows stay until the answer, so none moves.
+      if (again !== true || !search) draw(search ? null : []);
+      if (!search) return;
+      hits = [];
+      left = pool.length;
+      for (const w of pool) w.postMessage({ id, words: query.split(/\s+/) });
     });
   };
   const finder = () => {
@@ -109,16 +159,40 @@
       dialog.addEventListener("click", (e) => e.target === dialog && dialog.close());
     }
     // The worker answers from its cache at once, so this costs nothing offline. While the
-    // stream is open, the network's list follows, so a new note shows.
+    // stream is open, the network's list follows, so a new note shows, and a sync brings
+    // the search text that changed.
     const list = (cache) => fetch("/.tachylite/notes.json", { cache }).then((r) => r.json());
     notes = list("default").catch(() => []);
-    if (events?.readyState === 1)
+    // One search worker for each core but one, at most four. Without workers, names still
+    // match. They start after the list is asked for: their reads of the cache would hold it up.
+    if (!pool)
+      try {
+        const n = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1));
+        pool = Array.from({ length: n }, (_, i) => new Worker("/.tachylite/search.js", { name: i + "/" + n }));
+        for (const w of pool) {
+          w.onmessage = answer;
+          // A worker that fails would leave a query waiting for ever.
+          w.onerror = () => {
+            for (const w of pool) w.terminate();
+            pool = [];
+            draw([]);
+          };
+        }
+      } catch {
+        pool = [];
+      }
+    if (events?.readyState === 1) {
       list("no-cache").then((fresh) => {
         notes = Promise.resolve(fresh);
-        if (dialog.open) show();
+        if (dialog.open) show(true);
       }, () => {});
+      sync();
+    }
     dialog.input.value = "";
+    // An answer to the query of an earlier open is late.
+    asked++;
     dialog.list.replaceChildren();
+    dialog.list.removeAttribute("aria-busy");
     dialog.showModal();
   };
   document.addEventListener("click", (e) => e.target.closest?.("button.find") && finder());
@@ -137,6 +211,12 @@
   const worker = navigator.serviceWorker;
   worker?.register("/.tachylite/sw.js", { scope: "/" }).catch(() => {});
   const sync = () => worker?.ready.then((r) => r.active?.postMessage("sync"));
+  // The worker says when a sync has changed its cache: the search workers read their text
+  // again, and an open switcher asks again.
+  worker?.addEventListener("message", () => {
+    for (const w of pool ?? []) w.postMessage(0);
+    if (dialog?.open) show(true);
+  });
 
   const VERSION = 'meta[name="tachylite-version"]';
   const meta = document.querySelector(VERSION);

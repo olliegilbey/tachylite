@@ -2,7 +2,7 @@
 
 Tachylite serves a folder of Obsidian-style Markdown as a fast, offline-capable website. It is a read-only viewer, and a phone on a bad connection is its main client.
 
-One small static binary renders the vault, re-renders only what changes, and pushes updates to open pages. After the first sync, every note and the quick switcher work with no network. Full-text search is not built yet.
+One small static binary renders the vault, re-renders only what changes, and pushes updates to open pages. After the first sync, every note and full-text search work with no network.
 
 ## Status
 
@@ -31,7 +31,7 @@ Tachylite renders the vault into `<out>`, watches it, and serves the site on `ht
 - Today shows the newest daily note dated on or before the phone's today, offline too. The note shows under the tab's own address, so Today is a tab like the others. It reads Obsidian's daily-notes settings, or `daily` in the config below. A vault with no daily settings has no Today tab.
 - A daily note links to the daily note before it and the one after it.
 - Each `#tag` links to a page of the notes with that tag, or with a tag nested under it.
-- Find, or Ctrl-K, Cmd-K or `/`, opens a fuzzy switcher over the titles, aliases and paths of notes and html pages. It works offline.
+- Find, or Ctrl-K, Cmd-K or `/`, opens the quick switcher. It matches the titles, aliases and paths of notes and html pages, and it searches the text of every note. It works offline.
 
 ## Run it on a server
 

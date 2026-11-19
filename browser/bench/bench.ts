@@ -1,4 +1,4 @@
-import type { Browser, BrowserContext, Page, Request } from "@playwright/test";
+import { expect, type Browser, type BrowserContext, type Page, type Request } from "@playwright/test";
 import { cpSync } from "node:fs";
 import { get } from "node:http";
 import { cpus, loadavg } from "node:os";
@@ -199,6 +199,8 @@ async function open(browser: Browser, profile: Profile, label: string, base: str
   context.on("requestfailed", end);
   const quiet = () => (flying.size ? new Promise<void>((resolve) => (landed = resolve)) : Promise.resolve());
 
+  const cores = profile.cores;
+  if (cores) await context.addInitScript(`Object.defineProperty(navigator, "hardwareConcurrency", { value: ${cores} })`);
   // A sandboxed frame has no storage to read.
   await context.addInitScript({
     content: `try { if (sessionStorage.getItem(${JSON.stringify(SWITCHING)})) (${watchMain})(); } catch {}`,
@@ -211,15 +213,18 @@ async function open(browser: Browser, profile: Profile, label: string, base: str
   await page.goto("/");
   await page.waitForFunction(() => navigator.serviceWorker.controller !== null);
   const { pages } = await (await page.request.get(MANIFEST)).json();
-  await page.waitForFunction(
-    async ([manifest, want]) => {
-      const have = (await (await caches.match(manifest))?.json()) ?? {};
-      const urls = Object.keys(want);
-      return urls.length === Object.keys(have).length && urls.every((url) => have[url] === want[url]);
-    },
-    [MANIFEST, pages] as const,
-    { polling: 100, timeout: 0 },
-  );
+  // `waitForFunction` takes a promise for true, so the page answers and the bench polls.
+  const stored = () =>
+    page.evaluate(
+      async ([manifest, want]) => {
+        const have = (await (await caches.match(manifest))?.json()) ?? {};
+        const urls = Object.keys(want);
+        return urls.length === Object.keys(have).length && urls.every((url) => have[url] === want[url]);
+      },
+      [MANIFEST, pages] as const,
+    );
+  // The caller sets the limit.
+  await expect.poll(stored, { timeout: 0 }).toBe(true);
   const cdp = await context.newCDPSession(page);
   await cdp.send("Emulation.setCPUThrottlingRate", { rate: profile.cpu });
 }
@@ -358,6 +363,60 @@ async function paint(run: (vars: Vars) => void, vars: Vars, selector: string, ji
   return { ms: at - from, dom: dom - from };
 }
 
+/** In the page: types a query into the switcher's box as one input event, after a tap on Find if `open`. */
+function typeText(query: string, open = false) {
+  if (open) document.querySelector<HTMLElement>("button.find")!.click();
+  const input = document.querySelector<HTMLInputElement>("dialog.switcher input")!;
+  input.value = query;
+  input.dispatchEvent(new Event("input"));
+}
+
+/** In the page: opens the switcher, and waits until its search workers hold every note's text and its box is empty. */
+async function openSwitcher(type: (query: string, open?: boolean) => void) {
+  const answer = (query: string, open = false) =>
+    new Promise<void>((resolve) => {
+      new MutationObserver((_, observer) => {
+        if (document.querySelector("dialog.switcher ul")?.getAttribute("aria-busy") !== "false") return;
+        observer.disconnect();
+        resolve();
+      }).observe(document, { attributes: true, subtree: true });
+      type(query, open);
+    });
+  // No name holds this, so the workers read their text and scan all of it.
+  await answer("qzqzq", true);
+  await answer("");
+}
+
+/** In the page: starts the clock, acts, and times the first paint after `selector` says it is no longer busy. */
+async function answered(run: (vars: Vars) => void, vars: Vars, selector: string, jitter: number) {
+  let dom = 0;
+  const painted = new Promise<number>((resolve) => {
+    const paints = new PerformanceObserver((entries, observer) => {
+      const first = entries.getEntries().find((e) => (e as any).identifier === "bench");
+      if (!first) return;
+      observer.disconnect();
+      resolve((first as any).renderTime);
+    });
+    // The whole document, since the first open of the switcher makes the list.
+    new MutationObserver((_, observer) => {
+      const list = document.querySelector(selector);
+      if (list?.getAttribute("aria-busy") !== "false") return;
+      observer.disconnect();
+      dom = performance.now();
+      const rows = list.querySelectorAll("*");
+      // Element Timing reports a paint on an element that carried the attribute before it painted.
+      for (const e of rows) e.setAttribute("elementtiming", "bench");
+      if (rows.length) paints.observe({ type: "element" });
+      else requestAnimationFrame(() => requestAnimationFrame(() => resolve(performance.now())));
+    }).observe(document, { attributes: true, subtree: true });
+  });
+  if (jitter) await new Promise((r) => setTimeout(r, Math.random() * jitter));
+  const from = performance.now();
+  run(vars);
+  const at = await painted;
+  return { ms: at - from, dom: dom - from };
+}
+
 /** In the page a navigation opened: its milestones, in ms from the stored start or from its own. */
 async function arrived(key: string | null) {
   const fcp = await new Promise<number>((resolve) => {
@@ -434,12 +493,25 @@ async function warm(s: Session, scenario: Warm, vars: Vars, jitter: number): Pro
         ? `() => document.querySelector(${JSON.stringify(`header > a[href="${fill(action.tap, vars)}"]`)}).click()`
         : "swipe" in action
           ? `() => (${swipe})("touchend", ${by})`
-          : `${action.run}`;
+          : "type" in action
+            ? `() => (${typeText})(${JSON.stringify(action.type)}, ${!!action.open})`
+            : `${action.run}`;
   if (scenario.before) {
     await load(s, fill(scenario.before, vars));
     if ("restore" in until) await page.evaluate(awaitRestore);
   }
   await load(s, fill(scenario.start, vars));
+  if ("type" in action) {
+    // A build from before search never says its rows are complete. It skips, as Back does without its cache.
+    if (!(await page.request.get("/.tachylite/search.js")).ok()) return { skip: "this build has no full-text search." };
+    if (!action.open) await page.evaluate(`(${openSwitcher})(${typeText})`);
+  }
+
+  if ("answered" in until) {
+    const from = cpu();
+    const at: { ms: number; dom: number } = await page.evaluate(call(answered, run, vars, until.answered, jitter));
+    return { ms: tenth(at.ms), idle: idleSince(from), dom: tenth(at.dom) };
+  }
 
   if ("paint" in until) {
     const from = cpu();
@@ -447,7 +519,7 @@ async function warm(s: Session, scenario: Warm, vars: Vars, jitter: number): Pro
     return { ms: tenth(at.ms), idle: idleSince(from), dom: tenth(at.dom) };
   }
 
-  const to = fill("navigation" in until ? until.navigation : "tab" in until ? until.tab : until.restore, vars);
+  const to = fill("navigation" in until ? until.navigation : "tab" in until ? until.tab : (until as { restore: string }).restore, vars);
   const synced = nextSync(s);
   const from = cpu();
 

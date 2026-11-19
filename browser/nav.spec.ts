@@ -175,7 +175,8 @@ test("Escape closes the switcher with a query typed", async ({ page, isMobile })
 test("the arrow keys move through the switcher's results", async ({ page, isMobile }) => {
   test.skip(isMobile, "a phone has no arrow keys");
   await page.goto(base + "/a");
-  await find(page, "e");
+  // Two titles hold an `r`, and no other note's text does.
+  await find(page, "r");
   const input = page.locator("dialog.switcher input");
   await expect(input).toHaveAttribute("enterkeyhint", "go");
   await expect(page.locator("dialog.switcher ul")).toHaveAttribute("aria-live", "polite");

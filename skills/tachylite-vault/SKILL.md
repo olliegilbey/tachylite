@@ -11,9 +11,9 @@ Tachylite serves a vault of Obsidian-style Markdown as a website. It only reads 
 
 Take the first form that can carry the content.
 
-1. **A Markdown note.** The default. The quick switcher finds it by title, alias and path. It links, and it lists its backlinks. An open page updates as you save. It syncs to the phone ahead of time and reads offline.
+1. **A Markdown note.** The default. The quick switcher finds it by title, alias and path, and by any word in its text. It links, and it lists its backlinks. An open page updates as you save. It syncs to the phone ahead of time and reads offline.
 2. **Raw HTML inside a note.** For layout Markdown lacks: a collapsible block, a figure with a caption, a keyboard key. It keeps every gain of a note. It carries no script and no styling.
-3. **A standalone `.html` page.** For anything that needs a script or its own styling: a chart, a map, an interactive view. It gives up backlinks, live updates, a title and aliases: lists and the switcher show it by file name. One up to 1 MB still syncs to the phone ahead of time.
+3. **A standalone `.html` page.** For anything that needs a script or its own styling: a chart, a map, an interactive view. It gives up backlinks, live updates, text search, a title and aliases: lists and the switcher show it by file name. One up to 1 MB still syncs to the phone ahead of time.
 
 ## Notes
 

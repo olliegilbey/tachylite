@@ -188,6 +188,16 @@ fn serves_live_script() {
 }
 
 #[test]
+fn serves_the_search_worker_script() {
+    let d = Dirs::fixture();
+    let server = Server::start(&d.vault(), &d.out());
+    let r = server.get("/.tachylite/search.js");
+    assert_eq!(r.status, 200);
+    assert_eq!(r.header("content-type"), Some("text/javascript"));
+    assert_eq!(r.header("cache-control"), Some("no-cache"));
+}
+
+#[test]
 fn mermaid_js_is_gzipped() {
     let d = Dirs::fixture();
     let server = Server::start(&d.vault(), &d.out());
@@ -419,6 +429,7 @@ fn every_response_carries_the_documented_headers() {
         "/.tachylite/manifest.json",
         "/.tachylite/live.js",
         "/.tachylite/sw.js",
+        "/.tachylite/search.js",
         "/.tachylite/app.webmanifest",
         "/.tachylite/icon.svg",
         "/.tachylite/icon-maskable.svg",

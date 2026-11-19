@@ -158,3 +158,8 @@ dialog.switcher ul { margin: 0; padding: 0; list-style: none; max-height: 60vh; 
 dialog.switcher li a { display: block; padding: 0.5rem 1rem; color: var(--fg); }
 dialog.switcher input:focus + ul li:first-child a, dialog.switcher li a:focus { background: var(--raise); }
 dialog.switcher .meta { display: inline; margin-left: 0.5rem; }
+dialog.switcher .snippet {
+  display: block; overflow: hidden; color: var(--dim); font-size: 0.85rem;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+dialog.switcher mark { background: none; color: var(--fg); font-weight: 600; }
