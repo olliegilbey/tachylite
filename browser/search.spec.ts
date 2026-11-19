@@ -1,4 +1,5 @@
 import type { Page } from "@playwright/test";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { expect, lost, run, test } from "./fixture";
@@ -10,6 +11,9 @@ let dir = "";
 let server: Server | null = null;
 
 const MANIFEST = "/.tachylite/manifest.json";
+const scale = Number(process.env.BUDGET_SCALE ?? "1");
+// The search budget, in ms for one key at 4x CPU, on the budget vault.
+const BUDGET = 50;
 
 /** Writes a note. `age` is how many days ago it was last saved. */
 function note(name: string, body: string, age = 0) {
@@ -175,4 +179,83 @@ test("a page with no service worker still matches names", async ({ browser }) =>
   await find(page, "frnc");
   await expect(rows(page).locator("a")).toHaveText([/^Fern care/]);
   await context.close();
+});
+
+// The clock runs in the page, from the key going down to the paint of the rows that answer it.
+// Chromium's CPU throttle does not reach a worker. So the page runs at a quarter speed and has
+// two cores, which gives it one search worker at full speed. That worker scans the whole vault
+// in the time four workers take on cores four times slower: the pool a phone with five cores
+// or more gets. The log gives the scan and the page's share apart, so a reader can redo the
+// sum for another pool: the page's share, plus the scan times four, over the workers.
+test("answers a key within budget on the budget vault", async ({ page }, info) => {
+  test.skip(info.project.name !== "phone", "The budget is the phone's.");
+  test.setTimeout(240_000);
+  const at = join(dir, "budget");
+  execFileSync(join(__dirname, "..", "target", "release", "examples", "budget_vault"), [join(at, "vault")], { stdio: "ignore" });
+  server = await serve(at);
+  base = server.base;
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "hardwareConcurrency", { value: 2 });
+    const gaps: number[] = ((window as any).gaps = []);
+    let down = 0;
+    addEventListener("keydown", () => (down = performance.now()), true);
+    // Element Timing reports a paint on an element that carried the attribute before it painted.
+    new MutationObserver(() => {
+      const list = document.querySelector("dialog.switcher ul");
+      if (down && list?.getAttribute("aria-busy") === "false")
+        for (const e of list.querySelectorAll("*")) e.setAttribute("elementtiming", "row");
+    }).observe(document, { attributes: true, subtree: true, attributeFilter: ["aria-busy"] });
+    new PerformanceObserver((list) => {
+      const first = list.getEntries().find((e) => (e as any).renderTime > down);
+      if (down && first) gaps.push((first as any).renderTime - down);
+      if (first) down = 0;
+    }).observe({ type: "element" });
+  });
+  await synced(page, "/");
+  // `queue` is the chain of jobs in `src/sw.js`. Once it settles, the first sync is over.
+  await page.context().serviceWorkers()[0].evaluate("queue");
+  // Each query ends in rows, so a paint ends its clock. The last scans every note for two rows.
+  const queries = ["kalo", "zanquinne", "dorten mifelbar", "zanquinne tuvomar"];
+  // One worker's scan of every note at full speed, from the ask to the answer.
+  const scans: number[] = await page.evaluate(async (queries) => {
+    const worker = new Worker("/.tachylite/search.js", { name: "0/1" });
+    let id = 0;
+    const ask = (query: string) =>
+      new Promise<number>((done) => {
+        const from = performance.now();
+        worker.onmessage = () => done(performance.now() - from);
+        worker.postMessage({ id: ++id, words: query.split(" ") });
+      });
+    await ask("first");
+    const scans = [];
+    for (const query of queries) {
+      const times = [];
+      for (let i = 0; i < 9; i++) times.push(await ask(query));
+      scans.push(times.sort((a, b) => a - b)[4]);
+    }
+    worker.terminate();
+    return scans;
+  }, queries);
+  const input = page.locator("dialog.switcher input");
+  // The first answer waits for the worker to read its text. The budget is for a key after it.
+  await find(page, "first");
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
+  const rounds = 5;
+  for (let i = 0; i < rounds * queries.length; i++) {
+    const query = queries[i % queries.length];
+    await input.fill(query.slice(0, -1));
+    await answered(page);
+    await input.press(query.slice(-1));
+    await page.waitForFunction((n) => (window as any).gaps.length === n, i + 1);
+  }
+  const gaps: number[] = await page.evaluate(() => (window as any).gaps);
+  queries.forEach((query, q) => {
+    const mine = gaps.filter((_, i) => i % queries.length === q).sort((a, b) => a - b);
+    const median = mine[rounds >> 1];
+    console.log(
+      `search key, ${info.project.name}, 4x CPU throttle, one worker at full speed, "${query}": median ${median.toFixed(1)} ms of ${mine.map((g) => g.toFixed(0))}; the scan ${scans[q].toFixed(1)} ms, the page's share ${(median - scans[q]).toFixed(1)} ms`,
+    );
+    expect(median, query).toBeLessThanOrEqual(BUDGET * scale);
+  });
 });

@@ -18,7 +18,7 @@ check:
 
 # The browser seam: Playwright drives headless Chromium against a real server.
 browser:
-	cargo build --release
+	cargo build --release --bins --example budget_vault
 	cd browser && npm ci && npx playwright install $(PLAYWRIGHT_INSTALL) --only-shell chromium && \
 	BUDGET_SCALE=$(BUDGET_SCALE) npx playwright test
 
