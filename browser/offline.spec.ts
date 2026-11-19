@@ -1,5 +1,5 @@
 import type { Page, Route } from "@playwright/test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, lost, run, setHidden, test } from "./fixture";
 import { serve, stop, type Server } from "./server";
@@ -504,6 +504,29 @@ test("a sync downloads an html page again only when it changes, and never one pa
   await expect.poll(() => cached(page, "/chart.html"), { timeout: 15_000 }).toContain("second chart");
   await synced(page);
   expect(fetched).toEqual(["/b", "/chart.html"]);
+});
+
+// The server's validator for a vault file is its size and modified time. A tool that keeps
+// both, as a copy that preserves times does, changes the bytes under the same validator.
+test("a sync downloads a changed html page whose size and modified time stayed the same", async ({ page }) => {
+  const at = new Date("2026-03-02T08:00:00Z");
+  const save = (text: string) => {
+    writeFileSync(join(dir, "vault", "chart.html"), `<!doctype html><p>${text} chart</p>`);
+    utimesSync(join(dir, "vault", "chart.html"), at, at);
+  };
+  await stop(server!);
+  save("first");
+  server = await serve(dir, server!.port);
+  await visit(page, "/a");
+  await synced(page);
+  expect(await cached(page, "/chart.html")).toContain("first chart");
+  const before = (await listed(page)).pages["/chart.html"];
+
+  await stop(server);
+  save("other");
+  server = await serve(dir, server!.port);
+  await expect.poll(async () => (await listed(page)).pages["/chart.html"]).not.toBe(before);
+  await expect.poll(() => cached(page, "/chart.html"), { timeout: 15_000 }).toContain("other chart");
 });
 
 test("an upgraded worker caches no Mermaid for an html page with a diagram block", async ({ page, context }) => {

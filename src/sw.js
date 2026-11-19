@@ -18,9 +18,10 @@ const KEEP = [...SHELL, MANIFEST, MERMAID];
 const DIAGRAM = '<pre class="mermaid">';
 // A fetch the worker queues for gives up after 30 s, so a hung one cannot hold the queue; the
 // next sync retries it. Six pages share a slow link, so a working one finishes well inside it.
-// An html page gets 120 s: it can be 1 MB, sent uncompressed.
+// An html page gets 120 s: it can be 1 MB, sent uncompressed. Its fetch skips the HTTP
+// cache: a changed page can keep its size and modified time, the server's validator.
 // An engine without `AbortSignal.timeout`, as iOS 15, fetches with no limit.
-const get = (url, s = 30) => fetch(url, { signal: AbortSignal.timeout?.(s * 1e3) });
+const get = (url, s = 30, cache) => fetch(url, { cache, signal: AbortSignal.timeout?.(s * 1e3) });
 // A response rebuilt around a body, keeping its headers but the encoding and length of the old body.
 const copy = (body, from) => {
   const headers = new Headers(from.headers);
@@ -148,7 +149,7 @@ async function sync() {
   const workers = Array.from({ length: 6 }, async () => {
     for (let url; (url = stale.shift()); ) {
       try {
-        const r = await get(url, keep.has(url) ? 120 : 30);
+        const r = keep.has(url) ? await get(url, 120, "reload") : await get(url);
         if (r.status === 404) await cache.delete(url);
         if (r.status !== 200) continue;
         // A page may have changed since the manifest was read: record what came. A file
