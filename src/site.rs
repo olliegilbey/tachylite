@@ -916,9 +916,12 @@ impl Site {
 
     /// Wraps each of `bodies` in its page with its current backlinks, writes each whose
     /// version changed or whose note is new and not yet pushed, and returns their pushes.
+    /// `rendered` says the bodies are new renders, so their search rows may have changed.
+    /// A body read back for a new footer is the one its row was built from.
     fn emit_notes(
         &mut self,
         bodies: &[(&str, &str)],
+        rendered: bool,
         done: &mut Done,
         sink: &mut impl Sink,
     ) -> Vec<Push> {
@@ -936,7 +939,9 @@ impl Site {
             done.pushed.insert(path.to_string());
             self.versions.insert(path.to_string(), page.version.clone());
             self.unlisted = true;
-            self.dirty_shards.insert(indexes::shard(path));
+            if rendered {
+                self.dirty_shards.insert(indexes::shard(path));
+            }
             // Where the body sits in the page, so a new footer can go around it unrendered.
             let folder = path.rsplit_once('/').map_or("", |(folder, _)| folder);
             let start = page
@@ -990,7 +995,7 @@ impl Site {
                         .filter_map(|p| Some((*p, held.get(*p)?.as_str()))),
                 )
                 .collect();
-            self.write_pages(&bodies, done, sink);
+            self.write_pages(&bodies, false, done, sink);
             drop(bodies);
             done.held = held;
         }
@@ -1651,7 +1656,7 @@ impl Site {
                 .iter()
                 .map(|(p, b)| (p.as_str(), b.as_str()))
                 .collect();
-            self.write_pages(&bodies, done, sink);
+            self.write_pages(&bodies, true, done, sink);
         }
     }
 
@@ -1663,7 +1668,7 @@ impl Site {
             .iter()
             .filter_map(|p| Some((p.as_str(), held.get(p)?.as_str())))
             .collect();
-        self.write_pages(&bodies, done, sink);
+        self.write_pages(&bodies, true, done, sink);
         drop(bodies);
         done.held = held;
     }
@@ -1671,9 +1676,15 @@ impl Site {
     /// Writes and pushes the pages of `bodies` in small batches: each batch's writes, then
     /// its pushes, so a pushed page links to no page of its batch not yet written, and a
     /// batch holds few pages.
-    fn write_pages(&mut self, bodies: &[(&str, &str)], done: &mut Done, sink: &mut impl Sink) {
+    fn write_pages(
+        &mut self,
+        bodies: &[(&str, &str)],
+        rendered: bool,
+        done: &mut Done,
+        sink: &mut impl Sink,
+    ) {
         for batch in bodies.chunks(32) {
-            for push in self.emit_notes(batch, done, sink) {
+            for push in self.emit_notes(batch, rendered, done, sink) {
                 sink.push(push);
             }
         }
