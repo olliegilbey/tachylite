@@ -703,7 +703,7 @@ fn sanitizer_keeps_tachylite_markup() {
         "<sup class=\"footnote-ref\"><a href=\"#fn-1\" id=\"fnref-1\" data-footnote-ref",
         "aria-label=\"Back to reference 1\"",
         "<section class=\"footnotes\" data-footnotes",
-        "<input type=\"checkbox\" checked=\"\" disabled=\"\"",
+        "<li data-task=\"done\"><input type=\"checkbox\" checked disabled> done</li>",
         "<pre class=\"mermaid\">",
         "<a href=\"/welcome\">welcome</a>",
         "<a class=\"broken-link\">nobody</a>",
@@ -1479,12 +1479,8 @@ fn tasks_snapshot() {
 
 /// The list item of a task with `status`, up to its text.
 fn task(status: &str) -> String {
-    let checked = if status == "done" {
-        "checked=\"\" "
-    } else {
-        ""
-    };
-    format!("<li data-task=\"{status}\"><input type=\"checkbox\" {checked}disabled=\"\" /> ")
+    let checked = if status == "done" { "checked " } else { "" };
+    format!("<li data-task=\"{status}\"><input type=\"checkbox\" {checked}disabled> ")
 }
 
 #[test]

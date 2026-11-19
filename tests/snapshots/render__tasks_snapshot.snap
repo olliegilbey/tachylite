@@ -11,7 +11,7 @@ expression: "built(\"chores/week\")"
 <link rel="manifest" href="/.tachylite/app.webmanifest">
 <link rel="icon" href="/.tachylite/icon.svg">
 <link rel="stylesheet" href="/.tachylite/style.css">
-<meta name="tachylite-version" content="505cd54c9ea0e273">
+<meta name="tachylite-version" content="c1e8fa5e55de08fc">
 <title>Week chores</title>
 <script src="/.tachylite/live.js" defer></script>
 </head>
@@ -22,21 +22,21 @@ expression: "built(\"chores/week\")"
 <dl class="properties"><dt>title</dt><dd>Week chores</dd></dl>
 <h1 id="week-chores">Week chores</h1>
 <ul>
-<li data-task="todo"><input type="checkbox" disabled="" /> Water the fern</li>
-<li data-task="doing"><input type="checkbox" disabled="" /> Repot the basil <a class="tag" href="/.tachylite/tags/shed">#shed</a></li>
-<li data-task="done"><input type="checkbox" checked="" disabled="" /> Sweep the porch</li>
-<li data-task="done"><input type="checkbox" checked="" disabled="" /> Oil the gate</li>
-<li data-task="cancelled"><input type="checkbox" disabled="" /> Paint the fence, see <a href="/chores/errands">errands</a></li>
+<li data-task="todo"><input type="checkbox" disabled> Water the fern</li>
+<li data-task="doing"><input type="checkbox" disabled> Repot the basil <a class="tag" href="/.tachylite/tags/shed">#shed</a></li>
+<li data-task="done"><input type="checkbox" checked disabled> Sweep the porch</li>
+<li data-task="done"><input type="checkbox" checked disabled> Oil the gate</li>
+<li data-task="cancelled"><input type="checkbox" disabled> Paint the fence, see <a href="/chores/errands">errands</a></li>
 <li>[?] Not a task</li>
 <li>A plain item</li>
 </ul>
 <h2 id="nested">Nested</h2>
 <ul>
-<li data-task="doing"><input type="checkbox" disabled="" /> Tidy the shed
+<li data-task="doing"><input type="checkbox" disabled> Tidy the shed
 <ul>
-<li data-task="done"><input type="checkbox" checked="" disabled="" /> Sort the tools</li>
-<li data-task="todo"><input type="checkbox" disabled="" /> Hang the rake</li>
-<li data-task="cancelled"><input type="checkbox" disabled="" /> Sell the mower
+<li data-task="done"><input type="checkbox" checked disabled> Sort the tools</li>
+<li data-task="todo"><input type="checkbox" disabled> Hang the rake</li>
+<li data-task="cancelled"><input type="checkbox" disabled> Sell the mower
 <ul>
 <li>A line under a cancelled task</li>
 </ul>
@@ -45,10 +45,10 @@ expression: "built(\"chores/week\")"
 </li>
 </ul>
 <ol>
-<li data-task="todo"><input type="checkbox" disabled="" /> First on a numbered list</li>
+<li data-task="todo"><input type="checkbox" disabled> First on a numbered list</li>
 </ol>
 <ul>
-<li data-task="todo"><input type="checkbox" disabled="" /> 
+<li data-task="todo"><input type="checkbox" disabled> 
 <p>A task with a second paragraph</p>
 <p>More about the task.</p>
 </li>
@@ -59,16 +59,16 @@ Before the weekend
 </div>
 <div class="callout-content">
 <ul>
-<li data-task="todo"><input type="checkbox" disabled="" /> Buy seeds</li>
-<li data-task="doing"><input type="checkbox" disabled="" /> Mend the hose</li>
+<li data-task="todo"><input type="checkbox" disabled> Buy seeds</li>
+<li data-task="doing"><input type="checkbox" disabled> Mend the hose</li>
 </ul>
 </div>
 </div>
 <div class="embed"><a class="embed-link" href="/chores/errands">errands</a>
 <h1 id="e1.errands">Errands</h1>
 <ul>
-<li data-task="doing"><input type="checkbox" disabled="" /> Post the parcel</li>
-<li data-task="cancelled"><input type="checkbox" disabled="" /> Return the ladder</li>
+<li data-task="doing"><input type="checkbox" disabled> Post the parcel</li>
+<li data-task="cancelled"><input type="checkbox" disabled> Return the ladder</li>
 </ul>
 </div>
 </main>

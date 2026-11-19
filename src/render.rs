@@ -671,16 +671,14 @@ fn format_node<'a>(
     if !entering {
         context.write_str("</li>\n")?;
     } else if let Some(status) = task_status(item.symbol) {
-        let checked = if status == "done" {
-            " checked=\"\""
-        } else {
-            ""
-        };
         context.cr()?;
-        write!(
-            context,
-            "<li data-task=\"{status}\"><input type=\"checkbox\"{checked} disabled=\"\" /> "
-        )?;
+        context.write_str("<li data-task=\"")?;
+        context.write_str(status)?;
+        context.write_str(if status == "done" {
+            "\"><input type=\"checkbox\" checked disabled> "
+        } else {
+            "\"><input type=\"checkbox\" disabled> "
+        })?;
     } else {
         context.cr()?;
         context.write_str("<li>[")?;
