@@ -127,8 +127,10 @@ function pick<T extends { name: string }>(all: T[], names: string[] | undefined,
 }
 
 async function variables(base: string): Promise<Vars> {
-  // The switcher list: each note as its title, its URL, then its path and aliases.
-  const notes: [string, string][] = await (await fetch(`${base}/.tachylite/notes.json`)).json();
+  // The switcher list: each note or html page as its title, its URL, then its path and aliases.
+  // An html page is sandboxed, so the bench cannot time one: it takes a note.
+  const all: [string, string][] = await (await fetch(`${base}/.tachylite/notes.json`)).json();
+  const notes = all.filter(([, url]) => !url.endsWith(".html"));
   const [title, note] = notes[Math.floor(notes.length / 2)];
   return { note, query: title.slice(0, 3).toLowerCase() };
 }

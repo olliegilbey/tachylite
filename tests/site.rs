@@ -18,10 +18,15 @@ impl Source for Mem {
     fn note(&mut self, path: &str) -> Result<Note, ReadError> {
         let bytes = self.0.get(path).cloned().ok_or(ReadError::Missing)?;
         let modified = self.1.get(path).copied().unwrap_or_default();
-        Ok(Note { bytes, modified })
+        Ok(Note {
+            bytes,
+            modified,
+            nanos: 0,
+        })
     }
-    fn file(&mut self, path: &str) -> Result<(), ReadError> {
-        self.0.get(path).map(|_| ()).ok_or(ReadError::Missing)
+    fn file(&mut self, path: &str) -> Result<i64, ReadError> {
+        let modified = self.1.get(path).copied().unwrap_or_default();
+        self.0.get(path).map(|_| modified).ok_or(ReadError::Missing)
     }
 }
 
@@ -64,6 +69,11 @@ fn fold(out: &mut Out, delta: &Delta, mem: &Mem) {
             Write::Copy { out: path, from } => {
                 out.insert(path.clone(), mem.0[from].clone());
             }
+            Write::Html {
+                out: path, bytes, ..
+            } => {
+                out.insert(path.clone(), bytes.clone());
+            }
             Write::Manifest { json } => {
                 out.insert(tachylite::site::MANIFEST.into(), json.as_bytes().to_vec());
             }
@@ -96,6 +106,10 @@ fn leaks(delta: &Delta) -> bool {
     let writes = delta.writes.iter().any(|w| match w {
         Write::Page { out, html } => bad(out) || bad(html),
         Write::Copy { out, from } => bad(out) || bad(from),
+        // A published html page may hold any word but the marker.
+        Write::Html {
+            out, from, bytes, ..
+        } => bad(out) || bad(from) || String::from_utf8_lossy(bytes).contains(HUSHED),
         Write::Manifest { json } => bad(json),
     });
     let pushes = delta.pushes.iter().any(|p| match p {
@@ -118,15 +132,21 @@ fn manifest_urls(out: &Out) -> std::collections::BTreeSet<String> {
         .collect()
 }
 
-/// The URLs of the pages written: every file under `pages/`, the switcher list and the
-/// search shards.
+/// The URLs a sync downloads: every file under `pages/`, the switcher list, the search
+/// shards, and every html page. The model vault holds none past the size limit.
 fn page_urls(out: &Out) -> std::collections::BTreeSet<String> {
     let listed = |p: &&String| p.ends_with("/notes.json") || p.starts_with(SEARCH);
     let files = out.keys().filter(|p| p.starts_with("files/.tachylite/"));
+    let html = out.keys().filter_map(|p| {
+        let path = p.strip_prefix("files/").filter(|_| !generated(p))?;
+        let html = classify(path, &Exclude::default()) == Some(tachylite::vault::Kind::Html);
+        html.then(|| format!("/{}", tachylite::render::encode(path)))
+    });
     out.keys()
         .filter(|p| p.starts_with("pages/"))
         .map(|p| format!("/{}", tachylite::render::encode(page_key(p))))
         .chain(files.filter(listed).map(|p| p["files".len()..].to_string()))
+        .chain(html)
         .collect()
 }
 
@@ -152,7 +172,9 @@ fn files(delta: &Delta) -> Vec<&Write> {
         .writes
         .iter()
         .filter(|w| match w {
-            Write::Page { out, .. } | Write::Copy { out, .. } => !generated(out),
+            Write::Page { out, .. } | Write::Copy { out, .. } | Write::Html { out, .. } => {
+                !generated(out)
+            }
             Write::Manifest { .. } => false,
         })
         .collect()
@@ -398,7 +420,7 @@ fn unreadable_note_is_skipped_and_unpublished() {
         fn note(&mut self, _: &str) -> Result<Note, ReadError> {
             Err(ReadError::Skip(SkipReason::Symlink))
         }
-        fn file(&mut self, _: &str) -> Result<(), ReadError> {
+        fn file(&mut self, _: &str) -> Result<i64, ReadError> {
             Err(ReadError::Skip(SkipReason::Symlink))
         }
     }
@@ -682,10 +704,11 @@ fn unchanged_backlinks_render_nothing() {
     assert_eq!(pushed(&delta), ["a"]);
 }
 
-const PATHS: [&str; 14] = [
+const PATHS: [&str; 15] = [
     "a.md",
     "a.MD",
     "x.html",
+    "private/h.html",
     "x.html.md",
     "x.md",
     "x.html/y.md",
@@ -699,8 +722,8 @@ const PATHS: [&str; 14] = [
     "d/2026-01-03.md",
 ];
 
-/// What the exclusion property excludes: `private/s.md` and `d/k.secret.md`, wherever
-/// a move takes it.
+/// What the exclusion property excludes: `private/s.md`, `private/h.html` and
+/// `d/k.secret.md`, wherever a move takes it.
 fn hush() -> Exclude {
     Exclude::new(&["private".to_string(), "**/*.secret.md".to_string()]).unwrap()
 }
@@ -735,7 +758,7 @@ impl Source for MidSave {
     fn note(&mut self, _: &str) -> Result<Note, ReadError> {
         Err(ReadError::MidSave)
     }
-    fn file(&mut self, _: &str) -> Result<(), ReadError> {
+    fn file(&mut self, _: &str) -> Result<i64, ReadError> {
         Err(ReadError::MidSave)
     }
 }
@@ -782,7 +805,7 @@ fn mid_save_loser_does_not_block_promotion() {
                 _ => Err(ReadError::Missing),
             }
         }
-        fn file(&mut self, _: &str) -> Result<(), ReadError> {
+        fn file(&mut self, _: &str) -> Result<i64, ReadError> {
             Err(ReadError::Missing)
         }
     }
@@ -1078,7 +1101,8 @@ fn manifest(delta: &Delta) -> Option<&str> {
     })
 }
 
-/// The manifest's note entries, as `{"pages":{…}}`, without the generated pages.
+/// The manifest's note and html page entries, as `{"pages":{…}}`, without the generated
+/// pages.
 fn note_manifest(delta: &Delta) -> Option<String> {
     let json = manifest(delta)?;
     let inner = &json[r#"{"pages":{"#.len()..json.find(r#"},"files":["#)?];
@@ -1104,21 +1128,32 @@ fn version(delta: &Delta, key: &str) -> String {
         .unwrap_or_else(|| panic!("no page pushed for {key}"))
 }
 
+/// The version of an html page with these bytes: their hash, as a page's version is.
+fn html_version(bytes: &str) -> String {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    bytes.as_bytes().hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
 #[test]
-fn the_manifest_lists_every_note_page_with_its_version() {
+fn the_manifest_lists_every_note_page_and_html_page_with_its_version() {
     let mem = Mem::with(&[
         ("b.md", "bee"),
         ("a.md", "aye"),
         ("sub/c d.md", "sea"),
         ("img.png", "png"),
         ("page.html", "<p>page</p>"),
+        ("sub/e f.html", "<p>eff</p>"),
     ]);
     let (out, delta) = full(&mem);
     let want = format!(
-        r#"{{"pages":{{"/a":"{}","/b":"{}","/sub/c%20d":"{}"}}}}"#,
+        r#"{{"pages":{{"/a":"{}","/b":"{}","/sub/c%20d":"{}","/page.html":"{}","/sub/e%20f.html":"{}"}}}}"#,
         version(&delta, "a"),
         version(&delta, "b"),
         version(&delta, "sub/c d"),
+        html_version("<p>page</p>"),
+        html_version("<p>eff</p>"),
     );
     assert_eq!(note_manifest(&delta).as_deref(), Some(want.as_str()));
     assert_eq!(
@@ -1137,7 +1172,7 @@ fn file_list(delta: &Delta) -> Option<&str> {
 }
 
 #[test]
-fn the_manifest_lists_every_html_page_and_asset_without_a_version() {
+fn the_manifest_lists_every_html_page_and_asset_as_a_file() {
     let mem = Mem::with(&[
         ("a.md", "aye"),
         ("page.html", "<p>page</p>"),
@@ -1208,6 +1243,37 @@ fn a_change_no_page_shows_writes_no_manifest() {
     assert_eq!(manifest(&delta), None, "an unchanged note");
 }
 
+#[test]
+fn the_manifest_follows_an_html_page_edited_saved_unchanged_and_removed() {
+    let mut mem = Mem::with(&[("a.md", "aye"), ("p.html", "<p>one</p>")]);
+    let (mut site, first) = synced(&mut mem, Exclude::default());
+    let a = version(&first, "a");
+    let listed = |html: &str| {
+        let html = html_version(html);
+        format!(r#"{{"pages":{{"/a":"{a}","/p.html":"{html}"}}}}"#)
+    };
+    assert_eq!(note_manifest(&first), Some(listed("<p>one</p>")));
+    let delta = site.apply(vec![touch("p.html")], &mut mem);
+    assert_eq!(manifest(&delta), None, "an unchanged html page");
+    assert!(delta.pushes.is_empty(), "{:?}", delta.pushes);
+    mem.0.insert("p.html".into(), b"<p>two</p>".to_vec());
+    let delta = site.apply(vec![touch("p.html")], &mut mem);
+    assert_eq!(note_manifest(&delta), Some(listed("<p>two</p>")));
+    assert!(
+        delta.pushes.is_empty(),
+        "no index page shows it: {:?}",
+        delta.pushes
+    );
+    mem.0.remove("p.html");
+    let delta = site.apply(vec![touch("p.html")], &mut mem);
+    assert_eq!(delta.deletes[0], "files/p.html");
+    assert_eq!(
+        note_manifest(&delta),
+        Some(format!(r#"{{"pages":{{"/a":"{a}"}}}}"#))
+    );
+    assert_eq!(file_list(&delta), Some("[]"));
+}
+
 /// An in-memory vault whose notes carry modified times.
 struct Timed(BTreeMap<String, (Vec<u8>, i64)>);
 
@@ -1218,11 +1284,13 @@ impl Source for Timed {
             .map(|(bytes, modified)| Note {
                 bytes: bytes.clone(),
                 modified: *modified,
+                nanos: 0,
             })
             .ok_or(ReadError::Missing)
     }
-    fn file(&mut self, path: &str) -> Result<(), ReadError> {
-        self.0.get(path).map(|_| ()).ok_or(ReadError::Missing)
+    fn file(&mut self, path: &str) -> Result<i64, ReadError> {
+        let file = self.0.get(path).ok_or(ReadError::Missing)?;
+        Ok(file.1)
     }
 }
 
@@ -1483,7 +1551,7 @@ fn an_excluded_note_is_on_no_index_page() {
         let text = match w {
             Write::Page { html, .. } => html.to_string(),
             Write::Manifest { json } => json.clone(),
-            Write::Copy { .. } => continue,
+            Write::Copy { .. } | Write::Html { .. } => continue,
         };
         assert!(
             !text.contains("zebra") && !text.contains("private"),
@@ -1505,7 +1573,7 @@ impl Source for Flaky<'_> {
             None => self.mem.clone().note(path),
         }
     }
-    fn file(&mut self, path: &str) -> Result<(), ReadError> {
+    fn file(&mut self, path: &str) -> Result<i64, ReadError> {
         match self.failing.get(path) {
             Some(e) => Err(*e),
             None => self.mem.clone().file(path),
@@ -1743,7 +1811,7 @@ fn an_excluded_notes_tag_has_no_page_and_its_note_is_on_none() {
         let (out, text) = match w {
             Write::Page { out, html } => (out.as_str(), html.to_string()),
             Write::Manifest { json } => ("", json.clone()),
-            Write::Copy { .. } => continue,
+            Write::Copy { .. } | Write::Html { .. } => continue,
         };
         assert!(
             !out.contains("secretive") && !text.contains("secretive"),
@@ -1804,7 +1872,7 @@ impl Source for Counted {
         self.1.push(path.to_string());
         self.0.note(path)
     }
-    fn file(&mut self, path: &str) -> Result<(), ReadError> {
+    fn file(&mut self, path: &str) -> Result<i64, ReadError> {
         self.0.file(path)
     }
 }
@@ -1895,7 +1963,7 @@ struct Ordered(Vec<String>);
 impl Sink for Ordered {
     fn delete(&mut self, _: String) {}
     fn write(&mut self, write: Write) {
-        if let Write::Page { out, .. } | Write::Copy { out, .. } = write {
+        if let Write::Page { out, .. } | Write::Copy { out, .. } | Write::Html { out, .. } = write {
             self.0.push(format!("write {out}"));
         }
     }

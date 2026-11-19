@@ -703,7 +703,7 @@ fn sanitizer_keeps_tachylite_markup() {
         "<sup class=\"footnote-ref\"><a href=\"#fn-1\" id=\"fnref-1\" data-footnote-ref",
         "aria-label=\"Back to reference 1\"",
         "<section class=\"footnotes\" data-footnotes",
-        "<input type=\"checkbox\" checked=\"\" disabled=\"\"",
+        "<li data-task=\"done\"><input type=\"checkbox\" checked disabled> done</li>",
         "<pre class=\"mermaid\">",
         "<a href=\"/welcome\">welcome</a>",
         "<a class=\"broken-link\">nobody</a>",
@@ -1041,11 +1041,16 @@ fn outside_code(html: &str) -> String {
 
 /// The parser's own reading of a note, comments and all, with Tachylite's extensions.
 fn raw_html(md: &str) -> String {
+    parsed(md, true)
+}
+
+/// `raw_html`, with task lists or without.
+fn parsed(md: &str, tasks: bool) -> String {
     let mut options = comrak::Options::default();
     options.extension.strikethrough = true;
     options.extension.table = true;
     options.extension.autolink = true;
-    options.extension.tasklist = true;
+    options.extension.tasklist = tasks;
     options.extension.footnotes = true;
     options.extension.wikilinks_title_after_pipe = true;
     options.extension.ofm_callouts = true;
@@ -1468,5 +1473,194 @@ fn a_comment_after_code_in_a_footnote_or_callout_title_stays_hidden() {
         let html = plain(md);
         assert!(!html.contains("zebra"), "{md:?} gave {html}");
         assert!(html.contains("comment-error"), "{md:?} gave {html}");
+    }
+}
+
+#[test]
+fn tasks_snapshot() {
+    insta::assert_snapshot!(built("chores/week"));
+}
+
+/// The list item of a task with `status`, up to its text.
+fn task(status: &str) -> String {
+    let checked = if status == "done" { "checked " } else { "" };
+    format!("<li data-task=\"{status}\"><input type=\"checkbox\" {checked}disabled> ")
+}
+
+#[test]
+fn a_task_carries_its_status() {
+    let html = plain("- [ ] a\n- [/] b\n- [x] c\n- [X] d\n- [-] e\n- f\n");
+    let want = format!(
+        "<ul>\n{}a</li>\n{}b</li>\n{}c</li>\n{}d</li>\n{}e</li>\n<li>f</li>\n</ul>\n",
+        task("todo"),
+        task("doing"),
+        task("done"),
+        task("done"),
+        task("cancelled"),
+    );
+    assert_eq!(html, want);
+}
+
+#[test]
+fn a_task_keeps_its_status_in_any_container() {
+    let nested = plain("- [/] a\n  - [-] b\n    1. [x] c\n");
+    for want in [
+        task("doing") + "a",
+        task("cancelled") + "b",
+        task("done") + "c",
+    ] {
+        assert!(nested.contains(&want), "{want} not in {nested}");
+    }
+    let quoted = plain("> [!note] Title\n> - [/] in a callout\n\n> - [-] in a quote\n");
+    for want in [
+        task("doing") + "in a callout",
+        task("cancelled") + "in a quote",
+    ] {
+        assert!(quoted.contains(&want), "{want} not in {quoted}");
+    }
+    let loose = plain("- [/] a\n\n  more\n");
+    let want = task("doing") + "\n<p>a</p>\n<p>more</p>";
+    assert!(loose.contains(&want), "{want} not in {loose}");
+    let body = embed("a.md", "![[b]]\n", &[("b.md", "- [/] embedded\n")], &[]);
+    let want = task("doing") + "embedded";
+    assert!(body.html.contains(&want), "{want} not in {}", body.html);
+}
+
+#[test]
+fn a_task_line_keeps_its_tags_and_links() {
+    let body = render_body(
+        "a.md",
+        "- [/] #shed sweep it, see [[b]] #tools/rake\n- [-] #gate\n",
+        &Index::new(["a.md", "b.md"]),
+        &Sources::new(),
+    );
+    let want = task("doing")
+        + "<a class=\"tag\" href=\"/.tachylite/tags/shed\">#shed</a> sweep it, see \
+           <a href=\"/b\">b</a> <a class=\"tag\" href=\"/.tachylite/tags/tools/rake\">#tools/rake</a></li>";
+    assert!(body.html.contains(&want), "{want} not in {}", body.html);
+    let want = task("cancelled") + "<a class=\"tag\" href=\"/.tachylite/tags/gate\">#gate</a></li>";
+    assert!(body.html.contains(&want), "{want} not in {}", body.html);
+    assert_eq!(
+        body.tags.iter().map(String::as_str).collect::<Vec<_>>(),
+        ["gate", "shed", "tools/rake"]
+    );
+    assert_eq!(paths(&body.targets), ["b.md"]);
+}
+
+#[test]
+fn a_checkbox_needs_a_list_item_and_a_space() {
+    for md in [
+        "[/] a\n",
+        "- [/]a\n",
+        "- [//] a\n",
+        "- [] a\n",
+        "- a [/] b\n",
+        "- \\[/] a\n",
+        "| t |\n|---|\n| [/] |\n",
+    ] {
+        let html = plain(md);
+        assert!(
+            !html.contains("data-task") && !html.contains("<input"),
+            "{md:?} gave {html}"
+        );
+    }
+}
+
+#[test]
+fn raw_html_cannot_forge_a_task() {
+    let html = plain(
+        "<ul><li data-task=\"done\">a</li></ul>\n\n\
+         <li data-task=doing><input type=\"checkbox\" disabled> b</li>\n\n\
+         - c <span data-task=\"cancelled\">d</span>\n",
+    );
+    assert!(
+        !html.contains("data-task") && !html.contains("<input"),
+        "{html}"
+    );
+    assert!(html.contains("<ul><li>a</li></ul>"), "{html}");
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(2000))]
+
+    /// A checkbox is a task only with one of the four statuses between its brackets. With
+    /// any other character, the line renders as written.
+    #[test]
+    fn only_the_four_statuses_make_a_task(
+        symbol in proptest::prop_oneof![
+            proptest::sample::select(vec![' ', '/', 'x', 'X', '-']),
+            proptest::char::range(' ', '~'),
+            proptest::char::any(),
+        ],
+        indent in proptest::sample::select(vec!["", "> ", "- parent\n  ", "> [!note]\n> "]),
+    ) {
+        // A control character is not text, and a backslash or a `]` leaves no checkbox.
+        proptest::prop_assume!(!symbol.is_control() && !matches!(symbol, '\\' | ']'));
+        let html = plain(&format!("{indent}- [{symbol}] text\n"));
+        let status = match symbol {
+            ' ' => Some("todo"),
+            '/' => Some("doing"),
+            'x' | 'X' => Some("done"),
+            '-' => Some("cancelled"),
+            _ => None,
+        };
+        let item = match status {
+            Some(status) => task(status) + "text</li>",
+            None => format!("<li>[{}] text</li>", tachylite::render::escape(&symbol.to_string())),
+        };
+        proptest::prop_assert!(html.contains(&item), "{item} not in {html}");
+        proptest::prop_assert_eq!(html.matches("data-task").count(), usize::from(status.is_some()));
+        proptest::prop_assert_eq!(html.matches("<input").count(), usize::from(status.is_some()));
+    }
+}
+
+/// List items that open with a checkbox, in every shape that moves its text. `@` stands for
+/// the character in the box.
+const BOXES: &[&str] = &[
+    "- [@] text\n",
+    "- [@]  two spaces\n",
+    "- [@]\ttab\n",
+    "- [@] text\n\n  more\n",
+    "- [@]\n",
+    "- [@]\n\n  more\n",
+    "- [@]\n  - sub\n",
+    "- [@]\nmore\n",
+    "- [@] *em* text\n",
+    "- [@]*em*\n",
+    "- [@]text\n",
+    "- [@] a\n- [@] b\n",
+    "* [@] star\n",
+    "1. [@] numbered\n",
+    "- parent\n  - [@] text\n",
+    "> - [@] text\n",
+    "> [!note]\n> - [@] text\n",
+];
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(2000))]
+
+    /// A checkbox with any character but the four statuses renders as the parser renders
+    /// it with task lists off: as written.
+    #[test]
+    fn a_checkbox_with_no_status_renders_as_written(
+        symbol in proptest::prop_oneof![proptest::char::range('!', '~'), proptest::char::any()],
+        shape in proptest::sample::select(BOXES),
+    ) {
+        proptest::prop_assume!(!symbol.is_control() && !" /xX-\\]<".contains(symbol));
+        let md = shape.replace('@', &symbol.to_string());
+        proptest::prop_assert_eq!(plain(&md), parsed(&md, false), "md={:?}", md);
+    }
+
+    /// `[/]` and `[-]` make a task wherever `[x]` makes one, with the same text.
+    #[test]
+    fn doing_and_cancelled_parse_as_done_does(
+        (symbol, status) in proptest::sample::select(vec![('/', "doing"), ('-', "cancelled")]),
+        shape in proptest::sample::select(BOXES),
+    ) {
+        let done = plain(&shape.replace('@', "x"))
+            .replace("data-task=\"done\"", &format!("data-task=\"{status}\""))
+            .replace(" checked", "")
+            .replace("[x]", &format!("[{symbol}]"));
+        proptest::prop_assert_eq!(plain(&shape.replace('@', &symbol.to_string())), done);
     }
 }

@@ -1,8 +1,9 @@
 //! The output directory: preparing it, and writing a site's output into it.
 
 use std::fs;
-use std::io;
+use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use crate::Error;
 use crate::site::{Push, Sink, Write};
@@ -126,6 +127,24 @@ impl<F: FnMut(Push)> Sink for Writer<'_, F> {
                 (result, Some((source_of(&rel), Some(page_key(&rel)))))
             }
             Write::Copy { out: rel, from } => (self.write_copy(&rel, &from), Some((from, None))),
+            Write::Html {
+                out: rel,
+                from,
+                bytes,
+                modified,
+                nanos,
+            } => {
+                let result = write_via_tmp(&self.out.join(&rel), |tmp| {
+                    let mut to = fs::File::create(tmp)?;
+                    to.write_all(&bytes)?;
+                    // As a copy does: the tag holds across restarts.
+                    match stamp(modified, nanos) {
+                        Some(at) => to.set_modified(at),
+                        None => Ok(()),
+                    }
+                });
+                (result.map(|()| self.copies += 1), Some((from, None)))
+            }
             Write::Manifest { json } => {
                 let result = write_via_tmp(&self.out.join(crate::site::MANIFEST), |tmp| {
                     fs::write(tmp, json.as_bytes())
@@ -171,6 +190,17 @@ impl<F: FnMut(Push)> Sink for Writer<'_, F> {
     fn keeps(&self) -> bool {
         true
     }
+}
+
+/// A modified time as the clock type, or `None` for one the clock cannot hold.
+fn stamp(seconds: i64, nanos: u32) -> Option<SystemTime> {
+    let whole = Duration::from_secs(seconds.unsigned_abs());
+    let at = if seconds < 0 {
+        SystemTime::UNIX_EPOCH.checked_sub(whole)
+    } else {
+        SystemTime::UNIX_EPOCH.checked_add(whole)
+    };
+    at?.checked_add(Duration::from_nanos(nanos.into()))
 }
 
 /// The push key of the page at `rel`, an output path under `pages/`.

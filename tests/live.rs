@@ -7,7 +7,7 @@ use std::os::unix::fs::symlink;
 use std::process::Command;
 use std::time::Duration;
 
-use common::{Dirs, Server, version_of};
+use common::{Dirs, Server, html_version, listed_version, version_of};
 use rustix::process::{Pid, Signal, WaitId, WaitIdOptions, kill_process, waitid};
 
 fn with_notes(notes: &[(&str, &str)]) -> (Dirs, Server) {
@@ -1343,4 +1343,161 @@ fn a_deleted_note_leaves_its_search_shard() {
     assert_eq!(await_shard(&server, "a.md", &old), None);
     assert_eq!(server.get(&shard_url("a.md")).status, 404);
     assert!(server.get(&shard_url("b.md")).text().contains("staying"));
+}
+
+// Html pages: each save, rename, delete and exclusion reaches the manifest and the lists.
+
+const MANIFEST: &str = "/.tachylite/manifest.json";
+const SWITCHER: &str = "/.tachylite/notes.json";
+const RECENT: &str = "/.tachylite/recent";
+
+/// Waits until the served manifest satisfies `ready`, and returns it. The manifest follows
+/// the index pages' pushes.
+fn manifest_when(server: &Server, ready: impl Fn(&str) -> bool) -> String {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let manifest = server.get(MANIFEST).text();
+        if ready(&manifest) {
+            return manifest;
+        }
+        assert!(std::time::Instant::now() < deadline, "{manifest}");
+        std::thread::yield_now();
+    }
+}
+
+/// The next pushed page that satisfies `ready`, past any gone and any earlier page.
+fn page_when(events: &mut common::Events, ready: impl Fn(&str) -> bool) -> String {
+    loop {
+        let page = next_page(events);
+        if ready(&page) {
+            return page;
+        }
+    }
+}
+
+#[test]
+fn a_saved_html_page_reaches_the_manifest_the_recent_page_and_the_switcher() {
+    let d = Dirs::empty();
+    fs::write(d.vault().join("a.md"), "# a").unwrap();
+    // The note is a day old, so the edit below reorders no list, and the manifest is
+    // written for the new version alone.
+    let day = Duration::from_secs(86_400);
+    set_times(&d.vault().join("a.md"), std::time::SystemTime::now() - day);
+    let server = Server::start(&d.vault(), &d.out());
+    let mut recent = server.subscribe(RECENT, &version(&server, RECENT), None);
+    fs::create_dir(d.vault().join("charts")).unwrap();
+    fs::write(d.vault().join("charts/plan.html"), "<p>one</p>").unwrap();
+    let page = next_page(&mut recent);
+    assert!(
+        page.contains("<a href=\"/charts/plan.html\">plan</a> <span class=\"meta\">charts · "),
+        "{page}"
+    );
+    let url = "/charts/plan.html";
+    let first = manifest_when(&server, |m| listed_version(m, url).is_some());
+    assert_eq!(
+        listed_version(&first, url),
+        Some(html_version(b"<p>one</p>"))
+    );
+    let switcher = server.get(SWITCHER).text();
+    let entry = r#"["plan","/charts/plan.html","charts/plan.html"]"#;
+    assert!(switcher.contains(entry), "{switcher}");
+    let served = server.get(url);
+    assert_eq!(served.text(), "<p>one</p>");
+    assert_eq!(
+        served.header("content-security-policy"),
+        Some("sandbox allow-scripts")
+    );
+
+    // An edit changes the version, so a sync downloads the page again.
+    fs::write(d.vault().join("charts/plan.html"), "<p>two</p>").unwrap();
+    let second = Some(html_version(b"<p>two</p>"));
+    manifest_when(&server, |m| listed_version(m, url) == second);
+    assert_eq!(server.get(url).text(), "<p>two</p>");
+}
+
+#[test]
+fn a_renamed_html_page_moves_in_the_manifest_and_the_lists() {
+    let (d, server) = with_notes(&[("a.md", "# a"), ("charts/plan.html", "<p>plan</p>")]);
+    let before = listed_version(&server.get(MANIFEST).text(), "/charts/plan.html");
+    assert_eq!(before, Some(html_version(b"<p>plan</p>")));
+    let mut recent = server.subscribe(RECENT, &version(&server, RECENT), None);
+    fs::rename(
+        d.vault().join("charts/plan.html"),
+        d.vault().join("charts/draft.html"),
+    )
+    .unwrap();
+    let page = page_when(&mut recent, |p| p.contains("/charts/draft.html"));
+    assert!(!page.contains("plan"), "{page}");
+    let manifest = manifest_when(&server, |m| m.contains("/charts/draft.html"));
+    assert!(!manifest.contains("plan"), "{manifest}");
+    // The bytes did not change, so neither did the version.
+    assert_eq!(listed_version(&manifest, "/charts/draft.html"), before);
+    let switcher = server.get(SWITCHER).text();
+    assert!(
+        switcher.contains("charts/draft.html") && !switcher.contains("plan"),
+        "{switcher}"
+    );
+    assert_eq!(server.get("/charts/plan.html").status, 404);
+    assert_eq!(server.get("/charts/draft.html").text(), "<p>plan</p>");
+}
+
+#[test]
+fn a_deleted_html_page_leaves_the_manifest_and_the_lists() {
+    let (d, server) = with_notes(&[("a.md", "# a"), ("charts/plan.html", "<p>plan</p>")]);
+    let home = server.get("/").text();
+    assert!(home.contains("/charts/plan.html"), "{home}");
+    let mut events = server.subscribe("/", &version_of(&home), None);
+    fs::remove_file(d.vault().join("charts/plan.html")).unwrap();
+    let page = next_page(&mut events);
+    assert!(!page.contains("plan") && !page.contains("charts"), "{page}");
+    let manifest = manifest_when(&server, |m| !m.contains("plan"));
+    assert!(!manifest.contains("charts"), "{manifest}");
+    assert!(!server.get(SWITCHER).text().contains("plan"));
+    assert!(!server.get(RECENT).text().contains("plan"));
+    assert_eq!(server.get("/charts/plan.html").status, 404);
+    assert!(!d.out().join("files/charts").exists());
+}
+
+#[test]
+fn an_excluded_html_page_leaves_the_manifest_and_the_lists() {
+    let (d, server) = with_notes(&[
+        ("a.md", "# a"),
+        ("charts/plan.html", "<p>plan</p>"),
+        ("open/kept.html", "<p>kept</p>"),
+    ]);
+    let mut recent = server.subscribe(RECENT, &version(&server, RECENT), None);
+    fs::write(d.vault().join("tachylite.toml"), "exclude = [\"charts\"]\n").unwrap();
+    let page = page_when(&mut recent, |p| !p.contains("plan"));
+    assert!(page.contains("/open/kept.html"), "{page}");
+    let manifest = manifest_when(&server, |m| !m.contains("plan"));
+    assert!(!manifest.contains("charts"), "{manifest}");
+    assert!(listed_version(&manifest, "/open/kept.html").is_some());
+    for url in [SWITCHER, RECENT, "/"] {
+        let text = server.get(url).text();
+        assert!(!text.contains("plan") && !text.contains("charts"), "{text}");
+    }
+    assert_eq!(server.get("/charts/plan.html").status, 404);
+    assert!(!d.out().join("files/charts").exists());
+}
+
+#[test]
+fn an_html_page_that_crosses_the_size_limit_leaves_the_sync_and_comes_back() {
+    let limit = usize::try_from(tachylite::vault::NOTE_MAX).unwrap();
+    let (d, server) = with_notes(&[("a.md", "# a"), ("p.html", "<p>small</p>")]);
+    let url = "/p.html";
+    let small = listed_version(&server.get(MANIFEST).text(), url);
+    assert_eq!(small, Some(html_version(b"<p>small</p>")));
+
+    // Past the limit it loads on demand: `files` keeps it, and no sync downloads it.
+    fs::write(d.vault().join("p.html"), vec![b'x'; limit + 1]).unwrap();
+    let manifest = manifest_when(&server, |m| listed_version(m, url).is_none());
+    assert!(manifest.contains("\"files\":[\"/p.html\"]"), "{manifest}");
+    assert_eq!(server.get(url).body.len(), limit + 1);
+    let recent = server.get(RECENT).text();
+    assert!(recent.contains("<a href=\"/p.html\">p</a>"), "{recent}");
+
+    fs::write(d.vault().join("p.html"), "<p>small</p>").unwrap();
+    let manifest = manifest_when(&server, |m| listed_version(m, url).is_some());
+    assert_eq!(listed_version(&manifest, url), small);
+    assert_eq!(server.get(url).text(), "<p>small</p>");
 }
