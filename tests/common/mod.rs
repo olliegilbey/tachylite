@@ -203,6 +203,22 @@ pub fn encode(s: &str) -> String {
         .collect()
 }
 
+/// The version a manifest's `pages` gives `url`, if it lists it there.
+pub fn listed_version(manifest: &str, url: &str) -> Option<String> {
+    let pages = &manifest[..manifest.find("},\"files\":[")?];
+    let key = format!("\"{url}\":\"");
+    let rest = &pages[pages.find(&key)? + key.len()..];
+    Some(rest[..rest.find('"')?].to_string())
+}
+
+/// The version of an html page with these bytes: their hash, as a page's version is.
+pub fn html_version(bytes: &[u8]) -> String {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
 /// The `tachylite-version` meta of a page.
 pub fn version_of(html: &str) -> String {
     let marker = "<meta name=\"tachylite-version\" content=\"";

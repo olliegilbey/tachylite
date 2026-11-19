@@ -7,7 +7,7 @@ use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use common::Dirs;
+use common::{Dirs, listed_version};
 use tachylite::Error;
 use tachylite::build::{Summary, build};
 use tachylite::config::Exclude;
@@ -786,14 +786,6 @@ fn obsidian_daily_settings_build_a_today_page_and_stay_unpublished() {
 }
 
 // Html pages: a sync downloads each one that fits, and the recent lists show them.
-
-/// The version the manifest's `pages` gives `url`, if it lists it there.
-fn listed_version(manifest: &str, url: &str) -> Option<String> {
-    let pages = &manifest[..manifest.find("},\"files\":[")?];
-    let key = format!("\"{url}\":\"");
-    let rest = &pages[pages.find(&key)? + key.len()..];
-    Some(rest[..rest.find('"')?].to_string())
-}
 
 fn manifest_of(out: &Path) -> String {
     fs::read_to_string(out.join(tachylite::site::MANIFEST)).unwrap()
