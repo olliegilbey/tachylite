@@ -40,7 +40,7 @@ pub enum SkipReason {
 
 /// The largest note read. A render peaks at about 12 times a note's size, and at about
 /// 280 times for a note of nothing but `*_`, so a bigger note is skipped rather than risk
-/// the process on a small host.
+/// the process on a small host. An html page past it is copied unread, so no sync downloads it.
 pub const NOTE_MAX: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -309,6 +309,17 @@ impl VaultDir {
     /// watcher holds a new file's path until its save, or its hold ends. The check uses the
     /// open file, so it cannot race the read.
     pub fn open_after(&self, rel: &str, saved: bool) -> Result<File, ReadError> {
+        self.stat_after(rel, saved).map(|(file, _)| file)
+    }
+
+    /// Checks that a regular file is there, as `open_after` does, without reading it.
+    /// Returns its modified time in seconds since the epoch.
+    pub fn modified(&self, rel: &str, saved: bool) -> Result<i64, ReadError> {
+        self.stat_after(rel, saved).map(|(_, meta)| meta.mtime())
+    }
+
+    /// Opens like `open_after`, and returns what the open file's one stat said.
+    fn stat_after(&self, rel: &str, saved: bool) -> Result<(File, fs::Metadata), ReadError> {
         let flags = OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC | OFlags::NOCTTY;
         let file = match openat2(&self.fd, rel, flags, Mode::empty(), RESOLVE) {
             Ok(fd) => File::from(fd),
@@ -322,7 +333,7 @@ impl VaultDir {
         };
         match file.metadata() {
             Ok(meta) if meta.is_file() && !saved && meta.nlink() == 1 => Err(ReadError::MidSave),
-            Ok(meta) if meta.is_file() => Ok(file),
+            Ok(meta) if meta.is_file() => Ok((file, meta)),
             Ok(_) => Err(ReadError::Missing),
             Err(e) => Err(ReadError::Skip(SkipReason::Unreadable(e.kind()))),
         }
@@ -334,9 +345,8 @@ impl VaultDir {
 
     /// Reads a file with `open_after`'s mid-save check, and its modified time.
     pub fn read_note(&self, rel: &str, saved: bool) -> Result<crate::site::Note, ReadError> {
-        let mut file = self.open_after(rel, saved)?;
+        let (mut file, meta) = self.stat_after(rel, saved)?;
         let unreadable = |e: io::Error| ReadError::Skip(SkipReason::Unreadable(e.kind()));
-        let meta = file.metadata().map_err(unreadable)?;
         if meta.len() > NOTE_MAX {
             return Err(ReadError::Skip(SkipReason::TooLarge));
         }
@@ -352,6 +362,7 @@ impl VaultDir {
         Ok(crate::site::Note {
             bytes,
             modified: meta.mtime(),
+            nanos: u32::try_from(meta.mtime_nsec()).unwrap_or_default(),
         })
     }
 }

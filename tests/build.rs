@@ -784,3 +784,204 @@ fn obsidian_daily_settings_build_a_today_page_and_stay_unpublished() {
     );
     assert_eq!(summary.notices.len(), 1, "{:?}", summary.notices);
 }
+
+// Html pages: a sync downloads each one that fits, and the recent lists show them.
+
+/// The version the manifest's `pages` gives `url`, if it lists it there.
+fn listed_version(manifest: &str, url: &str) -> Option<String> {
+    let pages = &manifest[..manifest.find("},\"files\":[")?];
+    let key = format!("\"{url}\":\"");
+    let rest = &pages[pages.find(&key)? + key.len()..];
+    Some(rest[..rest.find('"')?].to_string())
+}
+
+fn manifest_of(out: &Path) -> String {
+    fs::read_to_string(out.join(tachylite::site::MANIFEST)).unwrap()
+}
+
+fn set_modified(path: &Path, seconds: u64) {
+    let at = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(seconds);
+    let file = fs::File::options().write(true).open(path).unwrap();
+    file.set_modified(at).unwrap();
+}
+
+#[test]
+fn the_manifest_gives_an_html_page_a_version_up_to_the_size_limit() {
+    let limit = usize::try_from(tachylite::vault::NOTE_MAX).unwrap();
+    let dir = bare(&[
+        ("a.md", "aye"),
+        ("charts/plan.html", "<p>plan</p>"),
+        ("img.png", "png"),
+    ]);
+    let (vault, out) = (dir.path().join("vault"), dir.path().join("out"));
+    fs::write(vault.join("charts/at.html"), vec![b'x'; limit]).unwrap();
+    fs::write(vault.join("charts/over.html"), vec![b'x'; limit + 1]).unwrap();
+    build(&vault, &out).unwrap();
+    let manifest = manifest_of(&out);
+    for url in ["/charts/plan.html", "/charts/at.html"] {
+        let version = listed_version(&manifest, url).unwrap_or_else(|| panic!("{url}: {manifest}"));
+        assert_eq!(version.len(), 16, "{version}");
+        assert!(version.bytes().all(|b| b.is_ascii_hexdigit()), "{version}");
+    }
+    assert_eq!(listed_version(&manifest, "/charts/over.html"), None);
+    assert_eq!(listed_version(&manifest, "/img.png"), None);
+    let files = r#""files":["/charts/at.html","/charts/over.html","/charts/plan.html","/img.png"]"#;
+    assert!(manifest.contains(files), "{manifest}");
+    for name in ["plan.html", "at.html", "over.html"] {
+        assert_eq!(
+            fs::read(out.join("files/charts").join(name)).unwrap(),
+            fs::read(vault.join("charts").join(name)).unwrap(),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn an_html_pages_version_hashes_its_bytes_alone() {
+    let dir = bare(&[
+        ("x.html", "<p>same</p>"),
+        ("d/y.html", "<p>same</p>"),
+        ("z.html", "<p>else</p>"),
+    ]);
+    let (vault, out) = (dir.path().join("vault"), dir.path().join("out"));
+    set_modified(&vault.join("x.html"), 86_400);
+    build(&vault, &out).unwrap();
+    let manifest = manifest_of(&out);
+    let version = |url: &str| listed_version(&manifest, url).expect(url);
+    assert_eq!(version("/x.html"), version("/d/y.html"));
+    assert_ne!(version("/x.html"), version("/z.html"));
+}
+
+#[test]
+fn a_written_html_page_keeps_its_sources_modified_time() {
+    let dir = bare(&[("x.html", "<p>page</p>")]);
+    let (vault, out) = (dir.path().join("vault"), dir.path().join("out"));
+    let at = SystemTime::UNIX_EPOCH + std::time::Duration::new(86_400, 123_456_789);
+    let file = fs::File::options()
+        .write(true)
+        .open(vault.join("x.html"))
+        .unwrap();
+    file.set_modified(at).unwrap();
+    build(&vault, &out).unwrap();
+    let copy = fs::metadata(out.join("files/x.html")).unwrap();
+    assert_eq!(
+        copy.modified().unwrap(),
+        at,
+        "the tag would change at each restart"
+    );
+}
+
+#[test]
+fn the_recent_lists_and_the_switcher_show_html_pages_beside_notes() {
+    let dir = bare(&[
+        ("a.md", "aye"),
+        ("charts/n.md", "en"),
+        ("charts/plan.html", "<p>plan</p>"),
+        ("charts/Old Map.HTML", "<p>map</p>"),
+        ("only/page.html", "<p>page</p>"),
+        ("img.png", "png"),
+    ]);
+    let (vault, out) = (dir.path().join("vault"), dir.path().join("out"));
+    let day = 86_400;
+    set_modified(&vault.join("charts/Old Map.HTML"), day);
+    set_modified(&vault.join("a.md"), 2 * day);
+    set_modified(&vault.join("charts/n.md"), 3 * day);
+    set_modified(&vault.join("charts/plan.html"), 4 * day);
+    set_modified(&vault.join("only/page.html"), 5 * day);
+    build(&vault, &out).unwrap();
+    let read = |rel: &str| fs::read_to_string(out.join(rel)).unwrap();
+
+    let plan = "<li><a href=\"/charts/plan.html\">plan</a> \
+                <span class=\"meta\">charts · 1970-01-05</span></li>";
+    let map = "<li><a href=\"/charts/Old%20Map.HTML\">Old Map</a> \
+               <span class=\"meta\">charts · 1970-01-02</span></li>";
+    let order = [
+        "/only/page.html\"",
+        "/charts/plan.html\"",
+        "/charts/n\"",
+        "/a\"",
+        "/charts/Old%20Map.HTML\"",
+    ];
+    for rel in ["pages/.tachylite/recent.html", "pages/.tachylite/home.html"] {
+        let page = read(rel);
+        let list = &page[page.find("<ul class=\"recent\">").expect(rel)..];
+        let list = &list[..list.find("</ul>").unwrap()];
+        assert!(list.contains(plan) && list.contains(map), "{rel}: {list}");
+        let places: Vec<_> = order.iter().map(|url| list.find(url)).collect();
+        assert!(places.is_sorted() && places[0].is_some(), "{rel}: {list}");
+        assert!(!list.contains("img.png"), "{rel}: {list}");
+    }
+
+    let charts = read("pages/.tachylite/recent/charts/.index.html");
+    assert!(charts.contains(plan) && charts.contains(map), "{charts}");
+    assert!(
+        charts.find("/charts/plan.html\"") < charts.find("/charts/n\""),
+        "{charts}"
+    );
+    // A folder that holds only an html page has a recent page, linked from its index.
+    let only = read("pages/.tachylite/recent/only/.index.html");
+    assert!(
+        only.contains("<a href=\"/only/page.html\">page</a>"),
+        "{only}"
+    );
+    let index = read("pages/.tachylite/folders/only/.index.html");
+    assert!(
+        index.contains("href=\"/.tachylite/recent/only\""),
+        "{index}"
+    );
+
+    let switcher = read("files/.tachylite/notes.json");
+    for entry in [
+        r#"["plan","/charts/plan.html","charts/plan.html"]"#,
+        r#"["Old Map","/charts/Old%20Map.HTML","charts/Old Map.HTML"]"#,
+        r#"["n","/charts/n","charts/n"]"#,
+    ] {
+        assert!(switcher.contains(entry), "{entry} in {switcher}");
+    }
+    assert!(!switcher.contains("img.png"), "{switcher}");
+}
+
+#[test]
+fn an_html_page_named_for_a_day_is_no_daily_note() {
+    let dir = bare(&[
+        ("tachylite.toml", "daily = { folder = \"d\" }\n"),
+        ("d/2026-01-02.md", "two"),
+        ("d/2026-01-03.html", "<p>three</p>"),
+        ("d/2026-01-04.md", "four"),
+    ]);
+    let (vault, out) = (dir.path().join("vault"), dir.path().join("out"));
+    build(&vault, &out).unwrap();
+    let recent = fs::read_to_string(out.join("pages/.tachylite/recent.html")).unwrap();
+    let daily =
+        &recent[recent.find("<h2>Daily</h2>").unwrap()..recent.find("<h2>Recent</h2>").unwrap()];
+    assert!(!daily.contains(".html"), "{daily}");
+    let rest = &recent[recent.find("<h2>Recent</h2>").unwrap()..];
+    assert!(
+        rest.contains("<a href=\"/d/2026-01-03.html\">2026-01-03</a>"),
+        "{rest}"
+    );
+    let today = fs::read_to_string(out.join("pages/.tachylite/today.html")).unwrap();
+    assert!(!today.contains(".html\""), "{today}");
+    let four = fs::read_to_string(out.join("pages/d/2026-01-04.html")).unwrap();
+    assert!(four.contains("href=\"/d/2026-01-02\""), "{four}");
+    assert!(!four.contains("2026-01-03"), "{four}");
+}
+
+#[test]
+fn an_excluded_html_page_is_in_no_generated_file() {
+    let dir = bare(&[
+        ("tachylite.toml", "exclude = [\"private\"]\n"),
+        ("private/zebra-chart.html", "<p>hidden</p>"),
+        ("a.md", "aye"),
+        ("ok.html", "<p>shown</p>"),
+    ]);
+    let (vault, out) = (dir.path().join("vault"), dir.path().join("out"));
+    build(&vault, &out).unwrap();
+    let text = all_output_text(&out);
+    assert!(text.contains("/ok.html"), "{text}");
+    assert!(
+        !text.contains("zebra") && !text.contains("hidden"),
+        "{text}"
+    );
+    assert!(!out.join("files/private").exists());
+}
