@@ -4,11 +4,13 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
 use comrak::adapters::CodefenceRendererAdapter;
-use comrak::html::dangerous_url;
+use comrak::html::{
+    ChildRendering, Context, dangerous_url, format_document_with_formatter, format_node_default,
+};
 use comrak::nodes::Sourcepos;
-use comrak::nodes::{AstNode, CalloutFold, NodeValue};
+use comrak::nodes::{AstNode, CalloutFold, NodeTaskItem, NodeValue};
 use comrak::options::Plugins;
-use comrak::{Anchorizer, Arena, Options, format_html_with_plugins, parse_document};
+use comrak::{Anchorizer, Arena, Options, parse_document};
 
 use crate::config::Exclude;
 use crate::front::{self, Value};
@@ -444,6 +446,7 @@ fn render(
     let mut raw = Vec::new();
     let mut callouts = Vec::new();
     let mut blanks = Vec::new();
+    let mut boxes = Vec::new();
     // Set at the first image. Nodes come in document order, so none before it is in alt text.
     let mut alt = false;
     for node in root.descendants() {
@@ -451,6 +454,10 @@ fn render(
         match &node.data().value {
             NodeValue::Callout(c) if c.fold != CalloutFold::None => {
                 callouts.push(node);
+                continue;
+            }
+            NodeValue::Item(_) => {
+                boxes.extend(checkbox(node).map(|symbol| (node, symbol)));
                 continue;
             }
             NodeValue::Heading(heading) => {
@@ -531,6 +538,10 @@ fn render(
             tag = format!("{start} title=\"{}\">", escape(&link.title));
         }
         rewrites.push((node, tag));
+    }
+    // Before the tags, so a tag after the checkbox starts its text.
+    for (node, symbol) in boxes {
+        check(node, symbol);
     }
     for node in scripted {
         if let NodeValue::Image(link) = &mut node.data_mut().value {
@@ -630,7 +641,7 @@ fn render(
         .codefence_renderers
         .insert("mermaid".to_string(), &Mermaid);
     // Writing into a String cannot fail.
-    let _ = format_html_with_plugins(root, &options, &mut html, &plugins);
+    let _ = format_document_with_formatter(root, &options, &mut html, &plugins, format_node, ());
     if unclosed {
         html.push_str(
             "<p class=\"comment-error\">A comment in this note is not closed, so the text \
@@ -639,6 +650,90 @@ fn render(
     }
     body.html = html;
     body
+}
+
+/// The character in the checkbox that opens a list item, when it is `/` or `-`. comrak's
+/// task lists take a space and `x` alone, and leave these as text. As comrak asks of `[x]`,
+/// a space, a tab or the end of the text follows the box.
+fn checkbox<'a>(item: &'a AstNode<'a>) -> Option<char> {
+    let first = item
+        .first_child()
+        .filter(|p| matches!(p.data().value, NodeValue::Paragraph))?
+        .first_child()?;
+    let NodeValue::Text(text) = &first.data().value else {
+        return None;
+    };
+    let symbol = ['/', '-']
+        .into_iter()
+        .find(|&c| text.strip_prefix('[').is_some_and(|t| t.starts_with(c)))?;
+    let after = text[2..].strip_prefix(']')?;
+    (after.is_empty() || after.starts_with([' ', '\t'])).then_some(symbol)
+}
+
+/// Makes the list item `checkbox` found a task, as comrak makes one of `[x]`: the box and
+/// the space after it leave the text, and a paragraph left empty goes.
+fn check<'a>(item: &'a AstNode<'a>, symbol: char) {
+    let Some(paragraph) = item.first_child() else {
+        return;
+    };
+    let Some(first) = paragraph.first_child() else {
+        return;
+    };
+    let empty = match &mut first.data_mut().value {
+        NodeValue::Text(text) => {
+            *text = Cow::Owned(text[text.len().min(4)..].to_string());
+            text.is_empty()
+        }
+        _ => false,
+    };
+    if empty {
+        first.detach();
+        if paragraph.first_child().is_none() {
+            paragraph.detach();
+        }
+    }
+    let symbol_sourcepos = item.data().sourcepos;
+    item.data_mut().value = NodeValue::TaskItem(NodeTaskItem {
+        symbol: Some(symbol),
+        symbol_sourcepos,
+    });
+}
+
+/// A task's status, from the character in its checkbox.
+fn task_status(symbol: Option<char>) -> &'static str {
+    match symbol {
+        None => "todo",
+        Some('/') => "doing",
+        Some('-') => "cancelled",
+        Some(_) => "done",
+    }
+}
+
+/// comrak's HTML for a node, but for a task: its list item carries its status in
+/// `data-task`, which no raw HTML can write.
+fn format_node<'a>(
+    context: &mut Context,
+    node: &'a AstNode<'a>,
+    entering: bool,
+) -> Result<ChildRendering, std::fmt::Error> {
+    use std::fmt::Write;
+    let NodeValue::TaskItem(item) = &node.data().value else {
+        return format_node_default(context, node, entering);
+    };
+    if entering {
+        let status = task_status(item.symbol);
+        context.cr()?;
+        context.write_str("<li data-task=\"")?;
+        context.write_str(status)?;
+        context.write_str(if status == "done" {
+            "\"><input type=\"checkbox\" checked disabled> "
+        } else {
+            "\"><input type=\"checkbox\" disabled> "
+        })?;
+    } else {
+        context.write_str("</li>\n")?;
+    }
+    Ok(ChildRendering::HTML)
 }
 
 /// The byte offset of each line's start.

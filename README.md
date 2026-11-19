@@ -121,7 +121,7 @@ daily = { folder = "journal", format = "YYYY-MM-DD" }
 
 ## Who it is for
 
-Anyone with an Obsidian-style vault: Markdown, YAML frontmatter and `[[wikilinks]]`. It is tuned on one large vault that AI agents write. It supports standard Obsidian features, not plugins. PRs welcome.
+Anyone with an Obsidian-style vault: Markdown, YAML frontmatter and `[[wikilinks]]`. It is tuned on one large vault that AI agents write. It supports standard Obsidian features, not plugins. An agent that writes the vault can load [`skills/tachylite-vault/SKILL.md`](skills/tachylite-vault/SKILL.md), which says what form to write and what renders. PRs welcome.
 
 ## Licence
 

@@ -146,12 +146,13 @@ Notes are trusted content, but agents write them, and a prompt-injected agent co
 
 A vault already holds tasks, so Tachylite shows them. It adds no format of its own.
 
-- A task is an Obsidian checkbox line anywhere in a note: `- [ ]` todo, `- [/]` doing, `- [x]` done, `- [-]` cancelled.
+- A task is a list item that starts with a checkbox, anywhere in a note. It has one of four statuses: `- [ ]` todo, `- [/]` doing, `- [x]` or `- [X]` done, `- [-]` cancelled. Any other character between the brackets makes no task, and the line renders as written. comrak's task lists read `[ ]` and `[x]`. Tachylite reads `[/]` and `[-]` by the same rule, so both pairs make a task in the same places.
 - The note a task lives in is its task list. Line order is priority.
 - `#tags` on a task line filter it. A `[[link]]` on the line points to detail.
 - No due dates and no plugin fields (Tasks or Dataview syntax).
 - `/.tachylite/tasks` is an index page of every open task. `/.tachylite/tasks/<tag>` filters by tag. A wide screen shows a board, with todo and doing columns. A narrow screen shows the same page as a list grouped by task list. CSS picks the layout; there is no toggle. Done and cancelled tasks collapse to a count per task list.
-- Tasks are read-only. On a note page they render as disabled checkboxes. A task changes when someone edits its note.
+- Tasks are read-only. On a note page each renders as a disabled checkbox, and its list item carries the status in `data-task`, for the board and a later write path to read. The sanitizer keeps neither `data-task` nor `<input>` from a note's raw HTML, so only a task carries the mark. A task changes when someone edits its note.
+- The four statuses read apart by shape, not by colour alone: an empty box, a half-filled box, a ticked box, and a dash in the box before a struck, dimmed line. The stylesheet draws them, with no script, image or font. A list under a cancelled task keeps its own look.
 - A public skill in the repo, `skills/tachylite-vault/SKILL.md`, tells an agent how to write tasks and notes that Tachylite renders well.
 
 ### Look and feel

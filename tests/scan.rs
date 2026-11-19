@@ -42,6 +42,8 @@ fn fixture_vault_entries() {
         scan.entries,
         vec![
             entry("Upper.MD", Kind::Note),
+            entry("chores/errands.md", Kind::Note),
+            entry("chores/week.md", Kind::Note),
             entry("docs/guide.pdf", Kind::Asset),
             entry("img/dot.png", Kind::Asset),
             entry("maps/route.html", Kind::Html),
