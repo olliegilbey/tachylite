@@ -24,33 +24,40 @@ pub enum Change {
     Sync { under: String, entries: Vec<Entry> },
 }
 
-/// A note as read: its bytes, and its modified time in seconds since the epoch.
+/// A note or html page as read: its bytes, and its modified time in seconds since the
+/// epoch, with the nanoseconds past them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Note {
     pub bytes: Vec<u8>,
     pub modified: i64,
+    pub nanos: u32,
 }
 
 /// A note with no known modified time, as in-memory sources give.
 impl From<Vec<u8>> for Note {
     fn from(bytes: Vec<u8>) -> Note {
-        Note { bytes, modified: 0 }
+        Note {
+            bytes,
+            ..Note::default()
+        }
     }
 }
 
 /// Where the site reads the vault. `VaultDir` in production; a map in tests.
 pub trait Source {
+    /// Reads a note, or an html page to copy. One past `NOTE_MAX` is `TooLarge`.
     fn note(&mut self, path: &str) -> Result<Note, ReadError>;
-    /// Checks that a regular file is there, without reading it.
-    fn file(&mut self, path: &str) -> Result<(), ReadError>;
+    /// Checks that a regular file is there, without reading it. Returns its modified time
+    /// in seconds since the epoch.
+    fn file(&mut self, path: &str) -> Result<i64, ReadError>;
 }
 
 impl Source for &VaultDir {
     fn note(&mut self, path: &str) -> Result<Note, ReadError> {
         self.read_note(path, true)
     }
-    fn file(&mut self, path: &str) -> Result<(), ReadError> {
-        self.open_file(path).map(|_| ())
+    fn file(&mut self, path: &str) -> Result<i64, ReadError> {
+        self.modified(path, true)
     }
 }
 
@@ -253,6 +260,15 @@ pub enum Write {
         out: String,
         from: String,
     },
+    /// An html page as read from `from`, with its source's modified time. Its version
+    /// hashes these bytes, so the file written is the one the manifest names.
+    Html {
+        out: String,
+        from: String,
+        bytes: Vec<u8>,
+        modified: i64,
+        nanos: u32,
+    },
     /// Every page's URL and version, for client sync. It follows an apply's page writes.
     Manifest {
         json: String,
@@ -306,7 +322,10 @@ pub struct Site {
     embedded_by: HashMap<Arc<str>, BTreeSet<Arc<str>>>,
     /// The version of each index page and of the switcher list, by URL key.
     generated: BTreeMap<String, String>,
-    /// Each read note's modified time, for the recent pages.
+    /// The version of each winning html page read whole: a hash of its bytes. A sync
+    /// downloads these. A larger html page has none, and loads on demand.
+    html: BTreeMap<String, String>,
+    /// The modified time of each note and html page, for the recent pages.
     modified: HashMap<String, i64>,
     /// Each winning note's tag keys, sorted.
     tags: HashMap<String, Vec<String>>,
@@ -767,6 +786,7 @@ impl Site {
             sink.delete(out);
             report.unpublished = true;
             self.unlisted |= kind != Kind::Note;
+            self.html.remove(path);
             if kind == Kind::Note {
                 self.unlisted |= self.versions.remove(path).is_some();
                 self.spans.remove(path);
@@ -787,13 +807,31 @@ impl Site {
             .collect();
         for path in copies {
             let kind = self.entries.get(path).copied().unwrap_or(Kind::Asset);
-            if kind != Kind::Note {
-                self.unlisted |= !self.winners.contains(path);
-                sink.write(Write::Copy {
-                    out: claim(path, kind).1,
-                    from: path.clone(),
-                });
+            if kind == Kind::Note {
+                continue;
             }
+            self.unlisted |= !self.winners.contains(path);
+            let (out, from) = (claim(path, kind).1, path.clone());
+            // An html page that fits `NOTE_MAX` is read here, once, and written from that
+            // read. Any other read leaves the copy, and its error, to the sink.
+            let page = (kind == Kind::Html).then(|| source.note(path).ok());
+            let Some(note) = page.flatten() else {
+                self.unlisted |= self.html.remove(path).is_some();
+                sink.write(Write::Copy { out, from });
+                continue;
+            };
+            let mut hasher = DefaultHasher::new();
+            note.bytes.hash(&mut hasher);
+            let version = format!("{:016x}", hasher.finish());
+            self.unlisted |= self.html.get(path) != Some(&version);
+            self.html.insert(from.clone(), version);
+            sink.write(Write::Html {
+                out,
+                from,
+                bytes: note.bytes,
+                modified: note.modified,
+                nanos: note.nanos,
+            });
         }
 
         // The notes read this apply go first, so a save's own push waits for no dependent.
@@ -982,6 +1020,7 @@ impl Site {
             // Every folder that holds a page, with its subfolders and pages.
             let mut tree: BTreeMap<&str, (BTreeSet<&str>, Vec<Item>)> = BTreeMap::new();
             tree.entry("").or_default();
+            // The notes and html pages, for the recent lists.
             let mut notes: Vec<(i64, &str)> = Vec::new();
             let mut json = indexes::NotesJson::default();
             for path in won {
@@ -1005,10 +1044,15 @@ impl Site {
                     name
                 };
                 let url = url(path);
-                if kind == Kind::Note {
-                    notes.push((modified, path));
-                    json.push(title, &url, note_key(path), self.index.aliases(path));
-                }
+                // The recent lists and the switcher name an html page without its `.html`.
+                // Its path keeps it, so the switcher shows which kind a row opens.
+                let key = if kind == Kind::Note {
+                    note_key(path)
+                } else {
+                    path
+                };
+                notes.push((modified, path));
+                json.push(self.title(path), &url, key, self.index.aliases(path));
                 tree.entry(folder).or_default().1.push(Item {
                     title,
                     url,
@@ -1303,8 +1347,9 @@ impl Site {
     }
 
     /// `{"pages":{"<url>":"<version>",...},"files":["<url>",...]}`: note pages in path
-    /// order, then generated pages in key order, then the html pages and assets of `won` in
-    /// path order. URLs are percent-encoded and versions are hex, so neither needs escaping.
+    /// order, then generated pages in key order, then the html pages a sync downloads in
+    /// path order. `files` lists every html page and asset of `won` in path order. URLs
+    /// are percent-encoded and versions are hex, so neither needs escaping.
     fn manifest(&self, won: &BTreeSet<String>) -> String {
         let mut json = String::with_capacity(16 + self.versions.len() * 64);
         json.push_str("{\"pages\":{");
@@ -1324,6 +1369,16 @@ impl Site {
             }
             json.push_str("\"/");
             json.push_str(&encode(key));
+            json.push_str("\":\"");
+            json.push_str(version);
+            json.push('"');
+        }
+        for (path, version) in &self.html {
+            if json.len() > "{\"pages\":{".len() {
+                json.push(',');
+            }
+            json.push_str("\"/");
+            json.push_str(&encode(path));
             json.push_str("\":\"");
             json.push_str(version);
             json.push('"');
@@ -1615,7 +1670,7 @@ impl Site {
         }
     }
 
-    /// A note's frontmatter title, else its file stem.
+    /// A note's frontmatter title, else its file stem. An html page's file stem.
     fn title<'a>(&'a self, path: &'a str) -> &'a str {
         self.titles
             .get(path)
@@ -1708,7 +1763,11 @@ impl Site {
                 let bytes = (*kept <= FRESH_MAX).then_some(note.bytes);
                 fresh.insert(path.to_string(), Fresh { meta, bytes });
             }),
-            Kind::Html | Kind::Asset => source.file(path),
+            Kind::Html | Kind::Asset => source.file(path).map(|modified| {
+                if kind == Kind::Html {
+                    self.modified.insert(path.to_string(), modified);
+                }
+            }),
         };
         match result {
             Ok(()) => {

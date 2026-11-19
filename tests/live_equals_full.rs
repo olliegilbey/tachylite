@@ -58,6 +58,8 @@ enum Op {
     /// Writes a daily note, or deletes it, so daily notes come and go beside their
     /// neighbours.
     Day(usize, bool),
+    /// Writes the html page `d/h.html`: small, or one byte past the size a sync downloads.
+    Html(bool),
 }
 
 /// The daily notes: the last three of `PATHS`.
@@ -75,6 +77,7 @@ fn op() -> impl Strategy<Value = Op> {
         1 => Just(Op::Burst),
         1 => any::<bool>().prop_map(Op::Config),
         3 => (0..DAYS, any::<bool>()).prop_map(|(d, write)| Op::Day(d, write)),
+        2 => any::<bool>().prop_map(Op::Html),
     ]
 }
 
@@ -122,6 +125,11 @@ fn apply(vault: &Path, op: &Op) {
         Op::Day(d, true) => write(path(PATHS.len() - DAYS + d), b"day"),
         Op::Day(d, false) => {
             let _ = fs::remove_file(path(PATHS.len() - DAYS + d));
+        }
+        Op::Html(false) => write(vault.join("d/h.html"), b"<p>h</p>"),
+        Op::Html(true) => {
+            let limit = usize::try_from(tachylite::vault::NOTE_MAX).unwrap();
+            write(vault.join("d/h.html"), &vec![b'x'; limit + 1]);
         }
         Op::Config(exclude) => {
             let text = if *exclude {
