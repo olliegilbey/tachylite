@@ -440,7 +440,7 @@ fn typical_page_weight() {
                 .map(Note::from)
                 .ok_or(ReadError::Missing)
         }
-        fn file(&mut self, _: &str) -> Result<(), ReadError> {
+        fn file(&mut self, _: &str) -> Result<i64, ReadError> {
             Err(ReadError::Missing)
         }
     }

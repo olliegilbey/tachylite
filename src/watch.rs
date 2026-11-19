@@ -121,8 +121,8 @@ impl Source for Batch<'_> {
         let read = self.vault.read_note(path, self.saved(path));
         self.noted(path, read)
     }
-    fn file(&mut self, path: &str) -> Result<(), ReadError> {
-        let read = self.vault.open_after(path, self.saved(path)).map(|_| ());
+    fn file(&mut self, path: &str) -> Result<i64, ReadError> {
+        let read = self.vault.modified(path, self.saved(path));
         self.noted(path, read)
     }
 }

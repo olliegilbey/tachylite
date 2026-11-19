@@ -1,5 +1,5 @@
 import type { Page, Route } from "@playwright/test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, lost, run, setHidden, test } from "./fixture";
 import { serve, stop, type Server } from "./server";
@@ -440,4 +440,113 @@ test("an upgraded worker caches Mermaid for a diagram page synced before", async
   await stop(server!);
   await page.goto(base + "/m");
   await expect(page.locator("main pre.mermaid svg")).toBeVisible();
+});
+
+// A sync downloads an html page as it does a note page, and the worker's copy keeps the
+// sandbox policy. So a page never opened runs offline, in an opaque origin.
+test("an html page never opened opens offline after a sync, in an opaque origin", async ({ page }) => {
+  writeFileSync(
+    join(dir, "vault", "widget.html"),
+    `<!doctype html><p id="out">waiting</p><script>
+      const tried = (read) => { try { return String(read()); } catch (e) { return e.name; } };
+      Promise.resolve()
+        .then(() => caches.keys())
+        .then((keys) => "read " + keys, (e) => e.name)
+        .then((cache) => {
+          const found = [origin, tried(() => localStorage.getItem("secret")), tried(() => document.cookie), cache];
+          document.getElementById("out").textContent = found.join(" | ");
+        });
+    </script>`,
+  );
+  await expect.poll(async () => Object.keys((await listed(page)).pages)).toContain("/widget.html");
+  await visit(page, "/a");
+  await page.evaluate(() => localStorage.setItem("secret", "main origin"));
+  await synced(page);
+  await stop(server!);
+  const response = await page.goto(base + "/widget.html");
+  expect(response?.fromServiceWorker()).toBe(true);
+  expect(response?.headers()["content-security-policy"]).toBe("sandbox allow-scripts");
+  await expect(page.locator("#out")).toHaveText("null | SecurityError | SecurityError | SecurityError");
+});
+
+test("a sync downloads an html page again only when it changes, and never one past the size limit", async ({ page, context }) => {
+  // The page carries a version meta and a diagram block of its own. The worker reads an
+  // html page for neither: its version is the listed one, and it draws with no script of ours.
+  const chart = (text: string) =>
+    `<!doctype html><meta name="tachylite-version" content="0000000000000000"><pre class="mermaid">graph TD</pre><p>${text}</p>`;
+  writeFileSync(join(dir, "vault", "chart.html"), chart("first chart"));
+  writeFileSync(join(dir, "vault", "huge.html"), "x".repeat(1024 * 1024 + 1));
+  await expect.poll(async () => (await listed(page)).files).toEqual(["/chart.html", "/huge.html"]);
+  expect(Object.keys((await listed(page)).pages)).not.toContain("/huge.html");
+  await visit(page, "/a");
+  await synced(page);
+  expect(await cached(page, "/chart.html")).toContain("first chart");
+  expect(await has(page, "/huge.html"), "a large html page loads on demand").toBe(false);
+  expect(await has(page, "/.tachylite/mermaid.js"), "an html page draws no diagram of ours").toBe(false);
+  await page.evaluate(() => fetch("/huge.html"));
+  await expect.poll(() => has(page, "/huge.html")).toBe(true);
+
+  const fetched: string[] = [];
+  await context.route(/\/(b|chart\.html|huge\.html)$/, (route) => {
+    if (route.request().serviceWorker()) fetched.push(new URL(route.request().url()).pathname);
+    return route.continue();
+  });
+  await stop(server!);
+  note("b", "# B\n\nnew text\n");
+  server = await serve(dir, server!.port);
+  await synced(page);
+  expect(fetched).toEqual(["/b"]);
+  expect(await has(page, "/huge.html"), "a listed file stays cached").toBe(true);
+
+  await stop(server);
+  writeFileSync(join(dir, "vault", "chart.html"), chart("second chart"));
+  server = await serve(dir, server!.port);
+  await expect.poll(() => cached(page, "/chart.html"), { timeout: 15_000 }).toContain("second chart");
+  await synced(page);
+  expect(fetched).toEqual(["/b", "/chart.html"]);
+});
+
+// The server's validator for a vault file is its size and modified time. A tool that keeps
+// both, as a copy that preserves times does, changes the bytes under the same validator.
+test("a sync downloads a changed html page whose size and modified time stayed the same", async ({ page }) => {
+  const at = new Date("2026-03-02T08:00:00Z");
+  const save = (text: string) => {
+    writeFileSync(join(dir, "vault", "chart.html"), `<!doctype html><p>${text} chart</p>`);
+    utimesSync(join(dir, "vault", "chart.html"), at, at);
+  };
+  await stop(server!);
+  save("first");
+  server = await serve(dir, server!.port);
+  await visit(page, "/a");
+  await synced(page);
+  expect(await cached(page, "/chart.html")).toContain("first chart");
+  const before = (await listed(page)).pages["/chart.html"];
+
+  await stop(server);
+  save("other");
+  server = await serve(dir, server!.port);
+  await expect.poll(async () => (await listed(page)).pages["/chart.html"]).not.toBe(before);
+  await expect.poll(() => cached(page, "/chart.html"), { timeout: 15_000 }).toContain("other chart");
+});
+
+test("an upgraded worker caches no Mermaid for an html page with a diagram block", async ({ page, context }) => {
+  writeFileSync(join(dir, "vault", "chart.html"), '<!doctype html><pre class="mermaid">graph TD</pre>');
+  await expect.poll(async () => Object.keys((await listed(page)).pages)).toContain("/chart.html");
+  await visit(page, "/a");
+  await synced(page);
+  // A new worker arrives with a deploy, and its first sync waits for the manifest.
+  let held: Route | null = null;
+  await context.route(/manifest\.json$/, (route) => {
+    if (!route.request().serviceWorker()) return route.continue();
+    held = route;
+  });
+  await page.evaluate(() => navigator.serviceWorker.getRegistration().then((r) => r!.unregister()));
+  await page.goto(base + "/a");
+  await expect.poll(() => held).not.toBeNull();
+  // The new worker found no script, so its sync will look through the cached pages.
+  const script = "/.tachylite/mermaid.js";
+  expect(await stored(page)).toHaveProperty([script], "");
+  await held!.continue();
+  await synced(page);
+  expect(await has(page, script)).toBe(false);
 });
