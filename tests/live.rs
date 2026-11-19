@@ -1257,3 +1257,90 @@ fn daily_settings_saved_with_the_config_take_effect() {
     }
     assert!(html.contains("/.tachylite/today"), "{html}");
 }
+
+// Search: the shards follow the vault.
+
+/// The URL of the search shard that holds the note at `path`.
+fn shard_url(path: &str) -> String {
+    format!(
+        "/{}",
+        tachylite::indexes::shard_key(tachylite::indexes::shard(path))
+    )
+}
+
+/// The version the served manifest gives the search shard of the note at `path`.
+fn shard_version(server: &Server, path: &str) -> Option<String> {
+    let manifest = server.get("/.tachylite/manifest.json").text();
+    let entry = format!("\"{}\":\"", shard_url(path));
+    let version = &manifest[manifest.find(&entry)? + entry.len()..];
+    Some(version[..version.find('"')?].to_string())
+}
+
+/// Waits until the manifest gives the shard of `path` a version other than `old`: the
+/// manifest is written after the shards. Search follows a save within 5 s.
+fn await_shard(server: &Server, path: &str, old: &Option<String>) -> Option<String> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let new = shard_version(server, path);
+        if new != *old {
+            return new;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the shard of {path} stayed at {old:?}"
+        );
+        std::thread::yield_now();
+    }
+}
+
+#[test]
+fn a_save_reaches_its_search_shard_and_the_manifest() {
+    let (d, server) = with_notes(&[("a.md", "first-word here")]);
+    let shard = shard_url("a.md");
+    let old = shard_version(&server, "a.md");
+    assert!(old.is_some(), "the manifest lists no {shard}");
+    let rows = server.get(&shard);
+    assert_eq!(
+        rows.header("content-type"),
+        Some("text/plain; charset=utf-8")
+    );
+    assert!(rows.text().ends_with("\tfirst-word here\n"), "{rows:?}");
+    let zipped = common::get(server.addr, &shard, &[("Accept-Encoding", "gzip")]);
+    assert_eq!(zipped.header("content-encoding"), Some("gzip"));
+
+    fs::write(d.vault().join("a.md"), "second-word here").unwrap();
+    await_shard(&server, "a.md", &old);
+    let rows = server.get(&shard).text();
+    assert!(rows.starts_with("/a\t"), "{rows}");
+    assert!(rows.ends_with("\tsecond-word here\n"), "{rows}");
+}
+
+#[test]
+fn a_renamed_note_moves_to_its_new_search_shard() {
+    let (d, server) = with_notes(&[("old.md", "moving-word"), ("stay.md", "staying")]);
+    let (old, new) = (shard_url("old.md"), shard_url("new.md"));
+    assert_ne!(old, new);
+    let before = shard_version(&server, "new.md");
+    assert_eq!(before, None);
+    fs::rename(d.vault().join("old.md"), d.vault().join("new.md")).unwrap();
+    await_shard(&server, "new.md", &before);
+    let rows = server.get(&new).text();
+    assert!(
+        rows.starts_with("/new\t") && rows.ends_with("\tmoving-word\n"),
+        "{rows}"
+    );
+    // The manifest is written once per derive, so the old shard went in the same one.
+    assert_eq!(shard_version(&server, "old.md"), None);
+    assert_eq!(server.get(&old).status, 404);
+}
+
+#[test]
+fn a_deleted_note_leaves_its_search_shard() {
+    let (d, server) = with_notes(&[("a.md", "leaving-word"), ("b.md", "staying")]);
+    let old = shard_version(&server, "a.md");
+    assert!(old.is_some());
+    fs::remove_file(d.vault().join("a.md")).unwrap();
+    assert_eq!(await_shard(&server, "a.md", &old), None);
+    assert_eq!(server.get(&shard_url("a.md")).status, 404);
+    assert!(server.get(&shard_url("b.md")).text().contains("staying"));
+}
