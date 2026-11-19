@@ -347,7 +347,7 @@ pub struct Site {
     /// The tag keys whose pages may have changed since the last apply.
     dirty_tags: BTreeSet<String>,
     /// The search shards whose rows may have changed since the last derive: a note of
-    /// theirs was read, written or removed.
+    /// theirs was read, rendered or removed.
     dirty_shards: BTreeSet<u32>,
     /// Whether a manifest was written, so the first derive writes one even when empty.
     listed: bool,
@@ -1268,7 +1268,7 @@ impl Site {
             }
             let mut hasher = DefaultHasher::new();
             rows.hash(&mut hasher);
-            // Short, since the manifest lists a thousand of them: 32 bits tell two
+            // Short, since the manifest lists hundreds of them: 32 bits tell two
             // contents of one shard apart.
             let version = format!("{:08x}", hasher.finish() & 0xffff_ffff);
             changed |= self.emit(key, version, rows, sink);

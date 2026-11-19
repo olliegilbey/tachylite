@@ -400,9 +400,10 @@ pub fn shard_key(shard: u32) -> String {
 
 /// Tags that sit inside a word or a sentence. One leaves no gap in the text, so
 /// `<b>bold</b>ly` reads `boldly`. Any other tag leaves a space.
-const INLINE: [&str; 21] = [
-    "a", "abbr", "b", "cite", "code", "del", "em", "i", "ins", "kbd", "mark", "q", "s", "samp",
-    "small", "span", "strong", "sub", "sup", "u", "var",
+const INLINE: [&str; 28] = [
+    "a", "abbr", "b", "bdi", "bdo", "cite", "code", "del", "dfn", "em", "i", "ins", "kbd", "mark",
+    "q", "s", "samp", "small", "span", "strike", "strong", "sub", "sup", "time", "tt", "u", "var",
+    "wbr",
 ];
 
 /// Appends a note's search row: its URL, its modified time and the text of `body`, with a

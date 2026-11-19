@@ -85,7 +85,8 @@
     li.append(a);
     return li;
   };
-  const show = () => {
+  // `again` is true for the query in the box asked again, once fresh data is in.
+  const show = (again) => {
     const query = dialog.input.value.trim().toLowerCase();
     const id = ++asked;
     notes.then((list) => {
@@ -100,7 +101,7 @@
       // Three groups, 20 rows in all: the names that hold the query whole, then the notes
       // whose text holds its words, then the names that hold only its letters in order.
       // The last group waits for the text rows, so no row moves once it is drawn.
-      const whole = names.filter(([r]) => r % 1e6 < 1000);
+      const whole = names.filter(([, [title, , ...rest]]) => [title, ...rest].some((t) => score(query, t) < 1000));
       draw = (found) => {
         const seen = new Set();
         const rows = [];
@@ -115,7 +116,8 @@
         dialog.list.setAttribute("aria-busy", !found);
       };
       const search = query && whole.length < 20 && pool.length;
-      draw(search ? null : []);
+      // Asked again, the rows stay until the answer, so none moves.
+      if (again !== true || !search) draw(search ? null : []);
       if (!search) return;
       hits = [];
       left = pool.length;
@@ -168,6 +170,7 @@
           w.onmessage = answer;
           // A worker that fails would leave a query waiting for ever.
           w.onerror = () => {
+            for (const w of pool) w.terminate();
             pool = [];
             draw([]);
           };
@@ -178,12 +181,15 @@
     if (events?.readyState === 1) {
       list("no-cache").then((fresh) => {
         notes = Promise.resolve(fresh);
-        if (dialog.open) show();
+        if (dialog.open) show(true);
       }, () => {});
       sync();
     }
     dialog.input.value = "";
+    // An answer to the query of an earlier open is late.
+    asked++;
     dialog.list.replaceChildren();
+    dialog.list.removeAttribute("aria-busy");
     dialog.showModal();
   };
   document.addEventListener("click", (e) => e.target.closest?.("button.find") && finder());
@@ -206,7 +212,7 @@
   // again, and an open switcher asks again.
   worker?.addEventListener("message", () => {
     for (const w of pool ?? []) w.postMessage(0);
-    if (dialog?.open) show();
+    if (dialog?.open) show(true);
   });
 
   const VERSION = 'meta[name="tachylite-version"]';

@@ -99,14 +99,16 @@ test("every word must be in the text, and a query no note holds shows no row", a
 
 test("whole name matches come first, then text matches newest first, then loose name matches, each note once", async ({ page }) => {
   note("garden/Moss", "# Moss\n\nGrows under a fern.\n", 4);
+  note("ferns/Fine rain", "# Fine rain\n\nwet week\n", 6);
   server = await serve(dir);
   base = server.base;
   await synced(page, "/a");
   await find(page, "fern");
-  // `Fern care` holds the query in its title and its text. `Field round` holds only its letters, in order.
-  await expect(rows(page).locator("a")).toHaveText([/^Fern care/, /^Rose/, /^Moss/, /^Field round/]);
+  // `Fern care` holds the query in its title and its text. `Fine rain` holds it whole in its
+  // path alone. `Field round` holds only its letters, in order.
+  await expect(rows(page).locator("a")).toHaveText([/^Fern care/, /^Fine rain/, /^Rose/, /^Moss/, /^Field round/]);
   await expect(rows(page).locator(".snippet")).toHaveCount(2);
-  await expect(rows(page).nth(2).locator(".snippet")).toHaveText("Moss Grows under a fern.");
+  await expect(rows(page).nth(3).locator(".snippet")).toHaveText("Moss Grows under a fern.");
 });
 
 test("past 20 matches, the 20 newest notes show, newest first", async ({ page }) => {
@@ -144,6 +146,84 @@ test("loose name matches wait for the text matches, so no row moves once drawn",
   await context.close();
 });
 
+test("a switcher opened again drops the late answer to its last query", async ({ browser }) => {
+  server = await serve(dir);
+  base = server.base;
+  const context = await browser.newContext({ serviceWorkers: "block" });
+  const page = await context.newPage();
+  await page.addInitScript(() => {
+    // Two cores give one search worker, so one answer is every answer.
+    Object.defineProperty(navigator, "hardwareConcurrency", { value: 2 });
+    const Real = Worker;
+    (window as any).answers = 0;
+    (window as any).Worker = class extends Real {
+      constructor(url: string, options: WorkerOptions) {
+        super(url, options);
+        // Added before the page's own handler, so the page has handled an answer counted here.
+        this.addEventListener("message", () => (window as any).answers++);
+      }
+    };
+  });
+  let release = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  await page.route("**/.tachylite/search.js", async (route) => {
+    await held;
+    await route.continue();
+  });
+  // With no event stream, an open asks for no fresh list, so nothing else asks again.
+  await page.route("**/.tachylite/events*", (route) => route.abort("connectionrefused"));
+  await page.goto(base + "/a");
+  await page.locator("header button.find").click();
+  await page.locator("dialog.switcher input").fill("fern");
+  await expect(rows(page).locator("a")).toHaveText([/^Fern care/]);
+  await page.keyboard.press("Escape");
+  await page.locator("header button.find").click();
+  release();
+  await page.waitForFunction(() => (window as any).answers === 1);
+  await expect(page.locator("dialog.switcher input")).toHaveValue("");
+  await expect(rows(page)).toHaveCount(0);
+  await context.close();
+});
+
+test("a query asked again for a fresh list keeps its rows until the answer", async ({ browser }) => {
+  server = await serve(dir);
+  base = server.base;
+  const context = await browser.newContext({ serviceWorkers: "block" });
+  const page = await context.newPage();
+  await page.addInitScript(() => {
+    const Real = EventSource;
+    (window as any).EventSource = class extends Real {
+      constructor(url: string) {
+        super(url);
+        (window as any).stream = this;
+      }
+    };
+  });
+  // The switcher asks for its list twice while the stream is open. The second answer waits.
+  let asked = 0;
+  let release = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  await page.route("**/.tachylite/notes.json", async (route) => {
+    if (++asked === 2) await held;
+    await route.continue();
+  });
+  await page.goto(base + "/a");
+  await page.waitForFunction(() => (window as any).stream?.readyState === 1);
+  await find(page, "fern");
+  await expect(rows(page).locator("a")).toHaveText([/^Fern care/, /^Field round/]);
+  await expect.poll(() => asked).toBe(2);
+  await page.evaluate(() => {
+    const list = document.querySelector("dialog.switcher ul")!;
+    const seen: number[] = ((window as any).seen = []);
+    new MutationObserver(() => seen.push(list.children.length)).observe(list, { childList: true });
+  });
+  release();
+  // The answer draws the rows once more, and the list never held fewer on the way.
+  await expect.poll(() => page.evaluate(() => (window as any).seen)).toEqual([2]);
+  await answered(page);
+  await context.close();
+});
+
 test("search works with the server stopped", async ({ page }) => {
   server = await serve(dir);
   base = server.base;
@@ -162,7 +242,10 @@ test("a saved note is found the next time the switcher opens", async ({ page }) 
   await find(page, "quince");
   await expect(rows(page)).toHaveCount(0);
   await page.keyboard.press("Escape");
+  const before = await (await page.request.get(base + MANIFEST)).text();
   note("garden/Rose", "# Rose\n\nNow beside the quince tree.\n");
+  // The server writes the manifest after the note's shard, so the open below finds both new.
+  await expect.poll(async () => (await page.request.get(base + MANIFEST)).text()).not.toBe(before);
   // The open asks for a sync, and the rows follow it with no new key.
   await page.locator("header button.find").click();
   await page.locator("dialog.switcher input").fill("quince");

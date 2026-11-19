@@ -21,8 +21,9 @@ const load = async () => {
     if (!n || parseInt(n[1], 16) % of !== mine || !version || shards.get(url)?.[0] === version) return;
     const text = await (await cache.match(url))?.text();
     if (text === undefined) return;
-    const notes = text.split("\n").filter(Boolean);
-    shards.set(url, [version, notes.map((row) => row.split("\t"))]);
+    // A row is three fields. Anything else is not a shard's row, and a scan would throw on it.
+    const notes = text.split("\n").map((row) => row.split("\t"));
+    shards.set(url, [version, notes.filter((row) => row.length === 3)]);
     changed = true;
   };
   // All at once: one read after another took twice as long.
