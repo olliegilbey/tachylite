@@ -383,7 +383,7 @@ pub fn date(seconds: i64) -> String {
 
 /// How many search shards there are. A fixed count, so a note that comes or goes moves no
 /// other note to a new shard. `docs/plans/2026-11-19-search.md` says how it was picked.
-pub const SHARDS: u32 = 1024;
+pub const SHARDS: u32 = 512;
 
 /// The search shard a note's text lives in: FNV-1a of its path.
 pub fn shard(path: &str) -> u32 {

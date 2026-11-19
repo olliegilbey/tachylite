@@ -101,13 +101,15 @@
       // whose text holds its words, then the names that hold only its letters in order.
       // The last group waits for the text rows, so no row moves once it is drawn.
       const whole = names.filter(([r]) => r % 1e6 < 1000);
-      const by = (list.by ??= new Map(list.map((n) => [n[1], n])));
       draw = (found) => {
         const seen = new Set();
         const rows = [];
         const add = (url, ...rest) => seen.size < 20 && !seen.has(url) && seen.add(url) && rows.push(row(url, ...rest));
         for (const [, [title, url, path]] of whole) add(url, title, path);
-        for (const [url, , ...snippet] of found ?? []) if (by.has(url)) add(url, by.get(url)[0], by.get(url)[2], snippet);
+        for (const [url, , ...snippet] of found ?? []) {
+          const note = (list.by ??= new Map(list.map((n) => [n[1], n]))).get(url);
+          if (note) add(url, note[0], note[2], snippet);
+        }
         if (found) for (const [, [title, url, path]] of names) add(url, title, path);
         dialog.list.replaceChildren(...rows);
         dialog.list.setAttribute("aria-busy", !found);
@@ -151,7 +153,13 @@
       // A tap on the backdrop lands on the dialog itself.
       dialog.addEventListener("click", (e) => e.target === dialog && dialog.close());
     }
-    // One worker for each core but one, at most four. Without workers, names still match.
+    // The worker answers from its cache at once, so this costs nothing offline. While the
+    // stream is open, the network's list follows, so a new note shows, and a sync brings
+    // the search text that changed.
+    const list = (cache) => fetch("/.tachylite/notes.json", { cache }).then((r) => r.json());
+    notes = list("default").catch(() => []);
+    // One search worker for each core but one, at most four. Without workers, names still
+    // match. They start after the list is asked for: their reads of the cache would hold it up.
     if (!pool)
       try {
         const n = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1));
@@ -167,11 +175,6 @@
       } catch {
         pool = [];
       }
-    // The worker answers from its cache at once, so this costs nothing offline. While the
-    // stream is open, the network's list follows, so a new note shows, and a sync brings
-    // the search text that changed.
-    const list = (cache) => fetch("/.tachylite/notes.json", { cache }).then((r) => r.json());
-    notes = list("default").catch(() => []);
     if (events?.readyState === 1) {
       list("no-cache").then((fresh) => {
         notes = Promise.resolve(fresh);
