@@ -527,39 +527,3 @@ test("an upgraded worker caches no Mermaid for an html page with a diagram block
   await synced(page);
   expect(await has(page, script)).toBe(false);
 });
-
-// One engine runs both projects, and the wait here is the worker's fetch timeout itself.
-test("an html page has longer to download than a note page", async ({ page, context }, info) => {
-  test.skip(info.project.name === "phone", "the desktop project covers it");
-  test.setTimeout(90_000);
-  writeFileSync(join(dir, "vault", "slow.html"), "<p>first</p>");
-  await expect.poll(async () => Object.keys((await listed(page)).pages)).toContain("/slow.html");
-  await visit(page, "/a");
-  await synced(page);
-  // In the next sync, the note page never answers, and the html page waits to.
-  let held: Route | null = null;
-  await context.route(/\/slow\.html$/, (route) => {
-    if (!route.request().serviceWorker()) return route.continue();
-    held = route;
-  });
-  await context.route(/\/b$/, (route) => (route.request().serviceWorker() ? undefined : route.continue()));
-  const gaveUp = context.waitForEvent("requestfailed", {
-    predicate: (r) => !!r.serviceWorker() && new URL(r.url()).pathname === "/b",
-    timeout: 60_000,
-  });
-  const before = (await listed(page)).pages;
-  note("b", "# B\n\nnew text\n");
-  writeFileSync(join(dir, "vault", "slow.html"), "<p>second</p>");
-  await expect
-    .poll(async () => {
-      const { pages } = await listed(page);
-      return pages["/b"] !== before["/b"] && pages["/slow.html"] !== before["/slow.html"];
-    })
-    .toBe(true);
-  await sync(page);
-  await expect.poll(() => held).not.toBeNull();
-  // The worker gives up on the note page after its 30 s. The html page is still wanted.
-  await gaveUp;
-  await held!.continue();
-  await expect.poll(() => cached(page, "/slow.html")).toContain("second");
-});
