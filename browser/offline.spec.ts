@@ -441,3 +441,103 @@ test("an upgraded worker caches Mermaid for a diagram page synced before", async
   await page.goto(base + "/m");
   await expect(page.locator("main pre.mermaid svg")).toBeVisible();
 });
+
+// A sync downloads an html page as it does a note page, and the worker's copy keeps the
+// sandbox policy. So a page never opened runs offline, in an opaque origin.
+test("an html page never opened opens offline after a sync, in an opaque origin", async ({ page }) => {
+  writeFileSync(
+    join(dir, "vault", "widget.html"),
+    `<!doctype html><p id="out">waiting</p><script>
+      const tried = (read) => { try { return String(read()); } catch (e) { return e.name; } };
+      Promise.resolve()
+        .then(() => caches.keys())
+        .then((keys) => "read " + keys, (e) => e.name)
+        .then((cache) => {
+          const found = [origin, tried(() => localStorage.getItem("secret")), tried(() => document.cookie), cache];
+          document.getElementById("out").textContent = found.join(" | ");
+        });
+    </script>`,
+  );
+  await expect.poll(async () => Object.keys((await listed(page)).pages)).toContain("/widget.html");
+  await visit(page, "/a");
+  await page.evaluate(() => localStorage.setItem("secret", "main origin"));
+  await synced(page);
+  await stop(server!);
+  const response = await page.goto(base + "/widget.html");
+  expect(response?.fromServiceWorker()).toBe(true);
+  expect(response?.headers()["content-security-policy"]).toBe("sandbox allow-scripts");
+  await expect(page.locator("#out")).toHaveText("null | SecurityError | SecurityError | SecurityError");
+});
+
+test("a sync downloads an html page again only when it changes, and never one past the size limit", async ({ page, context }) => {
+  // The page carries a version meta and a diagram block of its own. The worker reads an
+  // html page for neither: its version is the listed one, and it draws with no script of ours.
+  const chart = (text: string) =>
+    `<!doctype html><meta name="tachylite-version" content="0000000000000000"><pre class="mermaid">graph TD</pre><p>${text}</p>`;
+  writeFileSync(join(dir, "vault", "chart.html"), chart("first chart"));
+  writeFileSync(join(dir, "vault", "huge.html"), "x".repeat(1024 * 1024 + 1));
+  await expect.poll(async () => (await listed(page)).files).toEqual(["/chart.html", "/huge.html"]);
+  expect(Object.keys((await listed(page)).pages)).not.toContain("/huge.html");
+  await visit(page, "/a");
+  await synced(page);
+  expect(await cached(page, "/chart.html")).toContain("first chart");
+  expect(await has(page, "/huge.html"), "a large html page loads on demand").toBe(false);
+  expect(await has(page, "/.tachylite/mermaid.js"), "an html page draws no diagram of ours").toBe(false);
+  await page.evaluate(() => fetch("/huge.html"));
+  await expect.poll(() => has(page, "/huge.html")).toBe(true);
+
+  const fetched: string[] = [];
+  await context.route(/\/(b|chart\.html|huge\.html)$/, (route) => {
+    if (route.request().serviceWorker()) fetched.push(new URL(route.request().url()).pathname);
+    return route.continue();
+  });
+  await stop(server!);
+  note("b", "# B\n\nnew text\n");
+  server = await serve(dir, server!.port);
+  await synced(page);
+  expect(fetched).toEqual(["/b"]);
+  expect(await has(page, "/huge.html"), "a listed file stays cached").toBe(true);
+
+  await stop(server);
+  writeFileSync(join(dir, "vault", "chart.html"), chart("second chart"));
+  server = await serve(dir, server!.port);
+  await expect.poll(() => cached(page, "/chart.html"), { timeout: 15_000 }).toContain("second chart");
+  await synced(page);
+  expect(fetched).toEqual(["/b", "/chart.html"]);
+});
+
+// One engine runs both projects, and the wait here is the worker's fetch timeout itself.
+test("an html page has longer to download than a note page", async ({ page, context }, info) => {
+  test.skip(info.project.name === "phone", "the desktop project covers it");
+  test.setTimeout(90_000);
+  writeFileSync(join(dir, "vault", "slow.html"), "<p>first</p>");
+  await expect.poll(async () => Object.keys((await listed(page)).pages)).toContain("/slow.html");
+  await visit(page, "/a");
+  await synced(page);
+  // In the next sync, the note page never answers, and the html page waits to.
+  let held: Route | null = null;
+  await context.route(/\/slow\.html$/, (route) => {
+    if (!route.request().serviceWorker()) return route.continue();
+    held = route;
+  });
+  await context.route(/\/b$/, (route) => (route.request().serviceWorker() ? undefined : route.continue()));
+  const gaveUp = context.waitForEvent("requestfailed", {
+    predicate: (r) => !!r.serviceWorker() && new URL(r.url()).pathname === "/b",
+    timeout: 60_000,
+  });
+  const before = (await listed(page)).pages;
+  note("b", "# B\n\nnew text\n");
+  writeFileSync(join(dir, "vault", "slow.html"), "<p>second</p>");
+  await expect
+    .poll(async () => {
+      const { pages } = await listed(page);
+      return pages["/b"] !== before["/b"] && pages["/slow.html"] !== before["/slow.html"];
+    })
+    .toBe(true);
+  await sync(page);
+  await expect.poll(() => held).not.toBeNull();
+  // The worker gives up on the note page after its 30 s. The html page is still wanted.
+  await gaveUp;
+  await held!.continue();
+  await expect.poll(() => cached(page, "/slow.html")).toContain("second");
+});
