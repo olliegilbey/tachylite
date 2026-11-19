@@ -73,6 +73,9 @@ fn fold(out: &mut Out, delta: &Delta, mem: &Mem) {
 
 const HOME: &str = "pages/.tachylite/home.html";
 
+/// Where the search shards are written.
+const SEARCH: &str = "files/.tachylite/search/";
+
 /// The URL key of a page under `pages/`; the inverse of `page_out`.
 fn page_key(out: &str) -> &str {
     if out == HOME {
@@ -115,15 +118,15 @@ fn manifest_urls(out: &Out) -> std::collections::BTreeSet<String> {
         .collect()
 }
 
-/// The URLs of the pages written: every file under `pages/`, and the switcher list.
+/// The URLs of the pages written: every file under `pages/`, the switcher list and the
+/// search shards.
 fn page_urls(out: &Out) -> std::collections::BTreeSet<String> {
+    let listed = |p: &&String| p.ends_with("/notes.json") || p.starts_with(SEARCH);
+    let files = out.keys().filter(|p| p.starts_with("files/.tachylite/"));
     out.keys()
         .filter(|p| p.starts_with("pages/"))
         .map(|p| format!("/{}", tachylite::render::encode(page_key(p))))
-        .chain(
-            out.contains_key("files/.tachylite/notes.json")
-                .then(|| "/.tachylite/notes.json".into()),
-        )
+        .chain(files.filter(listed).map(|p| p["files".len()..].to_string()))
         .collect()
 }
 
@@ -172,15 +175,15 @@ fn full(mem: &Mem) -> (Out, Delta) {
 }
 
 fn full_with(mem: &Mem, exclude: Exclude) -> (Out, Delta) {
-    let mut source = mem.clone();
-    let delta = Site::new(exclude).apply(vec![sync_all(mem)], &mut source);
     let mut out = Out::new();
-    fold(&mut out, &delta, mem);
+    let changes = vec![sync_all(mem)];
+    let delta = apply_kept(&mut Site::new(exclude), changes, &mut mem.clone(), &mut out);
     (out, delta)
 }
 
 /// A sink that reads pages back from the output earlier applies left, as the output
-/// directory does, so a page whose backlinks alone change takes a new footer unrendered.
+/// directory does, so a page whose backlinks alone change takes a new footer unrendered,
+/// and search shards are built.
 struct Kept<'a> {
     delta: Delta,
     out: &'a Out,
@@ -203,20 +206,29 @@ impl Sink for Kept<'_> {
             Some(String::from_utf8_lossy(page).into_owned())
         })
     }
+    fn keeps(&self) -> bool {
+        true
+    }
 }
 
-/// Applies changes through a `Kept` over `out`, derives, and folds the delta into `out`.
-fn apply_kept(site: &mut Site, changes: Vec<Change>, mem: &mut Mem, out: &mut Out) -> Delta {
-    let mut source = mem.clone();
+/// Applies changes from `source` through a `Kept` over `out`, and derives.
+fn kept(site: &mut Site, changes: Vec<Change>, source: &mut impl Source, out: &Out) -> Delta {
     let mut kept = Kept {
         delta: Delta::default(),
         out,
     };
-    let report = site.apply_to(changes, &mut source, &mut kept);
+    let report = site.apply_to(changes, source, &mut kept);
+    site.derive_to(&mut kept);
     let mut delta = kept.delta;
-    site.derive_to(&mut delta);
     delta.skipped = report.skipped;
     delta.broken = report.broken;
+    delta.notices = report.notices;
+    delta
+}
+
+/// Applies changes through a `Kept` over `out`, derives, and folds the delta into `out`.
+fn apply_kept(site: &mut Site, changes: Vec<Change>, mem: &mut Mem, out: &mut Out) -> Delta {
+    let delta = kept(site, changes, &mut mem.clone(), out);
     fold(out, &delta, mem);
     delta
 }
@@ -319,9 +331,9 @@ fn a_name_too_long_for_its_page_leaves_no_trace() {
     let long = format!("{}.md", "n".repeat(251));
     let link = format!("[[{0}]] ![[{0}]]", "n".repeat(251));
     let mut mem = Mem::with(&[("a.md", &link)]);
-    let (mut site, first) = synced(&mut mem, Exclude::default());
+    let mut site = Site::new(Exclude::default());
     let mut out = Out::new();
-    fold(&mut out, &first, &mem);
+    apply_kept(&mut site, vec![sync_all(&mem)], &mut mem, &mut out);
     // Create it, rename it to a short name, then rename it back.
     let steps = [
         (None, &*long),
@@ -336,8 +348,7 @@ fn a_name_too_long_for_its_page_leaves_no_trace() {
         mem.0.insert(to.to_string(), bytes);
         let mut changes: Vec<Change> = from.into_iter().map(touch).collect();
         changes.push(touch(to));
-        let delta = site.apply(changes, &mut mem);
-        fold(&mut out, &delta, &mem);
+        let delta = apply_kept(&mut site, changes, &mut mem, &mut out);
         assert_eq!(out, full(&mem).0, "after {to}");
         let skipped: Vec<Skipped> = (to == long)
             .then(|| Skipped {
@@ -918,11 +929,11 @@ proptest! {
             let mut source = mem.clone();
             let mut kept = Kept { delta: Delta::default(), out: &out };
             let report = site.apply_to(changes, &mut source, &mut kept);
+            if chunk[chunk.len() - 1].1 || i == chunks.len() - 1 {
+                site.derive_to(&mut kept);
+            }
             let mut delta = kept.delta;
             delta.skipped = report.skipped;
-            if chunk[chunk.len() - 1].1 || i == chunks.len() - 1 {
-                site.derive_to(&mut delta);
-            }
             fold(&mut out, &delta, &mem);
             prop_assert!(!leaks(&delta), "an excluded note reached the output");
             for push in delta.pushes {
@@ -936,7 +947,7 @@ proptest! {
         let mut fresh = Site::new(hush());
         fresh.set_nav(daily_nav(daily));
         let mut expected = Out::new();
-        fold(&mut expected, &fresh.apply(vec![sync_all(&mem)], &mut mem.clone()), &mem);
+        apply_kept(&mut fresh, vec![sync_all(&mem)], &mut mem.clone(), &mut expected);
         prop_assert_eq!(&out, &expected);
         prop_assert_eq!(manifest_urls(&out), page_urls(&out));
         for path in out.keys() {
@@ -974,11 +985,11 @@ fn threaded_full_build_equals_small_applies() {
     assert!(delta.broken.windows(2).all(|w| w[0].from <= w[1].from));
 
     let mut site = Site::new(Exclude::default());
-    let mut source = mem.clone();
+    let mut mem = mem;
     let mut got = Out::new();
     for group in notes.chunks(16) {
-        let delta = site.apply(group.iter().map(|(p, _)| touch(p)).collect(), &mut source);
-        fold(&mut got, &delta, &mem);
+        let changes = group.iter().map(|(p, _)| touch(p)).collect();
+        apply_kept(&mut site, changes, &mut mem, &mut got);
     }
     assert_eq!(got.len(), want.len());
     for (path, html) in &want {
@@ -1561,19 +1572,19 @@ proptest! {
                     failing.insert(path, ReadError::Missing);
                 }
             }
-            let delta = site.apply(changes, &mut Flaky { mem: &mem, failing: &failing });
+            let mut flaky = Flaky { mem: &mem, failing: &failing };
+            let delta = kept(&mut site, changes, &mut flaky, &out);
             fold(&mut out, &delta, &mem);
             // Each path in flux is then saved, and its event arrives.
             let follow: Vec<Change> = failing.keys().map(|p| touch(p)).collect();
             if !follow.is_empty() {
-                let delta = site.apply(follow, &mut mem.clone());
-                fold(&mut out, &delta, &mem);
+                apply_kept(&mut site, follow, &mut mem, &mut out);
             }
         }
         let mut fresh = Site::new(Exclude::default());
         fresh.set_nav(daily_nav(true));
         let mut expected = Out::new();
-        fold(&mut expected, &fresh.apply(vec![sync_all(&mem)], &mut mem.clone()), &mem);
+        apply_kept(&mut fresh, vec![sync_all(&mem)], &mut mem.clone(), &mut expected);
         prop_assert_eq!(&out, &expected);
     }
 }
@@ -1816,13 +1827,7 @@ fn a_page_whose_backlinks_alone_change_is_not_rendered_again() {
             None => mem.0.remove(path),
         };
         let mut source = Counted(mem.clone(), Vec::new());
-        let mut kept = Kept {
-            delta: Delta::default(),
-            out: &out,
-        };
-        site.apply_to(vec![touch(path)], &mut source, &mut kept);
-        let mut delta = kept.delta;
-        site.derive_to(&mut delta);
+        let delta = kept(&mut site, vec![touch(path)], &mut source, &out);
         fold(&mut out, &delta, &mem);
         assert!(!source.1.contains(&"b.md".to_string()), "after {path}");
         assert!(pushed(&delta).contains(&"b"), "after {path}");
@@ -1902,6 +1907,9 @@ impl Sink for Ordered {
     fn page(&mut self, _: &str) -> Option<String> {
         None
     }
+    fn keeps(&self) -> bool {
+        false
+    }
 }
 
 #[test]
@@ -1945,9 +1953,8 @@ fn a_full_build_past_the_held_bodies_equals_small_applies() {
     let mut mem = Mem::with(&pairs);
     let mut held = Site::new(Exclude::default());
     held.hold_at_most(64 * 1024);
-    let delta = held.apply(vec![sync_all(&mem)], &mut mem.clone());
     let mut want = Out::new();
-    fold(&mut want, &delta, &mem);
+    let delta = apply_kept(&mut held, vec![sync_all(&mem)], &mut mem, &mut want);
     // The first page was written before its backlinks were final, then again.
     let written = delta
         .writes
@@ -2770,13 +2777,7 @@ fn day_step(
     };
     let before = listed(out);
     let mut source = Counted(mem.clone(), Vec::new());
-    let mut kept = Kept {
-        delta: Delta::default(),
-        out,
-    };
-    site.apply_to(changes, &mut source, &mut kept);
-    let mut delta = kept.delta;
-    site.derive_to(&mut delta);
+    let delta = kept(site, changes, &mut source, out);
     fold(out, &delta, mem);
     let mut got = pushed(&delta);
     got.sort_unstable();
@@ -2792,8 +2793,7 @@ fn day_step(
     }
     let mut fresh = daily_site(Exclude::default());
     let mut want = Out::new();
-    let delta = fresh.apply(vec![sync_all(mem)], &mut mem.clone());
-    fold(&mut want, &delta, mem);
+    apply_kept(&mut fresh, vec![sync_all(mem)], &mut mem.clone(), &mut want);
     assert_eq!(*out, want);
 }
 
@@ -2928,5 +2928,91 @@ fn a_change_of_daily_settings_moves_every_daily_line() {
         out.values()
             .all(|page| !String::from_utf8_lossy(page).contains("class=\"days\""))
     );
+    assert_eq!(out, full(&mem).0);
+}
+
+// Search shards.
+
+/// Where the search shard of the note at `path` is written.
+fn shard_out(path: &str) -> String {
+    let shard = tachylite::indexes::shard(path);
+    format!("files/{}", tachylite::indexes::shard_key(shard))
+}
+
+/// The search shards a delta writes.
+fn shard_writes(delta: &Delta) -> Vec<&str> {
+    let shards = delta.writes.iter().filter_map(|w| match w {
+        Write::Page { out, .. } if out.starts_with(SEARCH) => Some(out.as_str()),
+        _ => None,
+    });
+    shards.collect()
+}
+
+/// Two note paths that share a search shard.
+fn shard_mates() -> (String, String) {
+    let mut seen = BTreeMap::new();
+    let mate = |n: u32| {
+        let path = format!("n{n}.md");
+        let first = seen.insert(tachylite::indexes::shard(&path), path.clone());
+        first.map(|first| (first, path))
+    };
+    (0..).find_map(mate).unwrap()
+}
+
+#[test]
+fn a_delta_holds_no_search_shard_and_a_sink_that_keeps_pages_builds_them_all() {
+    let mut mem = Mem::with(&[("a.md", "aye"), ("b.md", "bee")]);
+    let (mut site, delta) = synced(&mut mem, Exclude::default());
+    let mut out = Out::new();
+    fold(&mut out, &delta, &mem);
+    assert!(!out.keys().any(|p| p.starts_with(SEARCH)), "{out:?}");
+    assert_eq!(manifest_urls(&out), page_urls(&out));
+    // The shards stay due, so the next derive through a sink that keeps pages builds each.
+    mem.0.insert("c.md".into(), b"sea".to_vec());
+    apply_kept(&mut site, vec![touch("c.md")], &mut mem, &mut out);
+    assert_eq!(out, full(&mem).0);
+}
+
+#[test]
+fn a_search_shard_follows_the_modified_time_and_an_unchanged_touch_writes_none() {
+    let mut mem = Mem::with(&[("a.md", "aye"), ("b.md", "bee")]);
+    mem.1.insert("a.md".into(), 100);
+    let mut site = Site::new(Exclude::default());
+    let mut out = Out::new();
+    apply_kept(&mut site, vec![sync_all(&mem)], &mut mem, &mut out);
+    assert_eq!(out[&shard_out("a.md")], b"/a\t100\taye\n");
+
+    let delta = apply_kept(&mut site, vec![touch("a.md")], &mut mem, &mut out);
+    assert!(delta.writes.is_empty() && delta.deletes.is_empty());
+
+    // A save that changes no byte still moves the note up the ranking.
+    mem.1.insert("a.md".into(), 200);
+    let delta = apply_kept(&mut site, vec![touch("a.md")], &mut mem, &mut out);
+    assert_eq!(shard_writes(&delta), [shard_out("a.md")]);
+    assert_eq!(out[&shard_out("a.md")], b"/a\t200\taye\n");
+    assert_eq!(out, full(&mem).0);
+}
+
+#[test]
+fn a_search_shard_drops_a_deleted_note_and_goes_with_its_last_note() {
+    let (first, second) = shard_mates();
+    let mut mem = Mem::with(&[(&first, "one"), (&second, "two"), ("other.md", "three")]);
+    let mut site = Site::new(Exclude::default());
+    let mut out = Out::new();
+    apply_kept(&mut site, vec![sync_all(&mem)], &mut mem, &mut out);
+    let shard = shard_out(&first);
+    assert_eq!(String::from_utf8_lossy(&out[&shard]).lines().count(), 2);
+
+    mem.0.remove(&first);
+    let delta = apply_kept(&mut site, vec![touch(&first)], &mut mem, &mut out);
+    assert_eq!(shard_writes(&delta), [&shard]);
+    let url = format!("/{}", second.trim_end_matches(".md"));
+    assert_eq!(out[&shard], format!("{url}\t0\ttwo\n").as_bytes());
+
+    mem.0.remove(&second);
+    let delta = apply_kept(&mut site, vec![touch(&second)], &mut mem, &mut out);
+    assert!(delta.deletes.contains(&shard), "{:?}", delta.deletes);
+    assert!(shard_writes(&delta).is_empty());
+    assert_eq!(manifest_urls(&out), page_urls(&out));
     assert_eq!(out, full(&mem).0);
 }

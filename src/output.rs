@@ -167,6 +167,10 @@ impl<F: FnMut(Push)> Sink for Writer<'_, F> {
         }
         fs::read_to_string(self.out.join(rel)).ok()
     }
+
+    fn keeps(&self) -> bool {
+        true
+    }
 }
 
 /// The push key of the page at `rel`, an output path under `pages/`.

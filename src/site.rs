@@ -77,6 +77,9 @@ pub trait Sink {
     /// changed takes its new footer around the body there, rather than render again. A
     /// search shard takes each note's text from the body there.
     fn page(&mut self, out: &str) -> Option<String>;
+    /// Whether `page` reads back the pages of earlier applies too. Search shards are built
+    /// only through a sink that does: any other would write a shard with rows missing.
+    fn keeps(&self) -> bool;
 }
 
 /// What an apply found that is not output.
@@ -114,13 +117,16 @@ impl Sink for Delta {
     fn push(&mut self, push: Push) {
         self.pushes.push(push);
     }
-    /// Only this apply's pages: an earlier page renders again, and a search shard built
-    /// after a later apply leaves it out.
+    /// Only this apply's pages: an earlier page renders again.
     fn page(&mut self, out: &str) -> Option<String> {
         self.writes.iter().rev().find_map(|w| match w {
             Write::Page { out: o, html } if o == out => Some(html.to_string()),
             _ => None,
         })
+    }
+    /// So a delta holds no search shard, and its manifest lists none.
+    fn keeps(&self) -> bool {
+        false
     }
 }
 
@@ -662,7 +668,8 @@ impl Site {
         self.versions.len()
     }
 
-    /// Applies changes, derives the index pages, and collects the output.
+    /// Applies changes, derives the index pages, and collects the output. A delta cannot
+    /// read an earlier apply's pages back, so it holds no search shard.
     pub fn apply(&mut self, changes: Vec<Change>, source: &mut impl Source) -> Delta {
         let mut delta = Delta::default();
         let report = self.apply_to(changes, source, &mut delta);
@@ -1179,12 +1186,13 @@ impl Site {
     /// holds one row for each of its notes, in path order. Each note's text comes from the
     /// body in its written page, read back one shard at a time, so the site holds no text
     /// and a full build takes this path too. A page that cannot be read back has no row.
+    /// A sink that keeps no earlier page builds none, and leaves them dirty.
     /// Returns whether any shard changed.
     fn shards(&mut self, sink: &mut impl Sink) -> bool {
-        let dirty = std::mem::take(&mut self.dirty_shards);
-        if dirty.is_empty() {
+        if !sink.keeps() {
             return false;
         }
+        let dirty = std::mem::take(&mut self.dirty_shards);
         let mut notes: BTreeMap<u32, Vec<String>> =
             dirty.into_iter().map(|s| (s, Vec::new())).collect();
         for path in self.versions.keys() {
