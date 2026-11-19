@@ -1,4 +1,5 @@
 // Offline: every page from the cache, and a sync that fetches only the pages that changed.
+// A listed page that is also a listed file is an html page from the vault.
 const CACHE = "tachylite";
 const MANIFEST = "/.tachylite/manifest.json";
 const SHELL = [
@@ -17,6 +18,7 @@ const KEEP = [...SHELL, MANIFEST, MERMAID];
 const DIAGRAM = '<pre class="mermaid">';
 // A fetch the worker queues for gives up after 30 s, so a hung one cannot hold the queue; the
 // next sync retries it. Six pages share a slow link, so a working one finishes well inside it.
+// An html page gets 120 s: it can be 1 MB, sent uncompressed.
 // An engine without `AbortSignal.timeout`, as iOS 15, fetches with no limit.
 const get = (url, s = 30) => fetch(url, { signal: AbortSignal.timeout?.(s * 1e3) });
 // A response rebuilt around a body, keeping its headers but the encoding and length of the old body.
@@ -117,7 +119,8 @@ async function store({ url, version, html }) {
 // The stored manifest maps each listed page to the version its cached copy carries, or ""
 // for one not fetched yet. It is saved before the fetches and every 50 pages, so a worker
 // stopped mid-sync resumes where it stopped. A listed page with no cached copy is fetched
-// again. A cached key the manifest does not list, as page or file, is dropped.
+// again. A cached key the manifest does not list, as page or file, is dropped. An html page
+// records the listed version, and is never read for a version or a diagram: its content is its own.
 async function sync() {
   const cache = await caches.open(CACHE);
   const response = await get(MANIFEST).catch(() => null);
@@ -145,12 +148,12 @@ async function sync() {
   const workers = Array.from({ length: 6 }, async () => {
     for (let url; (url = stale.shift()); ) {
       try {
-        const r = await get(url);
+        const r = await get(url, keep.has(url) ? 120 : 30);
         if (r.status === 404) await cache.delete(url);
         if (r.status !== 200) continue;
         // A page may have changed since the manifest was read: record what came. A file
         // with no version meta, such as notes.json, records the listed version.
-        const html = r.headers.get("content-type")?.startsWith("text/html");
+        const html = !keep.has(url) && r.headers.get("content-type")?.startsWith("text/html");
         const text = html ? await r.clone().text() : "";
         const version = html
           ? (/<meta name="tachylite-version" content="([0-9a-f]+)">/.exec(text)?.[1] ?? "")
@@ -175,7 +178,8 @@ async function sync() {
   // with time for 760 KB on a slow link. A pending entry with no page fetched this sync to
   // show a diagram looks through the cached pages.
   const draws = async () => {
-    for (const url in want) if ((await (await cache.match(url))?.text())?.includes(DIAGRAM)) return true;
+    for (const url in want)
+      if (!keep.has(url) && (await (await cache.match(url))?.text())?.includes(DIAGRAM)) return true;
   };
   if (MERMAID in have) {
     if (!cached.has(MERMAID) && (drawn || (await draws()))) {

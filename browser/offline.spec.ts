@@ -506,6 +506,28 @@ test("a sync downloads an html page again only when it changes, and never one pa
   expect(fetched).toEqual(["/b", "/chart.html"]);
 });
 
+test("an upgraded worker caches no Mermaid for an html page with a diagram block", async ({ page, context }) => {
+  writeFileSync(join(dir, "vault", "chart.html"), '<!doctype html><pre class="mermaid">graph TD</pre>');
+  await expect.poll(async () => Object.keys((await listed(page)).pages)).toContain("/chart.html");
+  await visit(page, "/a");
+  await synced(page);
+  // A new worker arrives with a deploy, and its first sync waits for the manifest.
+  let held: Route | null = null;
+  await context.route(/manifest\.json$/, (route) => {
+    if (!route.request().serviceWorker()) return route.continue();
+    held = route;
+  });
+  await page.evaluate(() => navigator.serviceWorker.getRegistration().then((r) => r!.unregister()));
+  await page.goto(base + "/a");
+  await expect.poll(() => held).not.toBeNull();
+  // The new worker found no script, so its sync will look through the cached pages.
+  const script = "/.tachylite/mermaid.js";
+  expect(await stored(page)).toHaveProperty([script], "");
+  await held!.continue();
+  await synced(page);
+  expect(await has(page, script)).toBe(false);
+});
+
 // One engine runs both projects, and the wait here is the worker's fetch timeout itself.
 test("an html page has longer to download than a note page", async ({ page, context }, info) => {
   test.skip(info.project.name === "phone", "the desktop project covers it");
