@@ -3,6 +3,7 @@ const CACHE = "tachylite";
 const MANIFEST = "/.tachylite/manifest.json";
 const SHELL = [
   "/.tachylite/live.js",
+  "/.tachylite/search.js",
   "/.tachylite/style.css",
   "/.tachylite/app.webmanifest",
   "/.tachylite/icon.svg",
@@ -10,6 +11,7 @@ const SHELL = [
 ];
 const PASS = new Set(["/.tachylite/events", "/.tachylite/sw.js", MANIFEST]);
 const NOTES = "/.tachylite/notes.json";
+const SEARCH = "/.tachylite/search/";
 // Asked for with `no-cache`, these come from the network first: a cached copy can miss a new note.
 const FRESH = new Set([NOTES, "/.tachylite/today"]);
 const MERMAID = "/.tachylite/mermaid.js";
@@ -134,8 +136,9 @@ async function sync() {
     have[url] = cached.has(url) ? (held[url] ?? "") : "";
     if (have[url] !== version) stale.push(url);
   }
-  // The home page, the index pages and the switcher list first: they reach the rest.
-  const index = (url) => url === "/" || url.startsWith("/.tachylite/");
+  // The home page, the index pages and the switcher list first: they reach the rest. The
+  // search shards last: a note is read before it is searched.
+  const index = (url) => (url === "/" || url.startsWith("/.tachylite/")) - 2 * url.startsWith(SEARCH);
   stale.sort((a, b) => index(b) - index(a));
   await Promise.all(keys.filter((url) => !(url in want) && !keep.has(url)).map((url) => cache.delete(url)));
   const save = () => cache.put(MANIFEST, json(have));

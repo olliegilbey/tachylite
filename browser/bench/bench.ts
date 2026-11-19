@@ -1,4 +1,4 @@
-import type { Browser, BrowserContext, Page, Request } from "@playwright/test";
+import { expect, type Browser, type BrowserContext, type Page, type Request } from "@playwright/test";
 import { cpSync } from "node:fs";
 import { get } from "node:http";
 import { cpus, loadavg } from "node:os";
@@ -209,15 +209,18 @@ async function open(browser: Browser, profile: Profile, label: string, base: str
   await page.goto("/");
   await page.waitForFunction(() => navigator.serviceWorker.controller !== null);
   const { pages } = await (await page.request.get(MANIFEST)).json();
-  await page.waitForFunction(
-    async ([manifest, want]) => {
-      const have = (await (await caches.match(manifest))?.json()) ?? {};
-      const urls = Object.keys(want);
-      return urls.length === Object.keys(have).length && urls.every((url) => have[url] === want[url]);
-    },
-    [MANIFEST, pages] as const,
-    { polling: 100, timeout: 0 },
-  );
+  // `waitForFunction` takes a promise for true, so the page answers and the bench polls.
+  const stored = () =>
+    page.evaluate(
+      async ([manifest, want]) => {
+        const have = (await (await caches.match(manifest))?.json()) ?? {};
+        const urls = Object.keys(want);
+        return urls.length === Object.keys(have).length && urls.every((url) => have[url] === want[url]);
+      },
+      [MANIFEST, pages] as const,
+    );
+  // The caller sets the limit.
+  await expect.poll(stored, { timeout: 0 }).toBe(true);
   const cdp = await context.newCDPSession(page);
   await cdp.send("Emulation.setCPUThrottlingRate", { rate: profile.cpu });
 }
