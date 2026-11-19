@@ -255,9 +255,13 @@ test("an interrupted sync resumes, home and index pages first", async ({ page, c
   const kept = await recorded();
 
   const { pages } = await listed(page);
-  const indexes = Object.keys(pages).filter((u) => u === "/" || u.startsWith("/.tachylite/"));
+  const shard = (u: string) => u.startsWith("/.tachylite/search/");
+  const indexes = Object.keys(pages).filter((u) => u === "/" || (u.startsWith("/.tachylite/") && !shard(u)));
   const order = [...new Set(fetched.filter((u) => u in pages))];
   expect(order.slice(0, indexes.length).sort()).toEqual(indexes.sort());
+  // The search shards come after the notes, and the sync was cut before the notes ended.
+  expect(Object.keys(pages).some(shard)).toBe(true);
+  expect(fetched.filter(shard)).toEqual([]);
 
   fetched = [];
   limit = Infinity;
