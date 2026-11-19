@@ -13,7 +13,7 @@ Take the first form that can carry the content.
 
 1. **A Markdown note.** The default. The quick switcher finds it by title, alias and path. It links, and it lists its backlinks. An open page updates as you save. It syncs to the phone ahead of time and reads offline.
 2. **Raw HTML inside a note.** For layout Markdown lacks: a collapsible block, a figure with a caption, a keyboard key. It keeps every gain of a note. It carries no script and no styling.
-3. **A standalone `.html` page.** For anything that needs a script or its own styling: a chart, a map, an interactive view. It gives up the switcher, backlinks, live updates and the sync ahead of time.
+3. **A standalone `.html` page.** For anything that needs a script or its own styling: a chart, a map, an interactive view. It gives up backlinks, live updates, a title and aliases: lists and the switcher show it by file name. One up to 1 MB still syncs to the phone ahead of time.
 
 ## Notes
 
@@ -111,13 +111,13 @@ The pH is **6.5**. See [[garden plan]].
 
 - **Link it** with `[[chart.html]]` or `[label](chart.html)`. It opens full screen, as written, with no Tachylite header. Back returns to the note.
 - **Embed it** with `![[chart.html]]`. It shows in a frame as wide as the text and 20rem tall, about 340 px, above a link that opens it full screen.
-- **Link every page from a note.** The switcher lists notes only. Without a link, the page shows only in its folder's index.
+- **Name the file well, and link it from a note.** The switcher, the recent lists and the folder's index show a page by its file name alone. A link from the note that explains it gives the reader the context.
 - **Make it self-contained.** Put its CSS, its script and its data in the one file. The vault publishes no `.js`, `.css` or `.json`, so the page cannot load them from it.
 - **The sandbox** runs scripts in an origin of their own. Cookies, `localStorage` and IndexedDB throw. `fetch` cannot read another vault file. `alert`, `confirm` and `prompt` do nothing. `window.open` opens nothing.
-- **Offline.** A page the reader has opened full screen once stays on the phone and opens offline. A page never opened does not. An embedded frame always needs the network, so the link under it is the offline way in. A library or map tile loaded from the web fails offline: inline what the page needs. Inline an image as a `data:` URL.
+- **Offline.** A page up to 1 MB syncs to the phone with the notes and opens offline, full screen. Keep a page under 1 MB: a larger one opens offline only after the reader has opened it once. An embedded frame always needs the network, so the link under it is the offline way in. A library or map tile loaded from the web fails offline: inline what the page needs. Inline an image as a `data:` URL.
 - **Fit a phone.** Add `<meta name="viewport" content="width=device-width, initial-scale=1">`. Lay it out for a screen 360 px wide, with touch targets.
 - **Follow light and dark.** Add `<meta name="color-scheme" content="dark light">`. Style for dark first, and switch under `@media (prefers-color-scheme: light)`. The page cannot use Tachylite's stylesheet.
-- An open page does not update when you save it. The phone shows its saved copy first and fetches the new one behind it, so a change can take two opens to show.
+- An open page does not update when you save it. The phone's next sync fetches the new copy, so the next open shows it. A page over 1 MB shows its saved copy first and fetches the new one behind it, so a change can take two opens to show.
 
 ## What does not render
 
