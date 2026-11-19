@@ -11,7 +11,7 @@ expression: welcome()
 <link rel="manifest" href="/.tachylite/app.webmanifest">
 <link rel="icon" href="/.tachylite/icon.svg">
 <link rel="stylesheet" href="/.tachylite/style.css">
-<meta name="tachylite-version" content="159190c4cbd0a8fc">
+<meta name="tachylite-version" content="5e0de45da4967973">
 <title>welcome</title>
 <script src="/.tachylite/live.js" defer></script>
 </head>
@@ -42,8 +42,8 @@ expression: welcome()
 </table>
 <h2 id="tasks">Tasks</h2>
 <ul>
-<li><input type="checkbox" disabled="" /> Water the fern</li>
-<li><input type="checkbox" checked="" disabled="" /> Sweep the porch</li>
+<li data-task="todo"><input type="checkbox" disabled="" /> Water the fern</li>
+<li data-task="done"><input type="checkbox" checked="" disabled="" /> Sweep the porch</li>
 </ul>
 <h2 id="notes">Notes</h2>
 <p>A coffee here costs $5 or $10, depending on the cup.<sup class="footnote-ref"><a href="#fn-cup" id="fnref-cup" data-footnote-ref>1</a></sup></p>

@@ -11,7 +11,7 @@ expression: "built(\"notes/links\")"
 <link rel="manifest" href="/.tachylite/app.webmanifest">
 <link rel="icon" href="/.tachylite/icon.svg">
 <link rel="stylesheet" href="/.tachylite/style.css">
-<meta name="tachylite-version" content="e614bd969fd9d72e">
+<meta name="tachylite-version" content="c7283b21a0754e2b">
 <title>links</title>
 <script src="/.tachylite/live.js" defer></script>
 </head>
@@ -56,8 +56,8 @@ expression: "built(\"notes/links\")"
 </table>
 <h2 id="e1.tasks">Tasks</h2>
 <ul>
-<li><input type="checkbox" disabled="" /> Water the fern</li>
-<li><input type="checkbox" checked="" disabled="" /> Sweep the porch</li>
+<li data-task="todo"><input type="checkbox" disabled="" /> Water the fern</li>
+<li data-task="done"><input type="checkbox" checked="" disabled="" /> Sweep the porch</li>
 </ul>
 <h2 id="e1.notes">Notes</h2>
 <p>A coffee here costs $5 or $10, depending on the cup.<sup class="footnote-ref"><a href="#e1.fn-cup" id="e1.fnref-cup" data-footnote-ref>1</a></sup></p>

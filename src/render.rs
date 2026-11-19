@@ -4,11 +4,13 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
 use comrak::adapters::CodefenceRendererAdapter;
-use comrak::html::dangerous_url;
+use comrak::html::{
+    ChildRendering, Context, dangerous_url, format_document_with_formatter, format_node_default,
+};
 use comrak::nodes::Sourcepos;
 use comrak::nodes::{AstNode, CalloutFold, NodeValue};
 use comrak::options::Plugins;
-use comrak::{Anchorizer, Arena, Options, format_html_with_plugins, parse_document};
+use comrak::{Anchorizer, Arena, Options, parse_document};
 
 use crate::config::Exclude;
 use crate::front::{self, Value};
@@ -28,6 +30,8 @@ fn options() -> Options<'static> {
     options.extension.table = true;
     options.extension.autolink = true;
     options.extension.tasklist = true;
+    // Any character may sit in a checkbox, so `[/]` and `[-]` parse. `format_node` keeps four.
+    options.parse.relaxed_tasklist_matching = true;
     options.extension.footnotes = true;
     options.extension.wikilinks_title_after_pipe = true;
     options.extension.ofm_callouts = true;
@@ -630,7 +634,7 @@ fn render(
         .codefence_renderers
         .insert("mermaid".to_string(), &Mermaid);
     // Writing into a String cannot fail.
-    let _ = format_html_with_plugins(root, &options, &mut html, &plugins);
+    let _ = format_document_with_formatter(root, &options, &mut html, &plugins, format_node, ());
     if unclosed {
         html.push_str(
             "<p class=\"comment-error\">A comment in this note is not closed, so the text \
@@ -639,6 +643,51 @@ fn render(
     }
     body.html = html;
     body
+}
+
+/// A task's status, from the character in its checkbox. Any other character makes no task.
+fn task_status(symbol: Option<char>) -> Option<&'static str> {
+    match symbol {
+        None => Some("todo"),
+        Some('/') => Some("doing"),
+        Some('x' | 'X') => Some("done"),
+        Some('-') => Some("cancelled"),
+        Some(_) => None,
+    }
+}
+
+/// comrak's HTML for a node, but for a list item with a checkbox. A task's item carries its
+/// status in `data-task`, which no raw HTML can write. A checkbox with any other character
+/// renders as the note wrote it.
+fn format_node<'a>(
+    context: &mut Context,
+    node: &'a AstNode<'a>,
+    entering: bool,
+) -> Result<ChildRendering, std::fmt::Error> {
+    use std::fmt::Write;
+    let NodeValue::TaskItem(item) = &node.data().value else {
+        return format_node_default(context, node, entering);
+    };
+    if !entering {
+        context.write_str("</li>\n")?;
+    } else if let Some(status) = task_status(item.symbol) {
+        let checked = if status == "done" {
+            " checked=\"\""
+        } else {
+            ""
+        };
+        context.cr()?;
+        write!(
+            context,
+            "<li data-task=\"{status}\"><input type=\"checkbox\"{checked} disabled=\"\" /> "
+        )?;
+    } else {
+        context.cr()?;
+        context.write_str("<li>[")?;
+        context.escape(item.symbol.unwrap_or(' ').encode_utf8(&mut [0; 4]))?;
+        context.write_str("] ")?;
+    }
+    Ok(ChildRendering::HTML)
 }
 
 /// The byte offset of each line's start.
