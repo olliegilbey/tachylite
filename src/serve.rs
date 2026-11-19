@@ -108,8 +108,9 @@ fn content_type(path: &Path) -> &'static str {
     match ext.as_str() {
         "html" => "text/html; charset=utf-8",
         "js" => "text/javascript",
-        // Generated only: the vault publishes no json.
+        // Generated only: the vault publishes no json and no txt.
         "json" => "application/json",
+        "txt" => "text/plain; charset=utf-8",
         "webmanifest" => "application/manifest+json",
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",

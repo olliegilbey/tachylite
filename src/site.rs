@@ -64,7 +64,8 @@ impl Source for &VaultDir {
 /// A derive sends:
 /// 1. each removed index page's delete and gone push;
 /// 2. the index pages' writes, each followed by its push, and the switcher list's write;
-/// 3. the manifest.
+/// 3. each changed search shard's write, or its delete once it holds no note;
+/// 4. the manifest.
 ///
 /// Paths are relative to the output directory. Streaming means a full sync never holds
 /// every page at once.
@@ -73,7 +74,8 @@ pub trait Sink {
     fn write(&mut self, write: Write);
     fn push(&mut self, push: Push);
     /// The page last written to `out`, if it can be read back. A note whose backlinks alone
-    /// changed takes its new footer around the body there, rather than render again.
+    /// changed takes its new footer around the body there, rather than render again. A
+    /// search shard takes each note's text from the body there.
     fn page(&mut self, out: &str) -> Option<String>;
 }
 
@@ -112,7 +114,8 @@ impl Sink for Delta {
     fn push(&mut self, push: Push) {
         self.pushes.push(push);
     }
-    /// Only this apply's pages: an earlier page renders again.
+    /// Only this apply's pages: an earlier page renders again, and a search shard built
+    /// after a later apply leaves it out.
     fn page(&mut self, out: &str) -> Option<String> {
         self.writes.iter().rev().find_map(|w| match w {
             Write::Page { out: o, html } if o == out => Some(html.to_string()),
@@ -210,7 +213,7 @@ pub fn generated(out: &str) -> bool {
 fn generated_out(key: &str) -> String {
     match key {
         "" => "pages/.tachylite/home.html".into(),
-        NOTES_JSON => format!("files/{key}"),
+        _ if key == NOTES_JSON || key.starts_with(SEARCH) => format!("files/{key}"),
         _ if key.starts_with(FOLDERS) || key.starts_with(RECENT_IN) => {
             format!("pages/{key}/.index.html")
         }
@@ -231,6 +234,10 @@ const TODAY: &str = ".tachylite/today";
 /// The URL key prefix of the tag pages. A tag holds no `.`, so `<tag>.html` never clashes
 /// with the folder of a nested tag.
 const TAGS: &str = ".tachylite/tags/";
+
+/// The URL key prefix of the search shards. Each holds the text of the notes whose paths
+/// hash to it, one row a note.
+const SEARCH: &str = ".tachylite/search/";
 
 /// The rows of the tag pages one apply builds.
 struct Rows {
@@ -314,6 +321,9 @@ pub struct Site {
     tagged: BTreeMap<String, BTreeSet<String>>,
     /// The tag keys whose pages may have changed since the last apply.
     dirty_tags: BTreeSet<String>,
+    /// The search shards whose rows may have changed since the last derive: a note of
+    /// theirs was read, written or removed.
+    dirty_shards: BTreeSet<u32>,
     /// Whether a manifest was written, so the first derive writes one even when empty.
     listed: bool,
     /// Whether an apply changed what the manifest lists since it was written.
@@ -770,6 +780,7 @@ impl Site {
             if kind == Kind::Note {
                 self.unlisted |= self.versions.remove(path).is_some();
                 self.spans.remove(path);
+                self.dirty_shards.insert(indexes::shard(path));
                 if !live.contains(note_key(path)) {
                     gone.push(note_key(path).to_string());
                 }
@@ -880,6 +891,7 @@ impl Site {
             done.pushed.insert(path.to_string());
             self.versions.insert(path.to_string(), page.version.clone());
             self.unlisted = true;
+            self.dirty_shards.insert(indexes::shard(path));
             // Where the body sits in the page, so a new footer can go around it unrendered.
             let folder = path.rsplit_once('/').map_or("", |(folder, _)| folder);
             let start = page
@@ -919,18 +931,9 @@ impl Site {
                     kept.push(path);
                     continue;
                 }
-                let span = self.spans.get(path.as_str()).copied();
-                let version = self.versions.get(path.as_str());
-                let page = span.zip(version).and_then(|((start, len), version)| {
-                    let page = sink.page(&claim(path, Kind::Note).1)?;
-                    // The version in its head shows the page is the one this site wrote.
-                    let head = page.get(..start)?;
-                    let ours = head.contains(version.as_str());
-                    (ours && page.get(start..start + len).is_some()).then_some(page)
-                });
-                match (page, span) {
-                    (Some(page), Some(span)) => read.push((path, page, span)),
-                    _ => lost.push(path.clone()),
+                match self.written(path, sink) {
+                    Some((page, span)) => read.push((path, page, span)),
+                    None => lost.push(path.clone()),
                 }
             }
             let held = std::mem::take(&mut done.held);
@@ -1136,11 +1139,12 @@ impl Site {
             .chain(kept)
             .collect();
         // Tag pages derive only where a tag was added, removed or retitled, so a save that
-        // changes no tag builds none.
+        // changes no tag builds none. Search shards derive only where a note changed.
         let mut gone: Vec<String> = self
             .generated
             .keys()
-            .filter(|key| !key.starts_with(TAGS) && !fresh.contains(*key))
+            .filter(|key| !key.starts_with(TAGS) && !key.starts_with(SEARCH))
+            .filter(|key| !fresh.contains(*key))
             .cloned()
             .collect();
         // A tag page is built as it is written, so a full sync never holds them all.
@@ -1168,7 +1172,62 @@ impl Site {
                 changed |= self.emit(format!("{TAGS}{tag}"), page.version, page.html, sink);
             }
         }
+        changed | self.shards(sink)
+    }
+
+    /// Rebuilds each dirty search shard, and writes the ones whose version changed. A shard
+    /// holds one row for each of its notes, in path order. Each note's text comes from the
+    /// body in its written page, read back one shard at a time, so the site holds no text
+    /// and a full build takes this path too. A page that cannot be read back has no row.
+    /// Returns whether any shard changed.
+    fn shards(&mut self, sink: &mut impl Sink) -> bool {
+        let dirty = std::mem::take(&mut self.dirty_shards);
+        if dirty.is_empty() {
+            return false;
+        }
+        let mut notes: BTreeMap<u32, Vec<String>> =
+            dirty.into_iter().map(|s| (s, Vec::new())).collect();
+        for path in self.versions.keys() {
+            if let Some(paths) = notes.get_mut(&indexes::shard(path)) {
+                paths.push(path.clone());
+            }
+        }
+        let mut changed = false;
+        for (shard, paths) in notes {
+            let mut rows = String::new();
+            for path in &paths {
+                if let Some((page, (start, len))) = self.written(path, sink) {
+                    let modified = self.modified.get(path).copied().unwrap_or_default();
+                    indexes::search_row(&mut rows, &url(path), modified, &page[start..start + len]);
+                }
+            }
+            let key = indexes::shard_key(shard);
+            if rows.is_empty() {
+                if self.generated.remove(&key).is_some() {
+                    sink.delete(generated_out(&key));
+                    changed = true;
+                }
+                continue;
+            }
+            let mut hasher = DefaultHasher::new();
+            rows.hash(&mut hasher);
+            // Short, since the manifest lists a thousand of them: 32 bits tell two
+            // contents of one shard apart.
+            let version = format!("{:08x}", hasher.finish() & 0xffff_ffff);
+            changed |= self.emit(key, version, rows, sink);
+        }
         changed
+    }
+
+    /// A note's written page and where its body sits in it, if the page can be read back
+    /// and is the one this site last wrote.
+    fn written(&self, path: &str, sink: &mut impl Sink) -> Option<(String, (usize, usize))> {
+        let (start, len) = self.spans.get(path).copied()?;
+        let version = self.versions.get(path)?;
+        let page = sink.page(&claim(path, Kind::Note).1)?;
+        // The version in its head shows the page is the one this site wrote.
+        let ours = page.get(..start)?.contains(version.as_str());
+        (ours && page.get(start..start + len).is_some()).then_some((page, (start, len)))
     }
 
     /// Writes and pushes a generated page whose version changed. Returns whether it did.
@@ -1177,11 +1236,14 @@ impl Site {
             return false;
         }
         let html: Arc<str> = Arc::from(html);
+        let out = generated_out(&key);
+        // A file has no page to push to: the switcher list, a search shard.
+        let page = out.starts_with("pages/");
         sink.write(Write::Page {
-            out: generated_out(&key),
+            out,
             html: Arc::clone(&html),
         });
-        if key != NOTES_JSON {
+        if page {
             sink.push(Push::Page {
                 key: key.clone(),
                 version: version.clone(),
@@ -1701,7 +1763,9 @@ impl Site {
             return false;
         };
         let result = match kind {
+            // A search row carries the modified time, which a save can move alone.
             Kind::Note => source.note(path).map(|note| {
+                self.dirty_shards.insert(indexes::shard(path));
                 self.modified.insert(path.to_string(), note.modified);
                 let meta = front::meta(&String::from_utf8_lossy(&note.bytes));
                 *kept += note.bytes.len();
