@@ -137,8 +137,8 @@ summary.callout-title { cursor: pointer; }
 .footnotes, .backlinks { margin-top: 3rem; padding-top: 0.5rem; border-top: 1px solid var(--line); font-size: 0.92rem; }
 .backlinks h2 { font-size: 1rem; color: var(--dim); }
 
-ul.folders, ul.notes, ul.recent { padding-left: 0; list-style: none; }
-ul.folders li, ul.notes li, ul.recent li { border-bottom: 1px solid var(--line); }
+ul:is(.folders, .notes, .recent) { padding-left: 0; list-style: none; }
+ul:is(.folders, .notes, .recent) li { border-bottom: 1px solid var(--line); }
 ul:is(.folders, .notes, .recent) a { display: block; padding: 0.3rem 0; }
 ul.recent a { padding-bottom: 0; }
 ul.recent .meta { padding-bottom: 0.3rem; }
