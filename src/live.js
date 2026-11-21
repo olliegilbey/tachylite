@@ -62,7 +62,7 @@
   let left = 0;
   let hits = [];
   let draw = () => {};
-  // The query whose rows the list shows, or null when it shows none.
+  // The query the list last drew, or null since the switcher opened.
   let shown = null;
   const answer = (e) => {
     if (e.data.id !== asked) return;
@@ -122,8 +122,7 @@
         shown = query;
       };
       const search = query && whole.length < 20 && pool.length;
-      // Asked again, the rows stay until the answer, so none moves. A query not drawn yet
-      // has no rows to keep: the fresh list came before the first one.
+      // Asked again, the rows stay until the answer, so none moves. A query not drawn yet has none to keep.
       if (again !== true || !search || shown !== query) draw(search ? null : []);
       if (!search) return;
       hits = [];
