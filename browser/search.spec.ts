@@ -263,6 +263,50 @@ test("a switcher opened while connected fetches its list once", async ({ page, c
   expect(await worker.evaluate(() => (self as any).fetched)).toBe(1);
 });
 
+test("a fresh list that lands before the first one still draws the name rows at once", async ({ browser }) => {
+  server = await serve(dir);
+  base = server.base;
+  const context = await browser.newContext({ serviceWorkers: "block" });
+  const page = await context.newPage();
+  await page.addInitScript(() => {
+    const Real = EventSource;
+    (window as any).EventSource = class extends Real {
+      constructor(url: string) {
+        super(url);
+        (window as any).stream = this;
+      }
+    };
+  });
+  // The switcher asks for its list twice while the stream is open. Each answer waits for its
+  // own release, and the search worker waits with the first, so no text answer comes.
+  const gate = () => {
+    let open = () => {};
+    return { held: new Promise<void>((resolve) => (open = resolve)), open: () => open() };
+  };
+  const [first, fresh] = [gate(), gate()];
+  let asked = 0;
+  await page.route("**/.tachylite/notes.json", async (route) => {
+    await (++asked === 1 ? first : fresh).held;
+    await route.continue();
+  });
+  await page.route("**/.tachylite/search.js", async (route) => {
+    await first.held;
+    await route.continue();
+  });
+  await page.goto(base + "/a");
+  await page.waitForFunction(() => (window as any).stream?.readyState === 1);
+  await page.locator("header button.find").click();
+  await page.locator("dialog.switcher input").fill("fern");
+  await expect.poll(() => asked).toBe(2);
+  fresh.open();
+  await expect(rows(page).locator("a")).toHaveText([/^Fern care/]);
+  await expect(page.locator("dialog.switcher ul")).toHaveAttribute("aria-busy", "true");
+  first.open();
+  await expect(rows(page).locator("a")).toHaveText([/^Fern care/, /^Field round/]);
+  await answered(page);
+  await context.close();
+});
+
 test("search works with the server stopped", async ({ page }) => {
   server = await serve(dir);
   base = server.base;
