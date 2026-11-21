@@ -204,6 +204,18 @@ fn broken(from: &str, target: &str, resolved: &Resolved) -> Broken {
     }
 }
 
+/// Gives a wikilink with no label, `[[b|]]`, its target as text: a link with no text
+/// cannot be followed.
+fn fill_label<'a>(arena: &'a Arena<'a>, node: &'a AstNode<'a>) {
+    if node.first_child().is_some() {
+        return;
+    }
+    if let NodeValue::WikiLink(link) = &node.data().value {
+        let text = NodeValue::Text(Cow::Owned(link.url.clone()));
+        node.append(arena.alloc(AstNode::from(text)));
+    }
+}
+
 enum Embed {
     /// Stays in its paragraph.
     Inline(String),
@@ -374,6 +386,7 @@ fn property(body: &mut Body, from: &str, index: &Index, key: &str, value: &str) 
         if empty(target) {
             return escape(value);
         }
+        let label = if empty(label) { target } else { label };
         let (path, heading) = split(target);
         let open = open(body, from, index, path.trim(), heading);
         return format!("{open}{}</a>", escape(label));
@@ -483,6 +496,13 @@ fn render(
                 continue;
             }
             NodeValue::Heading(heading) => {
+                // Before the id, which is made of the heading's text. An embed keeps its
+                // label, which can size an image.
+                for link in node.descendants() {
+                    if matches!(&link.data().value, NodeValue::WikiLink(l) if !l.embed) {
+                        fill_label(&arena, link);
+                    }
+                }
                 let id = escape(&anchorizer.anchorize(&node.collect_text()));
                 headings.push((node, heading.level, id));
                 continue;
@@ -537,6 +557,7 @@ fn render(
         }
         let link = match &node.data().value {
             NodeValue::WikiLink(link) => {
+                fill_label(&arena, node);
                 let (path, heading) = split(&link.url);
                 Some((path.trim().to_string(), heading.map(str::to_string)))
             }
@@ -632,7 +653,10 @@ fn render(
                     None => replace(&arena, node, html),
                 }
             }
-            Embed::Link(open) => wrap(&arena, node, open, "</a>".to_string()),
+            Embed::Link(open) => {
+                fill_label(&arena, node);
+                wrap(&arena, node, open, "</a>".to_string());
+            }
         }
     }
     // A character reference can write `#`, which makes no tag. Only then are sources read.
