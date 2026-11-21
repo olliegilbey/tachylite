@@ -851,9 +851,7 @@ impl Site {
                 sink.write(Write::Copy { out, from });
                 continue;
             };
-            let mut hasher = DefaultHasher::new();
-            note.bytes.hash(&mut hasher);
-            let version = format!("{:016x}", hasher.finish());
+            let version = crate::render::version(&note.bytes);
             self.unlisted |= self.html.get(path) != Some(&version);
             self.html.insert(from.clone(), version);
             sink.write(Write::Html {
@@ -1196,9 +1194,7 @@ impl Site {
                 built.push((TODAY.into(), page.version, page.html));
             }
             let json = json.finish();
-            let mut hasher = DefaultHasher::new();
-            json.hash(&mut hasher);
-            built.push((NOTES_JSON.into(), format!("{:016x}", hasher.finish()), json));
+            built.push((NOTES_JSON.into(), crate::render::version(&json), json));
         }
 
         self.scoped = inputs;
@@ -1299,11 +1295,8 @@ impl Site {
                         &page[*start..start + len],
                     );
                 }
-                let mut hasher = DefaultHasher::new();
-                rows.hash(&mut hasher);
-                // Short, since the manifest lists hundreds of them: 32 bits tell two
-                // contents of one shard apart.
-                (rows, format!("{:08x}", hasher.finish() & 0xffff_ffff))
+                let version = crate::render::version(&rows);
+                (rows, version)
             });
             for ((shard, _), (rows, version)) in batch.iter().zip(built) {
                 let key = indexes::shard_key(*shard);

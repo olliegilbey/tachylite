@@ -11,7 +11,7 @@ expression: "built(\"people/Jane Doe\")"
 <link rel="manifest" href="/.tachylite/app.webmanifest">
 <link rel="icon" href="/.tachylite/icon.svg">
 <link rel="stylesheet" href="/.tachylite/style.css">
-<meta name="tachylite-version" content="575063b4ebbbbabb">
+<meta name="tachylite-version" content="ebbbbabb">
 <title>Jane Doe</title>
 <script src="/.tachylite/live.js" defer></script>
 </head>
