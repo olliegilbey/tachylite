@@ -111,6 +111,8 @@ th { background: var(--raise); }
 [data-task="cancelled"] > :is(ul, ol) { display: inline-block; width: 100%; color: var(--fg); }
 
 /* The board lists each task list's tasks in line order. A wide screen sets its doing tasks beside its todo tasks. */
+/* A task list off screen is laid out only when it nears the screen, so a switch to the board paints at once. */
+.tasks { content-visibility: auto; contain-intrinsic-size: auto 12rem; }
 .tasks h2 { font-size: 1.1rem; margin: 1.2em 0 0.3em; }
 .tasks ul { margin: 0; padding: 0; }
 .tasks [data-task] { margin: 0; }
