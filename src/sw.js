@@ -73,8 +73,12 @@ self.addEventListener("fetch", (e) => {
         // The body is read before the check, so a push during a slow download still wins.
         const keep = (b) => pushed.get(url.pathname) === before && cache.put(url.pathname, copy(b, r));
         if (r.status === 200) e.waitUntil(r.clone().blob().then(keep).catch(() => {}));
-        // The server binds only after its first build, so a 404 means the file is gone.
-        if (r.status === 404) e.waitUntil(cache.delete(url.pathname));
+        // The server binds only after its first build, so a 404 means the file is gone. The
+        // next sync checks the rest, since the manifest can still list it.
+        if (r.status === 404) {
+          done = null;
+          e.waitUntil(cache.delete(url.pathname));
+        }
         return r;
       });
       if (hit && !(FRESH.has(url.pathname) && e.request.cache === "no-cache")) {
@@ -114,10 +118,15 @@ async function store({ url, version, html }) {
   const old = await cache.match(url);
   if (!old) return;
   pushed.set(url, version);
+  done = null;
   await cache.put(url, copy(html, old));
   const have = await (await cache.match(MANIFEST))?.json();
   if (have) await cache.put(MANIFEST, json({ ...have, [url]: version }));
 }
+
+// The manifest's ETag when the last sync left every listed page at its listed version, and
+// no push or 404 has changed the cache since. A worker restart forgets it, so the next sync makes one full pass.
+let done = null;
 
 // The stored manifest maps each listed page to the version its cached copy carries, or ""
 // for one not fetched yet. It is saved before the fetches and every 50 pages, so a worker
@@ -128,6 +137,10 @@ async function sync() {
   const cache = await caches.open(CACHE);
   const response = await get(MANIFEST).catch(() => null);
   if (!response?.ok) return;
+  const tag = response.headers.get("etag");
+  // An evicted cache lost the stored manifest too, so it syncs again.
+  if (tag && tag === done && (await cache.match(MANIFEST))) return;
+  done = null;
   const { pages: want, files = [] } = await response.json();
   const held = (await (await cache.match(MANIFEST))?.json()) ?? {};
   const keys = (await cache.keys()).map((r) => new URL(r.url).pathname);
@@ -195,4 +208,5 @@ async function sync() {
     delete have[MERMAID];
     await save();
   }
+  done = Object.entries(want).every(([url, version]) => have[url] === version) ? tag : null;
 }

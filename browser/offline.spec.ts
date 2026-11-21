@@ -212,6 +212,35 @@ test("the app manifest meets the install criteria", async ({ page, browserName }
   }
 });
 
+test("a sync of an unchanged manifest neither lists the cache nor writes it, until the cache is gone", async ({ page, context }) => {
+  await visit(page, "/a");
+  await synced(page);
+  const [worker] = context.serviceWorkers();
+  // Counts the cache calls a sync makes, run in the worker. The first sync finished every page.
+  const calls = () =>
+    worker.evaluate(async () => {
+      const counts = { keys: 0, put: 0 };
+      const { keys, put } = Cache.prototype;
+      Cache.prototype.keys = function (...a) {
+        counts.keys++;
+        return keys.apply(this, a);
+      };
+      Cache.prototype.put = function (...a) {
+        counts.put++;
+        return put.apply(this, a);
+      };
+      // @ts-expect-error the worker's own queue and sync
+      await later(sync);
+      Object.assign(Cache.prototype, { keys, put });
+      return counts;
+    });
+  expect(await calls()).toEqual({ keys: 0, put: 0 });
+  // Storage the browser evicted is filled again.
+  await page.evaluate(() => caches.delete("tachylite"));
+  expect((await calls()).keys).toBe(1);
+  await synced(page);
+});
+
 test("a sync fetches only the pages that changed", async ({ page, context }) => {
   await visit(page, "/a");
   await synced(page);
