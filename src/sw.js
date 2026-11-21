@@ -56,7 +56,7 @@ self.addEventListener("activate", (e) =>
   ),
 );
 
-// The version of each page a push stored, so a refresh begun before the push keeps off it.
+// The version of each page a push or a sync stored, so a refresh begun before it keeps off it.
 const pushed = new Map();
 
 // Stale-while-revalidate: the cached copy at once, and a fresh one stored behind it. The
@@ -163,6 +163,7 @@ async function sync() {
           ? (/<meta name="tachylite-version" content="([0-9a-f]+)">/.exec(text)?.[1] ?? "")
           : want[url];
         await cache.put(url, r);
+        pushed.set(url, version);
         have[url] = version;
         if (!cached.has(MERMAID) && text.includes(DIAGRAM)) {
           have[MERMAID] = "";

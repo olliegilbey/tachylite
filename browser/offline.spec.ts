@@ -426,6 +426,31 @@ test("a refresh that lands after a push does not store over it", async ({ page, 
   expect(await cached(page, "/a")).toContain("pushed text");
 });
 
+test("a refresh that lands after a sync does not store over it", async ({ page, context }) => {
+  await visit(page, "/a");
+  await synced(page);
+  const older = await (await page.request.get(base + "/b")).text();
+  // The worker's refresh of /b is held; the sync's own fetch of /b goes through.
+  let held: Route | null = null;
+  await context.route(/\/b$/, (route) => {
+    if (held || !route.request().serviceWorker()) return route.continue();
+    held = route;
+  });
+  await page.evaluate(() => fetch("/b"));
+  await expect.poll(() => held).not.toBeNull();
+  note("b", "# B\n\nnew text\n");
+  await expect.poll(async () => (await listed(page)).pages["/b"]).not.toBe((await stored(page))["/b"]);
+  await sync(page);
+  await synced(page);
+  expect(await cached(page, "/b")).toContain("new text");
+  const landed = context.waitForEvent("requestfinished", (r) => r === held!.request());
+  await held!.fulfill({ status: 200, contentType: "text/html", body: older });
+  await landed;
+  // A round trip through the worker's cache, queued behind any store the refresh made.
+  await page.evaluate(() => fetch("/a"));
+  expect(await cached(page, "/b")).toContain("new text");
+});
+
 test("an upgraded worker caches Mermaid for a diagram page synced before", async ({ page }) => {
   note("m", "# M\n\n```mermaid\ngraph TD\nA-->B\n```\n");
   await expect.poll(async () => (await page.request.get(base + "/m")).status()).toBe(200);
