@@ -210,6 +210,9 @@ const FRESH_MAX: usize = 1024 * 1024;
 /// faster past 6 threads, and a thread that shares a core billed CPU time for no speed.
 const RENDER_THREADS: usize = 8;
 
+/// The notes a full sync renders at a time, and the pages it reads back at a time.
+const RENDER_BATCH: usize = 256;
+
 /// The site's name when config names none.
 const SITE: &str = "Tachylite";
 
@@ -484,12 +487,19 @@ fn winners(entries: &BTreeMap<String, Kind>) -> (BTreeSet<String>, Vec<(String, 
     (won, lost)
 }
 
-/// Maps `items` in order, on as many threads as they are worth at `each` to a thread. A
-/// few stay on this thread, so a save pays no spawn.
-fn spread<T: Sync, R: Send>(items: &[T], each: usize, work: impl Fn(&T) -> R + Sync) -> Vec<R> {
+/// The threads `count` items are worth, at `each` to a thread. A few are worth one, so a
+/// save pays no spawn, and no look at the cores.
+fn threads(count: usize, each: usize) -> usize {
+    if count <= each {
+        return 1;
+    }
     let cores = std::thread::available_parallelism().map_or(1, usize::from);
-    let threads = cores.min(RENDER_THREADS).min(items.len().div_ceil(each));
-    if items.len() <= each || threads <= 1 {
+    cores.min(RENDER_THREADS).min(count.div_ceil(each))
+}
+
+/// Maps `items` in order on `threads` threads. One thread is this one.
+fn spread<T: Sync, R: Send>(items: &[T], threads: usize, work: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    if threads <= 1 {
         return items.iter().map(work).collect();
     }
     let work = &work;
@@ -515,10 +525,11 @@ fn render_all<'p>(
         let text = String::from_utf8_lossy(bytes);
         (*path, render_body(path, &text, index, sources))
     };
-    if notes.len() <= 16 {
+    let threads = threads(notes.len(), 16);
+    if threads <= 1 {
         return notes.iter().map(render).collect();
     }
-    spread(notes, 16, render)
+    spread(notes, threads, render)
         .into_iter()
         // Copied on this thread, so a worker's heap holds no page once its batch is done.
         .map(|(path, body)| {
@@ -1253,8 +1264,18 @@ impl Site {
         }
         let notes: Vec<(u32, Vec<String>)> = notes.into_iter().collect();
         let mut changed = false;
-        // A batch holds its pages while their rows are made, so a full build never holds them all.
-        for batch in notes.chunks(64) {
+        // A batch holds its pages while their rows are made: a render batch of them, so a
+        // full build never holds them all.
+        let mut rest = notes.as_slice();
+        while !rest.is_empty() {
+            let mut held = 0;
+            let full = |(_, paths): &(u32, Vec<String>)| {
+                held += paths.len();
+                held >= RENDER_BATCH
+            };
+            let (batch, later) =
+                rest.split_at(rest.iter().position(full).map_or(rest.len(), |i| i + 1));
+            rest = later;
             let pages: Vec<_> = batch
                 .iter()
                 .map(|(_, paths)| {
@@ -1267,7 +1288,7 @@ impl Site {
                     pages
                 })
                 .collect();
-            let built = spread(&pages, 4, |pages| {
+            let built = spread(&pages, threads(pages.len(), 4), |pages| {
                 let mut rows = String::new();
                 for (path, (page, (start, len))) in pages {
                     let modified = self.modified.get(*path).copied().unwrap_or_default();
@@ -1624,7 +1645,7 @@ impl Site {
         broken: &mut Vec<Broken>,
     ) {
         // Batches keep a full sync from holding every source at once.
-        for batch in paths.chunks(256) {
+        for batch in paths.chunks(RENDER_BATCH) {
             // A dependent that cannot be read keeps its page; its own event follows.
             let notes: Vec<(&str, Vec<u8>)> = batch
                 .iter()
