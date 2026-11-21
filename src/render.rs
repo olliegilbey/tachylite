@@ -1610,11 +1610,17 @@ pub fn shell(header: &str, title: &str, main: &str) -> Page {
          {header}<main>\n{main}</main>\n</body>\n</html>\n"
     );
     // The version hashes the whole page but itself, so a new template re-syncs every client.
-    let mut hasher = DefaultHasher::new();
-    (before, &after).hash(&mut hasher);
-    let version = format!("{:016x}", hasher.finish());
+    let version = version((before, &after));
     let html = format!("{before}{version}{after}");
     Page { html, version }
+}
+
+/// A version of `content`. It is short, since the manifest lists one for every page: 32
+/// bits tell two contents of one page apart.
+pub fn version(content: impl Hash) -> String {
+    let mut hasher = DefaultHasher::new();
+    content.hash(&mut hasher);
+    format!("{:08x}", hasher.finish() & 0xffff_ffff)
 }
 
 #[cfg(test)]

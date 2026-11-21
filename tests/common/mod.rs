@@ -213,17 +213,15 @@ pub fn listed_version(manifest: &str, url: &str) -> Option<String> {
 
 /// The version of an html page with these bytes: their hash, as a page's version is.
 pub fn html_version(bytes: &[u8]) -> String {
-    use std::hash::{DefaultHasher, Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    tachylite::render::version(bytes)
 }
 
 /// The `tachylite-version` meta of a page.
 pub fn version_of(html: &str) -> String {
     let marker = "<meta name=\"tachylite-version\" content=\"";
     let start = html.find(marker).expect("no version meta") + marker.len();
-    html[start..start + 16].to_string()
+    let end = html[start..].find('"').expect("no end of version");
+    html[start..start + end].to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

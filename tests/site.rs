@@ -1130,10 +1130,7 @@ fn version(delta: &Delta, key: &str) -> String {
 
 /// The version of an html page with these bytes: their hash, as a page's version is.
 fn html_version(bytes: &str) -> String {
-    use std::hash::{DefaultHasher, Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    bytes.as_bytes().hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    tachylite::render::version(bytes.as_bytes())
 }
 
 #[test]

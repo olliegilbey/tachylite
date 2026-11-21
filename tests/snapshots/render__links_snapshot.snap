@@ -11,7 +11,7 @@ expression: "built(\"notes/links\")"
 <link rel="manifest" href="/.tachylite/app.webmanifest">
 <link rel="icon" href="/.tachylite/icon.svg">
 <link rel="stylesheet" href="/.tachylite/style.css">
-<meta name="tachylite-version" content="295b8b573352f0e2">
+<meta name="tachylite-version" content="3352f0e2">
 <title>links</title>
 <script src="/.tachylite/live.js" defer></script>
 </head>
