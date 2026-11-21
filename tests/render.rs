@@ -78,7 +78,7 @@ fn a_wikilink_with_an_empty_label_shows_its_target() {
     let index = Index::new(["people/Jane Doe.md"]);
     let body = render_body(
         "a.md",
-        "---\nup: \"[[jane doe|]]\"\n---\n[[jane doe|]] [[jane doe#Top|]] [[nobody|]]",
+        "---\nup: \"[[jane doe|]]\"\nby: \"[[jane doe| ]]\"\n---\n[[jane doe|]] [[jane doe#Top|]] [[nobody|]] ![[nobody|]]\n\n## [[jane doe|]]",
         &index,
         &Sources::new(),
     );
@@ -86,7 +86,9 @@ fn a_wikilink_with_an_empty_label_shows_its_target() {
         "<dd><a href=\"/people/Jane%20Doe\">jane doe</a></dd>",
         "<p><a href=\"/people/Jane%20Doe\">jane doe</a> ",
         "<a href=\"/people/Jane%20Doe#top\">jane doe#Top</a>",
-        "<a class=\"broken-link\">nobody</a>",
+        "<a class=\"broken-link\">nobody</a> <a class=\"broken-link\">nobody</a>",
+        "<dt>by</dt><dd><a href=\"/people/Jane%20Doe\">jane doe</a></dd>",
+        "<h2 id=\"jane-doe\"><a href=\"/people/Jane%20Doe\">jane doe</a></h2>",
     ] {
         assert!(body.html.contains(link), "missing {link} in {}", body.html);
     }
