@@ -962,7 +962,7 @@ fn the_manifest_gives_an_html_page_a_version_up_to_the_size_limit() {
     let manifest = manifest_of(&out);
     for url in ["/charts/plan.html", "/charts/at.html"] {
         let version = listed_version(&manifest, url).unwrap_or_else(|| panic!("{url}: {manifest}"));
-        assert_eq!(version.len(), 16, "{version}");
+        assert_eq!(version.len(), 8, "{version}");
         assert!(version.bytes().all(|b| b.is_ascii_hexdigit()), "{version}");
     }
     assert_eq!(listed_version(&manifest, "/charts/over.html"), None);

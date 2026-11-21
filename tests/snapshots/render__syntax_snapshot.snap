@@ -11,7 +11,7 @@ expression: "built(\"notes/syntax\")"
 <link rel="manifest" href="/.tachylite/app.webmanifest">
 <link rel="icon" href="/.tachylite/icon.svg">
 <link rel="stylesheet" href="/.tachylite/style.css">
-<meta name="tachylite-version" content="e861895818ac2b2d">
+<meta name="tachylite-version" content="18ac2b2d">
 <title>Syntax tour</title>
 <script src="/.tachylite/live.js" defer></script>
 </head>

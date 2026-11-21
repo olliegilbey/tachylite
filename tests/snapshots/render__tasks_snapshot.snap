@@ -11,7 +11,7 @@ expression: "built(\"chores/week\")"
 <link rel="manifest" href="/.tachylite/app.webmanifest">
 <link rel="icon" href="/.tachylite/icon.svg">
 <link rel="stylesheet" href="/.tachylite/style.css">
-<meta name="tachylite-version" content="4bfe20f018eb1d9a">
+<meta name="tachylite-version" content="18eb1d9a">
 <title>Week chores</title>
 <script src="/.tachylite/live.js" defer></script>
 </head>
