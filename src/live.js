@@ -332,7 +332,6 @@
   };
   // Holds every other tab, and the note Today would show.
   const prepare = () => {
-    ahead = {};
     const all = tabs();
     const at = all.findIndex(current);
     for (const a of at < 0 ? [] : all)
@@ -342,7 +341,10 @@
           .catch(() => {});
   };
   // The worker says when a sync has changed its cache, so no copy held is older than it.
-  worker?.addEventListener("message", prepare);
+  worker?.addEventListener("message", () => {
+    ahead = {};
+    prepare();
+  });
   // Brings on screen what the tab at `url` shows: its own page, or for Today its pick in
   // place of the list. `doc` is the tab's page, when the caller holds it. The last call wins.
   let turn = 0;
@@ -359,6 +361,8 @@
         history.replaceState(null, "", url);
         scrollTo(0, 0);
       }
+      // Adopted, the copy has lost its main to the page.
+      delete ahead[to];
       adopt(doc);
       connect();
       prepare();
