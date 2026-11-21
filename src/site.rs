@@ -11,8 +11,8 @@ use crate::front;
 use crate::indexes::{self, Folder, Item, Tab};
 use crate::links::{Index, key};
 use crate::render::{
-    Body, Broken, EMBED_DEPTH, NAME_MAX, Page, Sources, crumbs, day_links, embed_targets, encode,
-    Tasks, folder_url, note_title, render_body, render_page, url,
+    Body, Broken, EMBED_DEPTH, NAME_MAX, Page, Sources, Tasks, crumbs, day_links, embed_targets,
+    encode, folder_url, note_title, render_body, render_page, url,
 };
 use crate::vault::{Entry, Kind, ReadError, SkipReason, Skipped, VaultDir, classify};
 
@@ -544,7 +544,14 @@ fn render_all<'p>(
             for (_, line) in &mut tasks.shown {
                 *line = line.as_str().to_owned();
             }
-            (path, Body { html, tasks, ..body })
+            (
+                path,
+                Body {
+                    html,
+                    tasks,
+                    ..body
+                },
+            )
         })
         .collect()
 }

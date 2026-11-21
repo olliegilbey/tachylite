@@ -359,7 +359,10 @@ pub fn tasks(header: &str, lists: &[TaskList], more: usize) -> Page {
         if hidden > 0 {
             counts.push(format!("<a href=\"{}\">{hidden} more</a>", list.url));
         }
-        for (n, name) in [(list.tasks.done, "done"), (list.tasks.cancelled, "cancelled")] {
+        for (n, name) in [
+            (list.tasks.done, "done"),
+            (list.tasks.cancelled, "cancelled"),
+        ] {
             if n > 0 {
                 counts.push(format!("{n} {name}"));
             }

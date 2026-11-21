@@ -731,7 +731,7 @@ fn hush() -> Exclude {
 /// Text only an excluded note holds.
 const HUSHED: &str = "hush-marker";
 
-const CONTENTS: [&str; 17] = [
+const CONTENTS: [&str; 19] = [
     "[[e/m]] [down](e/m.md)",
     "# one",
     "two *b*",
@@ -749,6 +749,8 @@ const CONTENTS: [&str; 17] = [
     "[[s|ess]] ![[k.secret|kay]] ![[private/s|pee]] [[z]]",
     "#a #A/b x",
     "---\ntags: [a/b, Über]\ntitle: T3\n---\n#c",
+    "- [/] dig [[a]] #t\n- [x] mow\n- [-] cut\n- [ ] sow [[n]]",
+    "- [ ] a\n- [ ] b\n- [/] c\n- [ ] d\n- [ ] e\n- [ ] f [[m]]",
 ];
 
 /// A source where every file is mid-save.
@@ -3087,4 +3089,269 @@ fn a_search_shard_drops_a_deleted_note_and_goes_with_its_last_note() {
     assert!(shard_writes(&delta).is_empty());
     assert_eq!(manifest_urls(&out), page_urls(&out));
     assert_eq!(out, full(&mem).0);
+}
+
+/// The board as lines: `# title` for a task list, `status: text` for a task, and `(text)`
+/// for a line of counts or the line of task lists not shown.
+fn board(out: &Out) -> Vec<String> {
+    let html = page_text(out, TASKS);
+    let main = &html[html.find("<main>").expect("a board")..html.find("</main>").unwrap()];
+    let text = |s: &str| {
+        let mut t = String::new();
+        let mut tag = false;
+        for c in s.chars() {
+            match c {
+                '<' => tag = true,
+                '>' => tag = false,
+                c if !tag => t.push(c),
+                _ => {}
+            }
+        }
+        t.trim().to_string()
+    };
+    let mut lines = Vec::new();
+    let mut rest = main;
+    loop {
+        let starts = [
+            ("<h2>", "</h2>"),
+            ("<li data-task=\"", "</li>"),
+            ("<p", "</p>"),
+        ];
+        let Some((at, (open, close))) = starts
+            .iter()
+            .filter_map(|(o, c)| Some((rest.find(o)?, (*o, *c))))
+            .min_by_key(|(at, _)| *at)
+        else {
+            break;
+        };
+        let end = at + rest[at..].find(close).unwrap();
+        let inner = &rest[at + open.len()..end];
+        lines.push(match open {
+            "<h2>" => format!("# {}", text(inner)),
+            "<p" => format!("({})", text(&format!("<p{inner}"))),
+            _ => {
+                let (status, line) = inner.split_once('"').unwrap();
+                format!("{status}: {}", text(&format!("<{line}")))
+            }
+        });
+        rest = &rest[end + close.len()..];
+    }
+    lines
+}
+
+/// A model vault whose notes have the modified times given, in seconds.
+fn timed(files: &[(&str, &str, i64)]) -> Mem {
+    let pairs: Vec<(&str, &str)> = files.iter().map(|(p, c, _)| (*p, *c)).collect();
+    let mut mem = Mem::with(&pairs);
+    for (path, _, time) in files {
+        mem.1.insert(path.to_string(), *time);
+    }
+    mem
+}
+
+#[test]
+fn the_board_puts_task_lists_with_a_doing_task_first_then_newest_first() {
+    let mem = timed(&[
+        ("old.md", "- [ ] sow\n- [/] dig", 1),
+        ("new.md", "- [ ] weed", 5),
+        (
+            "mid.md",
+            "---\ntitle: Middle\n---\n- [ ] water\n- [x] mow\n- [-] paint",
+            3,
+        ),
+        ("also mid.md", "- [ ] rake", 3),
+        ("closed.md", "- [x] all done", 9),
+        ("none.md", "no tasks", 9),
+    ]);
+    let (out, _) = full(&mem);
+    assert_eq!(
+        board(&out),
+        [
+            "# old",
+            "todo: sow",
+            "doing: dig",
+            "# new",
+            "todo: weed",
+            "# also mid",
+            "todo: rake",
+            "# Middle",
+            "todo: water",
+            "(1 done · 1 cancelled)",
+        ]
+    );
+}
+
+#[test]
+fn a_task_list_shows_its_doing_tasks_then_todo_from_the_top_up_to_five() {
+    let lines = |tasks: &[&str]| tasks.concat();
+    let mem = Mem::with(&[
+        (
+            "a.md",
+            &lines(&[
+                "- [ ] t1\n",
+                "- [ ] t2\n",
+                "- [/] d1\n",
+                "- [ ] t3\n",
+                "- [ ] t4\n",
+                "- [/] d2\n",
+                "- [ ] t5\n",
+                "- [x] x\n",
+            ]),
+        ),
+        ("b.md", &"- [/] d\n".repeat(6)),
+        ("c.md", "- [ ] t\n- [ ] u\n"),
+    ]);
+    let (out, _) = full(&mem);
+    let board = board(&out);
+    let a = board.iter().position(|l| l == "# a").unwrap();
+    assert_eq!(
+        board[a..a + 7],
+        [
+            "# a",
+            "todo: t1",
+            "todo: t2",
+            "doing: d1",
+            "todo: t3",
+            "doing: d2",
+            "(2 more · 1 done)",
+        ]
+    );
+    let b = board.iter().position(|l| l == "# b").unwrap();
+    // More than five doing tasks show whole, with no todo and no line of more.
+    assert_eq!(board[b + 1..b + 7], ["doing: d"; 6]);
+    assert_eq!(board[b + 7], "# c");
+    let html = page_text(&out, TASKS);
+    assert!(html.contains("<a href=\"/a\">2 more</a>"), "{html}");
+}
+
+#[test]
+fn the_board_shows_fifty_task_lists_and_counts_the_rest() {
+    let notes: Vec<(String, String, i64)> = (0..53)
+        .map(|i| (format!("n{i:02}.md"), "- [ ] t".to_string(), i))
+        .collect();
+    let files: Vec<(&str, &str, i64)> = notes
+        .iter()
+        .map(|(p, c, t)| (p.as_str(), c.as_str(), *t))
+        .collect();
+    let (out, _) = full(&timed(&files));
+    let board = board(&out);
+    let lists: Vec<&String> = board.iter().filter(|l| l.starts_with('#')).collect();
+    assert_eq!(lists.len(), 50);
+    assert_eq!((lists[0].as_str(), lists[49].as_str()), ("# n52", "# n03"));
+    assert_eq!(
+        board.last().unwrap(),
+        "(3 more task lists with open tasks not shown.)"
+    );
+}
+
+#[test]
+fn a_vault_with_no_open_task_still_has_a_board() {
+    let (out, _) = full(&Mem::with(&[("a.md", "- [x] done")]));
+    assert_eq!(board(&out), ["(No open tasks.)"]);
+    let urls = manifest_urls(&out);
+    assert!(urls.contains("/.tachylite/tasks"), "{urls:?}");
+}
+
+#[test]
+fn each_edit_of_a_task_reaches_the_board() {
+    let mut mem = timed(&[("a.md", "# A", 1), ("b.md", "- [ ] keep", 2)]);
+    let mut site = Site::new(Exclude::default());
+    let mut out = Out::new();
+    apply_kept(&mut site, vec![sync_all(&mem)], &mut mem, &mut out);
+    let mut save = |mem: &mut Mem, path: &str, text: Option<&str>, out: &mut Out| {
+        match text {
+            Some(text) => {
+                let time = mem.1.values().max().unwrap() + 1;
+                mem.1.insert(path.into(), time);
+                mem.0.insert(path.into(), text.as_bytes().to_vec());
+            }
+            None => {
+                mem.0.remove(path);
+            }
+        }
+        let delta = apply_kept(&mut site, vec![touch(path)], mem, out);
+        indexed(&delta).contains(&".tachylite/tasks")
+    };
+    let steps: [(&str, Option<&str>, &[&str]); 7] = [
+        (
+            "a.md",
+            Some("- [ ] sow"),
+            &["# a", "todo: sow", "# b", "todo: keep"],
+        ),
+        (
+            "a.md",
+            Some("- [/] sow"),
+            &["# a", "doing: sow", "# b", "todo: keep"],
+        ),
+        (
+            "a.md",
+            Some("- [/] sow *now*"),
+            &["# a", "doing: sow now", "# b", "todo: keep"],
+        ),
+        (
+            "b.md",
+            Some("- [ ] keep\n- [x] done"),
+            &["# a", "doing: sow now", "# b", "todo: keep", "(1 done)"],
+        ),
+        (
+            "a.md",
+            Some("- [x] sow"),
+            &["# b", "todo: keep", "(1 done)"],
+        ),
+        ("b.md", None, &["(No open tasks.)"]),
+        ("c.md", Some("- [ ] new"), &["# c", "todo: new"]),
+    ];
+    for (path, text, want) in steps {
+        assert!(
+            save(&mut mem, path, text, &mut out),
+            "{path} {text:?} pushed no board"
+        );
+        assert_eq!(board(&out), want, "{path} {text:?}");
+    }
+    // A rename is a delete and a create.
+    let bytes = mem.0.remove("c.md").unwrap();
+    mem.0.insert("d/e.md".into(), bytes);
+    mem.1.insert("d/e.md".into(), 99);
+    apply_kept(
+        &mut site,
+        vec![touch("c.md"), touch("d/e.md")],
+        &mut mem,
+        &mut out,
+    );
+    assert_eq!(board(&out), ["# e", "todo: new"]);
+    assert!(page_text(&out, TASKS).contains("href=\"/d/e\""));
+}
+
+#[test]
+fn a_link_on_a_task_line_resolves_again_when_its_target_comes() {
+    let mut mem = Mem::with(&[("a.md", "- [ ] see [[b]]")]);
+    let mut site = Site::new(Exclude::default());
+    let mut out = Out::new();
+    apply_kept(&mut site, vec![sync_all(&mem)], &mut mem, &mut out);
+    assert!(page_text(&out, TASKS).contains("<a class=\"broken-link\">b</a>"));
+    mem.0.insert("b.md".into(), b"# B".to_vec());
+    apply_kept(&mut site, vec![touch("b.md")], &mut mem, &mut out);
+    assert!(page_text(&out, TASKS).contains("see <a href=\"/b\">b</a>"));
+}
+
+#[test]
+fn raw_html_forges_no_task_on_the_board() {
+    let (out, _) = full(&Mem::with(&[
+        (
+            "forged.md",
+            "<ul><li data-task=\"doing\">forged</li></ul>\n",
+        ),
+        (
+            "a.md",
+            "- [ ] real <b>bold</b></li></ul><li data-task=\"doing\">x[^1]\n\n[^1]: note\n",
+        ),
+        ("b.md", "# Top\n\n- [ ] up to [[#Top]]\n"),
+    ]));
+    let html = page_text(&out, TASKS);
+    assert!(!html.contains("forged") && !html.contains("<b>"), "{html}");
+    assert_eq!(html.matches("data-task").count(), 2, "{html}");
+    assert!(!html.contains("footnote"), "{html}");
+    assert!(html.contains("real bold"), "{html}");
+    // A link to a heading of the note itself leads into the note.
+    assert!(html.contains("<a href=\"/b#top\">"), "{html}");
 }

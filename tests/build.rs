@@ -532,14 +532,23 @@ fn an_excluded_name_is_in_no_generated_file() {
             "tachylite.toml",
             "exclude = [\"secretdir\", \"**/secretnote.md\"]\n",
         ),
-        ("secretdir/plain.md", "# plain\n- [/] a secret task #secretive"),
-        ("notes/secretnote.md", "# plain\n- [ ] a secret task\n- [x] done"),
+        (
+            "secretdir/plain.md",
+            "# plain\n- [/] a secret task #secretive",
+        ),
+        (
+            "notes/secretnote.md",
+            "# plain\n- [ ] a secret task\n- [x] done",
+        ),
         ("notes/y.md", "# shown\n- [ ] a task"),
     ]);
     let (vault, out) = (dir.path().join("vault"), dir.path().join("out"));
     build(&vault, &out).unwrap();
     let board = fs::read_to_string(out.join("pages/.tachylite/tasks.html")).unwrap();
-    assert!(board.contains("a task") && !board.contains("done"), "{board}");
+    assert!(
+        board.contains("a task") && !board.contains("done"),
+        "{board}"
+    );
     let generated: Vec<_> = files_under(&out)
         .into_iter()
         .filter(|p| tachylite::site::generated(p.to_str().unwrap()))

@@ -803,8 +803,14 @@ fn task_line<'a>(from: &str, item: &'a AstNode<'a>, options: &Options) -> String
     {
         let plugins = Plugins::default();
         // Writing into a String cannot fail.
-        let _ =
-            format_document_with_formatter(paragraph, options, &mut html, &plugins, format_line, ());
+        let _ = format_document_with_formatter(
+            paragraph,
+            options,
+            &mut html,
+            &plugins,
+            format_line,
+            (),
+        );
     }
     // Text is escaped, so only a link this renderer wrote holds `href="#`.
     html.trim_end()
