@@ -11,6 +11,7 @@ let server: Server | null = null;
 
 const TODAY = "/.tachylite/today";
 const RECENT = "/.tachylite/recent";
+const TASKS = "/.tachylite/tasks";
 const scale = Number(process.env.BUDGET_SCALE ?? "1");
 // The tab switch budget, in ms at 4x CPU. The design doc says how it was set.
 const BUDGET = 50;
@@ -95,8 +96,13 @@ function rested(page: Page) {
 }
 
 /** Asserts the tab on screen: its URL, its mark in the header, and a text in its `<main>`. */
-async function shows(page: Page, tab: "Home" | "Today" | "Recent") {
-  const [path, text] = { Home: ["/", "garden"], Today: [TODAY, "yesterday's plan"], Recent: [RECENT, "Fern care"] }[tab];
+async function shows(page: Page, tab: "Home" | "Today" | "Recent" | "Tasks") {
+  const [path, text] = {
+    Home: ["/", "garden"],
+    Today: [TODAY, "yesterday's plan"],
+    Recent: [RECENT, "Fern care"],
+    Tasks: [TASKS, "repot the fern"],
+  }[tab];
   await expect(page).toHaveURL(base + path);
   await expect(page.locator('header a[aria-current="page"]')).toHaveText(tab);
   await expect(page.locator("main")).toContainText(text);
@@ -109,7 +115,7 @@ test.beforeEach(async ({ page, allowedErrors }, info) => {
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(join(dir, "vault"), { recursive: true });
   note("a", "# A\n\naye text\n");
-  note("garden/Fern care", "# Fern care\n\nwater weekly\n");
+  note("garden/Fern care", "# Fern care\n\nwater weekly\n\n- [ ] repot the fern\n");
   note(`days/${iso(-3)}`, "# older\n");
   note(`days/${iso(-1)}`, `# latest\n\nyesterday's plan\n\n${wide}\n${diagram}`);
   note(`days/${iso(2)}`, "# planned\n");
@@ -272,7 +278,11 @@ test.describe("a swipe", () => {
     await left(page);
     await shows(page, "Recent");
     await left(page);
+    await shows(page, "Tasks");
+    await left(page);
     await settled(page);
+    await shows(page, "Tasks");
+    await right(page);
     await shows(page, "Recent");
     await right(page);
     await shows(page, "Today");
@@ -510,6 +520,15 @@ test("a tab page switched to in place is that tab's page in full", async ({ page
   await page.reload();
   await shows(page, "Recent");
   await expect(page.locator("main ul.recent").first()).toContainText("retitled");
+
+  await page.locator("header > a", { hasText: "Tasks" }).click();
+  await shows(page, "Tasks");
+  await expect(page).toHaveTitle("Tasks");
+  await live(page, TASKS);
+  // A task saved while the board is on screen reaches it.
+  note("chores", "# Chores\n\n- [/] sweep the path\n");
+  await expect(page.locator('main li[data-task="doing"]')).toHaveText("sweep the path");
+  await shows(page, "Tasks");
 });
 
 test("a tab switched to starts at the top", async ({ page }) => {
@@ -578,7 +597,7 @@ test("a switch to another tab reads only the tab it left: the others' copies are
   // `queue` is the chain of jobs in `src/sw.js`. It settles when the first sync has told the page.
   await context.serviceWorkers()[0].evaluate("queue");
   await rested(page);
-  expect(await page.evaluate(() => (window as any).reads)).toEqual(expect.arrayContaining([TODAY, latest, RECENT]));
+  expect(await page.evaluate(() => (window as any).reads)).toEqual(expect.arrayContaining([TODAY, latest, RECENT, TASKS]));
   await page.evaluate(() => ((window as any).reads.length = 0));
   await page.locator("header > a", { hasText: "Today" }).click();
   await shows(page, "Today");
@@ -604,16 +623,18 @@ test("a tab whose copy failed to load is read again, and opens in place", async 
   expect(await page.evaluate(() => (window as any).kept)).toBe(true);
 });
 
-test("a vault with no daily settings swipes between its two tabs", async ({ page, hasTouch }) => {
+test("a vault with no daily settings swipes between its three tabs", async ({ page, hasTouch }) => {
   test.skip(!hasTouch, "a swipe takes a finger");
   writeFileSync(join(dir, "vault", "tachylite.toml"), "");
   await expect.poll(async () => (await page.request.get(base + "/")).text()).not.toContain(TODAY);
   await page.goto(base + "/");
-  await expect(page.locator("header > a")).toHaveText(["Home", "Recent"]);
+  await expect(page.locator("header > a")).toHaveText(["Home", "Recent", "Tasks"]);
   await left(page);
   await shows(page, "Recent");
+  await left(page);
+  await shows(page, "Tasks");
   await right(page);
-  await shows(page, "Home");
+  await shows(page, "Recent");
 });
 
 test("the Today tab picks its note when it opens, not when its copy was read ahead", async ({ page }) => {

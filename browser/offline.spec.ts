@@ -82,6 +82,20 @@ test("a note never opened opens with the server stopped", async ({ page }) => {
   await expect(page.locator("main")).toContainText("aye text");
 });
 
+test("the board opens offline after a sync, with a task saved while away", async ({ page }) => {
+  note("b", "# B\n\n- [/] bee task\n");
+  await visit(page, "/a");
+  await expect.poll(() => cached(page, "/.tachylite/tasks")).toContain("bee task");
+  await stop(server!);
+  note("a", "# A\n\n- [ ] aye task\n");
+  server = await serve(dir, server!.port);
+  await expect.poll(() => cached(page, "/.tachylite/tasks"), { timeout: 15_000 }).toContain("aye task");
+  await stop(server);
+  await page.goto(base + "/.tachylite/tasks");
+  await expect(page.locator('main li[data-task="doing"]')).toHaveText("bee task");
+  await expect(page.locator('main li[data-task="todo"]')).toHaveText("aye task");
+});
+
 test("a synced file without a version meta is not fetched again", async ({ page }) => {
   await visit(page, "/a");
   const listed = (await (await page.request.get(base + "/.tachylite/manifest.json")).json()).pages;
