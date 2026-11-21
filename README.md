@@ -78,7 +78,7 @@ tailscale serve --bg --https=8443 http://127.0.0.1:7420
 
 ## What it renders
 
-Notes render close to Obsidian's reading view:
+Notes render close to Obsidian's reading view. To see each feature on a page, point Tachylite at the showcase vault: `tachylite serve tests/fixtures/showcase <out>`.
 
 - CommonMark and GitHub tables, task lists, strikethrough, footnotes and autolinks.
 - Frontmatter as a properties block. `title` names the page, and `aliases` work as link targets.

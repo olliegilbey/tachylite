@@ -52,6 +52,22 @@ fn builds_fixture() {
     }
 }
 
+/// The showcase vault shows each feature a note can use. It links to one missing note on purpose.
+#[test]
+fn the_showcase_vault_builds_with_only_the_broken_link_it_shows() {
+    let tmp = tempfile::tempdir().unwrap();
+    let vault = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/showcase");
+    let summary = build(&vault, &tmp.path().join("out")).unwrap();
+    assert_eq!((summary.notes, summary.files), (7, 3));
+    assert!(summary.skipped.is_empty(), "{:?}", summary.skipped);
+    let broken: Vec<_> = summary
+        .broken
+        .iter()
+        .map(|b| (b.from.as_str(), b.target.as_str()))
+        .collect();
+    assert_eq!(broken, [("Rendering limits.md", "no such note")]);
+}
+
 #[test]
 fn output_holds_only_published_files() {
     let s = Dirs::fixture();

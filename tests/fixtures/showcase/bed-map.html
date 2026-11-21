@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>Bed map</title>
+<style>
+  :root { --bg: #111; --fg: #eee; --dim: #9a9a9a; --soil: #2a221b; --edge: #5a4a3a; --pick: #8fbf6a; }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #fff; --fg: #151515; --dim: #666; --soil: #efe6da; --edge: #b8a48c; --pick: #3a7d2c; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 1rem; background: var(--bg); color: var(--fg); font: 16px/1.45 system-ui, sans-serif; }
+  h1 { margin: 0 0 0.25rem; font-size: 1.2rem; }
+  p { margin: 0 0 0.75rem; color: var(--dim); }
+  #plot { display: grid; grid-template-columns: repeat(4, 1fr); grid-template-rows: 9rem 4.5rem; gap: 0.5rem; }
+  button {
+    border: 2px solid var(--edge); border-radius: 0.5rem; background: var(--soil);
+    color: var(--fg); font: inherit; padding: 0.25rem;
+  }
+  button:last-child { grid-column: 1 / -1; }
+  button[aria-pressed="true"] { border-color: var(--pick); color: var(--pick); font-weight: 600; }
+  #about { margin-top: 1rem; padding: 0.75rem 1rem; border: 1px solid var(--edge); border-radius: 0.5rem; }
+  #about h2 { margin: 0 0 0.25rem; font-size: 1.05rem; }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: 0.15rem 0.75rem; margin: 0; }
+  dt { color: var(--dim); }
+  dd { margin: 0; }
+</style>
+</head>
+<body>
+<h1>Plot 14</h1>
+<p>Tap a bed to see what grows there.</p>
+<div id="plot"></div>
+<div id="about" aria-live="polite"></div>
+<script>
+  // Each bed: its label, its crop, when it is sown, how it is watered.
+  const beds = [
+    ["Bed 1", "Broad beans", "March", "Weekly"],
+    ["Bed 2", "Carrots and leeks", "April", "Twice a week"],
+    ["Bed 3", "Squash", "May", "Every other day in July"],
+    ["Bed 4", "Salad leaves", "March to August", "Daily in a dry spell"],
+    ["Fruit corner", "A quince tree and three currant bushes", "Planted two winters ago", "In the first summer only"],
+  ];
+  const plot = document.getElementById("plot");
+  const about = document.getElementById("about");
+  const line = (name, value) => {
+    const dt = document.createElement("dt");
+    dt.textContent = name;
+    const dd = document.createElement("dd");
+    dd.textContent = value;
+    return [dt, dd];
+  };
+  const show = (n) => {
+    [...plot.children].forEach((b, i) => b.setAttribute("aria-pressed", i === n));
+    const [label, crop, sown, water] = beds[n];
+    const h2 = document.createElement("h2");
+    h2.textContent = label;
+    const dl = document.createElement("dl");
+    dl.append(...line("Crop", crop), ...line("Sown", sown), ...line("Water", water));
+    about.replaceChildren(h2, dl);
+  };
+  beds.forEach(([label], n) => {
+    const b = document.createElement("button");
+    b.textContent = label;
+    b.onclick = () => show(n);
+    plot.append(b);
+  });
+  show(2);
+</script>
+</body>
+</html>

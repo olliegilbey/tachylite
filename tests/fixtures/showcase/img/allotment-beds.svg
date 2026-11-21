@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 220" role="img" aria-label="A plan of four beds in a row, with a fruit corner at the right">
+  <rect width="480" height="220" rx="10" fill="#e9f0dc"/>
+  <g fill="#8a6a4a" stroke="#5e4630" stroke-width="2">
+    <rect x="20" y="40" width="70" height="150" rx="4"/>
+    <rect x="105" y="40" width="70" height="150" rx="4"/>
+    <rect x="190" y="40" width="70" height="150" rx="4"/>
+    <rect x="275" y="40" width="70" height="150" rx="4"/>
+  </g>
+  <rect x="365" y="40" width="95" height="150" rx="4" fill="#cfe0b4" stroke="#7d9a55" stroke-width="2" stroke-dasharray="6 4"/>
+  <circle cx="412" cy="90" r="26" fill="#6f9a4a"/>
+  <g fill="#93b36a">
+    <circle cx="388" cy="158" r="11"/>
+    <circle cx="412" cy="162" r="11"/>
+    <circle cx="436" cy="158" r="11"/>
+  </g>
+  <g font-family="system-ui, sans-serif" font-size="13" text-anchor="middle">
+    <g fill="#ffffff">
+      <text x="55" y="120">Bed 1</text>
+      <text x="140" y="120">Bed 2</text>
+      <text x="225" y="120">Bed 3</text>
+      <text x="310" y="120">Bed 4</text>
+    </g>
+    <g fill="#2f3b22">
+      <text x="412" y="30">Fruit corner</text>
+      <text x="55" y="30">Beans</text>
+      <text x="140" y="30">Carrots</text>
+      <text x="225" y="30">Squash</text>
+      <text x="310" y="30">Salad</text>
+      <text x="240" y="210">Path</text>
+    </g>
+  </g>
+</svg>

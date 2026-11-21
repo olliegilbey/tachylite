@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>Harvest chart</title>
+<style>
+  :root { --bg: #111; --fg: #eee; --dim: #9a9a9a; --now: #8fbf6a; --then: #4d4d4d; --line: #2c2c2c; }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #fff; --fg: #151515; --dim: #666; --now: #3a7d2c; --then: #c4c4c4; --line: #ddd; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 0.75rem 1rem; background: var(--bg); color: var(--fg); font: 16px/1.4 system-ui, sans-serif; }
+  h1 { margin: 0 0 0.5rem; font-size: 1.1rem; }
+  nav { display: flex; gap: 0.5rem; margin-bottom: 0.75rem; }
+  button {
+    flex: 1; min-height: 2.75rem; border: 1px solid var(--line); border-radius: 0.5rem;
+    background: none; color: var(--fg); font: inherit;
+  }
+  button[aria-pressed="true"] { border-color: var(--now); color: var(--now); font-weight: 600; }
+  .row { display: grid; grid-template-columns: 6.5rem 1fr 3.5rem; align-items: center; gap: 0.5rem; padding: 0.3rem 0; }
+  .bars { display: grid; gap: 3px; }
+  .bar { height: 0.6rem; border-radius: 0.3rem; background: var(--now); transition: width 0.2s; }
+  .bar.then { background: var(--then); }
+  .kg { text-align: right; font-variant-numeric: tabular-nums; }
+  p { margin: 0.6rem 0 0; color: var(--dim); font-size: 0.85rem; }
+  i { display: inline-block; width: 0.7rem; height: 0.7rem; border-radius: 0.2rem; background: var(--now); }
+  i.then { background: var(--then); }
+</style>
+</head>
+<body>
+<h1>Harvest by crop, in kilograms</h1>
+<nav id="months"></nav>
+<div id="chart"></div>
+<p><i></i> this year &nbsp; <i class="then"></i> last year. Total: <strong id="total"></strong></p>
+<script>
+  // Each month: a crop, this year's kilograms, last year's.
+  const data = {
+    July: [["Squash", 0, 0], ["Broad beans", 14, 12], ["Salad leaves", 8, 7], ["Carrots", 2, 3]],
+    August: [["Squash", 9, 7], ["Broad beans", 11, 12], ["Salad leaves", 7, 6], ["Carrots", 5, 8]],
+    September: [["Squash", 22, 16], ["Broad beans", 9, 9], ["Salad leaves", 6, 5], ["Carrots", 4, 9]],
+  };
+  const most = Math.max(...Object.values(data).flat().flatMap(([, now, then]) => [now, then]));
+  const months = document.getElementById("months");
+  const chart = document.getElementById("chart");
+  const show = (month) => {
+    for (const b of months.children) b.setAttribute("aria-pressed", b.textContent === month);
+    chart.replaceChildren(
+      ...data[month].map(([crop, now, then]) => {
+        const row = document.createElement("div");
+        row.className = "row";
+        const bars = document.createElement("div");
+        bars.className = "bars";
+        for (const [kg, kind] of [[now, "bar"], [then, "bar then"]]) {
+          const bar = document.createElement("div");
+          bar.className = kind;
+          bar.style.width = (100 * kg) / most + "%";
+          bars.append(bar);
+        }
+        const kg = document.createElement("span");
+        kg.className = "kg";
+        kg.textContent = now + " kg";
+        row.append(crop, bars, kg);
+        return row;
+      }),
+    );
+    const sum = data[month].reduce((all, [, now]) => all + now, 0);
+    document.getElementById("total").textContent = sum + " kg";
+  };
+  for (const month of Object.keys(data)) {
+    const b = document.createElement("button");
+    b.textContent = month;
+    b.onclick = () => show(month);
+    months.append(b);
+  }
+  show("September");
+</script>
+</body>
+</html>
