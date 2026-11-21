@@ -239,6 +239,30 @@ test("a query asked again for a fresh list keeps its rows until the answer", asy
   await context.close();
 });
 
+test("a switcher opened while connected fetches its list once", async ({ page, context }) => {
+  server = await serve(dir);
+  base = server.base;
+  await synced(page, "/a");
+  // `queue` is the chain of jobs in `src/sw.js`: the first sync is over.
+  await context.serviceWorkers()[0].evaluate("queue");
+  // Counts the worker's own fetches of the list. A refresh starts before the cached copy is answered.
+  const worker = context.serviceWorkers()[0];
+  await worker.evaluate(() => {
+    const native = self.fetch;
+    (self as any).fetched = 0;
+    self.fetch = (request, init) => {
+      if (String((request as Request).url ?? request).endsWith("/notes.json")) (self as any).fetched++;
+      return native(request, init);
+    };
+  });
+  // The page asks twice: the cached list, then the network's.
+  let asked = 0;
+  page.on("requestfinished", (r) => r.url().endsWith("/notes.json") && asked++);
+  await page.locator("header button.find").click();
+  await expect.poll(() => asked).toBe(2);
+  expect(await worker.evaluate(() => (self as any).fetched)).toBe(1);
+});
+
 test("search works with the server stopped", async ({ page }) => {
   server = await serve(dir);
   base = server.base;

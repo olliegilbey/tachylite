@@ -212,6 +212,35 @@ test("the app manifest meets the install criteria", async ({ page, browserName }
   }
 });
 
+test("a sync of an unchanged manifest neither lists the cache nor writes it, until the cache is gone", async ({ page, context }) => {
+  await visit(page, "/a");
+  await synced(page);
+  const [worker] = context.serviceWorkers();
+  // Counts the cache calls a sync makes, run in the worker. The first sync finished every page.
+  const calls = () =>
+    worker.evaluate(async () => {
+      const counts = { keys: 0, put: 0 };
+      const { keys, put } = Cache.prototype;
+      Cache.prototype.keys = function (...a) {
+        counts.keys++;
+        return keys.apply(this, a);
+      };
+      Cache.prototype.put = function (...a) {
+        counts.put++;
+        return put.apply(this, a);
+      };
+      // @ts-expect-error the worker's own queue and sync
+      await later(sync);
+      Object.assign(Cache.prototype, { keys, put });
+      return counts;
+    });
+  expect(await calls()).toEqual({ keys: 0, put: 0 });
+  // Storage the browser evicted is filled again.
+  await page.evaluate(() => caches.delete("tachylite"));
+  expect((await calls()).keys).toBe(1);
+  await synced(page);
+});
+
 test("a sync fetches only the pages that changed", async ({ page, context }) => {
   await visit(page, "/a");
   await synced(page);
@@ -424,6 +453,31 @@ test("a refresh that lands after a push does not store over it", async ({ page, 
   // A round trip through the worker's cache, queued behind any store the refresh made.
   await page.evaluate(() => fetch("/b"));
   expect(await cached(page, "/a")).toContain("pushed text");
+});
+
+test("a refresh that lands after a sync does not store over it", async ({ page, context }) => {
+  await visit(page, "/a");
+  await synced(page);
+  const older = await (await page.request.get(base + "/b")).text();
+  // The worker's refresh of /b is held; the sync's own fetch of /b goes through.
+  let held: Route | null = null;
+  await context.route(/\/b$/, (route) => {
+    if (held || !route.request().serviceWorker()) return route.continue();
+    held = route;
+  });
+  await page.evaluate(() => fetch("/b"));
+  await expect.poll(() => held).not.toBeNull();
+  note("b", "# B\n\nnew text\n");
+  await expect.poll(async () => (await listed(page)).pages["/b"]).not.toBe((await stored(page))["/b"]);
+  await sync(page);
+  await synced(page);
+  expect(await cached(page, "/b")).toContain("new text");
+  const landed = context.waitForEvent("requestfinished", (r) => r === held!.request());
+  await held!.fulfill({ status: 200, contentType: "text/html", body: older });
+  await landed;
+  // A round trip through the worker's cache, queued behind any store the refresh made.
+  await page.evaluate(() => fetch("/a"));
+  expect(await cached(page, "/b")).toContain("new text");
 });
 
 test("an upgraded worker caches Mermaid for a diagram page synced before", async ({ page }) => {
