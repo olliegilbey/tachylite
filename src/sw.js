@@ -77,7 +77,7 @@ self.addEventListener("fetch", (e) => {
         // The server binds only after its first build, so a 404 means the file is gone. The
         // manifest can still list it, so the next sync makes a full pass.
         if (r.status === 404) {
-          done = null;
+          changes++;
           e.waitUntil(cache.delete(url.pathname));
         }
         return r;
@@ -120,15 +120,16 @@ async function store({ url, version, html }) {
   const old = await cache.match(url);
   if (!old) return;
   pushed.set(url, version);
-  done = null;
+  changes++;
   await cache.put(url, copy(html, old));
   const have = await (await cache.match(MANIFEST))?.json();
   if (have) await cache.put(MANIFEST, json({ ...have, [url]: version }));
 }
 
-// The manifest's ETag when the last sync left every listed page at its listed version, and
-// no push or 404 has changed the cache since. A worker restart forgets it.
+// The manifest's ETag and the count of pushes and 404s, as the last sync to leave every listed
+// page at its listed version began. A worker restart forgets it.
 let done = null;
+let changes = 0;
 
 // The stored manifest maps each listed page to the version its cached copy carries, or ""
 // for one not fetched yet. It is saved before the fetches and every 50 pages, so a worker
@@ -139,7 +140,8 @@ async function sync() {
   const cache = await caches.open(CACHE);
   const response = await get(MANIFEST).catch(() => null);
   if (!response?.ok) return;
-  const tag = response.headers.get("etag");
+  const etag = response.headers.get("etag");
+  const tag = etag && etag + " " + changes;
   // A cache the browser evicted lost its stored manifest too.
   if (tag && tag === done && (await cache.match(MANIFEST))) return;
   done = null;

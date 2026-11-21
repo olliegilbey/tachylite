@@ -585,6 +585,24 @@ test("a switch to another tab reads only the tab it left: the others' copies are
   expect(await page.evaluate(() => (window as any).reads)).toEqual(["/"]);
 });
 
+test("a tab whose copy failed to load is read again, and opens in place", async ({ page, context, allowedErrors }) => {
+  allowedErrors.push(/ERR_FAILED|status of 503/);
+  // The first load has no worker yet, so the copy of Recent comes from the network, and fails.
+  await context.route(/\/\.tachylite\/recent$/, (route) =>
+    route.request().resourceType() === "document" ? route.continue() : route.abort(),
+  );
+  const failed = page.waitForEvent("requestfailed", (r) => r.url().endsWith(RECENT));
+  await page.goto(base + "/");
+  await shows(page, "Home");
+  await failed;
+  await rested(page);
+  await context.unroute(/\/\.tachylite\/recent$/);
+  await page.evaluate(() => ((window as any).kept = true));
+  await page.locator("header > a", { hasText: "Recent" }).click();
+  await shows(page, "Recent");
+  expect(await page.evaluate(() => (window as any).kept)).toBe(true);
+});
+
 test("a vault with no daily settings swipes between its two tabs", async ({ page, hasTouch }) => {
   test.skip(!hasTouch, "a swipe takes a finger");
   writeFileSync(join(dir, "vault", "tachylite.toml"), "");

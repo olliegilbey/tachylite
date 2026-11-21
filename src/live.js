@@ -319,7 +319,12 @@
       .then((html) => new DOMParser().parseFromString(html, "text/html"));
   // The pages a switch would show, loaded ahead, so it waits for no read and no parse.
   let ahead = {};
-  const hold = (url) => (ahead[url] ??= load(url));
+  const hold = (url) => {
+    const doc = (ahead[url] ??= load(url));
+    // One that failed is read again next time.
+    doc.catch(() => ahead[url] === doc && delete ahead[url]);
+    return doc;
+  };
   const get = (url, cache) => (!cache && ahead[url]) || load(url, cache);
   // The Today page lists daily notes newest first, each with its date. Only this device
   // knows its own today, so it picks the newest dated on or before it.
@@ -359,8 +364,10 @@
         history.replaceState(null, "", url);
         scrollTo(0, 0);
       }
-      // Adopted, the copy has lost its main to the page.
+      // Adopted, a copy has lost its main to the page. The tab shown is read again when it is
+      // left, so pushes and fresh lists stored meanwhile come with it.
       delete ahead[to];
+      delete ahead[url];
       adopt(doc);
       connect();
       prepare();
