@@ -2,7 +2,7 @@
 created: 2026-11-21
 type: reference
 tags: [tachylite, showcase]
-aliases: [showcase]
+aliases: [tachylite examples]
 ---
 
 # Tachylite showcase

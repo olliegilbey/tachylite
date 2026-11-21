@@ -52,20 +52,41 @@ fn builds_fixture() {
     }
 }
 
-/// The showcase vault shows each feature a note can use. It links to one missing note on purpose.
+/// The showcase vault's one broken link is there on purpose. Every other link resolves, as the
+/// vault's root and as a folder of a larger vault whose notes share its names.
 #[test]
 fn the_showcase_vault_builds_with_only_the_broken_link_it_shows() {
+    let showcase = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/showcase");
+    let broken = |summary: &Summary| -> Vec<(String, String)> {
+        let pair = |b: &tachylite::render::Broken| (b.from.clone(), b.target.clone());
+        summary.broken.iter().map(pair).collect()
+    };
     let tmp = tempfile::tempdir().unwrap();
-    let vault = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/showcase");
-    let summary = build(&vault, &tmp.path().join("out")).unwrap();
+    let summary = build(&showcase, &tmp.path().join("out")).unwrap();
     assert_eq!((summary.notes, summary.files), (7, 3));
     assert!(summary.skipped.is_empty(), "{:?}", summary.skipped);
-    let broken: Vec<_> = summary
-        .broken
-        .iter()
-        .map(|b| (b.from.as_str(), b.target.as_str()))
-        .collect();
-    assert_eq!(broken, [("Rendering limits.md", "no such note")]);
+    assert_eq!(
+        broken(&summary),
+        [("Rendering limits.md".into(), "no such note".into())]
+    );
+
+    let s = Dirs::empty();
+    common::copy_dir(&showcase, &s.vault().join("examples/garden"));
+    for name in ["Soil test.md", "Allotment plan.md", "showcase.md"] {
+        fs::write(s.vault().join(name), "# Another note\n").unwrap();
+    }
+    let summary = build(&s.vault(), &s.out()).unwrap();
+    assert_eq!((summary.notes, summary.files), (10, 3));
+    assert_eq!(
+        broken(&summary),
+        [(
+            "examples/garden/Rendering limits.md".into(),
+            "no such note".into()
+        )]
+    );
+    // The embed in the report is the folder's own note, not the vault's.
+    let report = fs::read_to_string(s.out().join("pages/examples/garden/Harvest report.html"));
+    assert!(report.unwrap().contains("Bed 3 is the sour one"));
 }
 
 #[test]

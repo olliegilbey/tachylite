@@ -30,7 +30,9 @@ Every table cell aligns left, whatever the column asks for:
 |:---|:---:|---:|
 | a | b | c |
 
-An image shows at full size, whatever width the embed asks for.
+An image shows at full size, whatever width the embed asks for. This one asks for 100:
+
+![[allotment-beds.svg|100]]
 
 A single newline joins two lines.
 This line follows a single newline.

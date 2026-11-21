@@ -31,7 +31,7 @@ A wide table scrolls sideways on a phone.
 
 ## The fruit corner
 
-The quince tree went in two winters ago.[^1] It shares the corner with three currant bushes.
+The quince tree went in two winters ago.[^1] It shares the corner with three currant bushes. Neither needs water once it has rooted.
 
 [^1]: A footnote sits at the foot of the page, with a link back to its place in the text.
 
@@ -41,16 +41,36 @@ The quince tree went in two winters ago.[^1] It shares the corner with three cur
 > [!tip]- A folded callout
 > A callout with `-` after its type starts folded. Tap its title to open it.
 
+> [!example]+ An open callout that folds
+> A callout with `+` starts open, and its title folds it.
+
 ## Text
 
 Text can be **bold**, *italic*, ~~struck out~~, ==highlighted== or `code`. A bare address links itself: https://example.com/seeds.
+
+> A plain quote, with no callout type.
+
+### Lists
+
+- Tools to bring
+    - A fork and a rake
+    - String and pegs
+- Seed to buy
+    1. Broad beans
+    2. Squash
+
+---
 
 ## Links
 
 - To a note: [[Planting calendar]].
 - With its own label: [[Allotment tasks|this year's jobs]].
 - To a heading: [[Soil test#Results]].
-- By alias: [[showcase]].
+- To a heading on this page: [[#The fruit corner]].
+- As a Markdown link: [the soil test](Soil%20test.md).
+- By alias: [[tachylite examples]].
 - To a standalone page: [[bed-map.html]].
 
-%%This comment is in the file. Tachylite never publishes it.%%
+The file holds a comment after this line. Tachylite never publishes it.
+
+%%This comment is in the file, and on no page.%%

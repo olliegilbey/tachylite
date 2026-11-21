@@ -78,7 +78,7 @@ tailscale serve --bg --https=8443 http://127.0.0.1:7420
 
 ## What it renders
 
-Notes render close to Obsidian's reading view. To see each feature on a page, point Tachylite at the showcase vault: `tachylite serve tests/fixtures/showcase <out>`.
+Notes render close to Obsidian's reading view:
 
 - CommonMark and GitHub tables, task lists, strikethrough, footnotes and autolinks.
 - Frontmatter as a properties block. `title` names the page, and `aliases` work as link targets.
@@ -86,6 +86,8 @@ Notes render close to Obsidian's reading view. To see each feature on a page, po
 - Callouts, `==highlight==` and `#tags`.
 - Mermaid diagrams, drawn in the browser. The script loads only on a page that has one.
 - `%%comments%%` are never published. When a comment is left open, Tachylite hides everything after it rather than risk showing it, and a notice says so.
+
+To see most of it on a page, serve the showcase vault from a clone: `tachylite serve tests/fixtures/showcase <out>`.
 
 ## Keep notes private
 

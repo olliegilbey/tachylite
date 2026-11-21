@@ -36,7 +36,7 @@ The smallest thing that works, made fast, beats the clever thing. Fight scope cr
 - **push**: new page HTML sent to open clients over Server-Sent Events.
 - **client**: a browser showing Tachylite, usually the installed PWA on a phone.
 - **fixture vault**: the small hand-written vault in the repo that snapshot tests run against.
-- **showcase vault**: the vault at `tests/fixtures/showcase`, whose pages show each feature a note can use. It is the first vault to look at a rendering change in.
+- **showcase vault**: the vault at `tests/fixtures/showcase`, whose pages show most of what a note can do. It is the first vault to look at a rendering change in.
 - **budget vault**: the 2,000-note synthetic vault a seeded generator builds for the budgets. It is generated, never committed.
 - **reference vault**: the maintainer's private vault, where real-world rendering is checked. It never enters the repo.
 - **reference host**: the maintainer's machine, where `make budget` measures the timed budgets.
@@ -51,7 +51,7 @@ The smallest thing that works, made fast, beats the clever thing. Fight scope cr
 
 ## The four ways to hurt yourself
 
-1. **Writing to a vault.** Tachylite opens vault files read-only. Tests run against the fixture vault or a vault generated in a temp directory. Output goes to a directory outside the vault.
+1. **Writing to a vault.** Tachylite opens vault files read-only. Tests run against the fixture vault, the showcase vault or a vault generated in a temp directory. Output goes to a directory outside the vault.
 2. **Leaking content.** This repo is public. Code, fixtures, test names, snapshots, issues, commits, PR bodies and screenshots carry synthetic content only. Nothing from the reference vault, and no paths or names from the owner's machine. An excluded note reaches no output file in any form: page, search index, backlink, manifest or metadata.
 3. **Touching the network edge.** Tachylite binds `127.0.0.1` only. A port that carries a public Funnel route is public on every path, so a wrong `tailscale serve` command can publish the vault.
    - An agent may add one tailnet-only route, to Tachylite's own port: `tailscale serve --bg --https=<port> http://127.0.0.1:<tachylite-port>`. Never serve a path on disk.
@@ -108,7 +108,7 @@ The stack: Rust stable, edition 2024, one crate until a second earns its place. 
 Look at a visual change before you call it done. A purely visual change, such as colour, spacing or alignment, takes before and after captures as its proof, and no test. Behaviour, such as ordering, navigation or offline, takes a test.
 
 1. Build with `cargo build --release`. For the before captures, build `main` in a `git worktree` first.
-2. Copy `tests/fixtures/showcase` to `/tmp/tachylite-<task>/vault`: its pages show each feature a note can use. Copy `tests/fixtures/vault` instead for the paths it lacks, such as an excluded folder. Add the synthetic notes the change needs. Never capture the reference deployment.
+2. Copy `tests/fixtures/showcase` to `/tmp/tachylite-<task>/vault`: its pages show most of what a note can do. Copy `tests/fixtures/vault` instead for what it lacks, such as an excluded folder or a PDF. Add the synthetic notes the change needs. Never capture the reference deployment.
 3. Start a server on a free port, keep its PID, and wait for its `serving http://` line:
    `target/release/tachylite serve /tmp/tachylite-<task>/vault /tmp/tachylite-<task>/out --port <port> 2>/tmp/tachylite-<task>/log & echo $! > /tmp/tachylite-<task>/pid`, then `until grep -q "serving http://" /tmp/tachylite-<task>/log; do :; done`.
 4. Capture at phone width, dark first, from `browser/`: `npx playwright screenshot --device="Pixel 7" --color-scheme=dark --block-service-workers http://127.0.0.1:<port>/<path> /tmp/tachylite-<task>/<name>.png`. Add `--full-page` for a long page, and `--color-scheme=light` for the light theme.

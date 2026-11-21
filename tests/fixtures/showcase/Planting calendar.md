@@ -18,13 +18,13 @@ gantt
     todayMarker off
     section Beans
     Sown    :2026-03-01, 30d
-    Picked  :2026-06-15, 30d
+    Picked  :2026-07-01, 90d
     section Carrots
     Sown    :2026-04-01, 30d
-    Lifted  :2026-08-01, 45d
+    Lifted  :2026-07-01, 90d
     section Squash
     Planted :2026-05-15, 20d
-    Cut     :2026-09-15, 30d
+    Cut     :2026-08-01, 75d
 ```
 
 ## A decision as a diagram
