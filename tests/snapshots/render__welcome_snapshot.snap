@@ -11,7 +11,7 @@ expression: welcome()
 <link rel="manifest" href="/.tachylite/app.webmanifest">
 <link rel="icon" href="/.tachylite/icon.svg">
 <link rel="stylesheet" href="/.tachylite/style.css">
-<meta name="tachylite-version" content="d562b1669eddf2b3">
+<meta name="tachylite-version" content="9eddf2b3">
 <title>welcome</title>
 <script src="/.tachylite/live.js" defer></script>
 </head>

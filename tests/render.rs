@@ -298,7 +298,7 @@ fn version_changes_with_content() {
 fn version_is_stable() {
     let version = render_note("a", "one").version;
     assert_eq!(version, render_note("a", "one").version);
-    assert_eq!(version.len(), 16);
+    assert_eq!(version.len(), 8);
     assert!(
         version
             .bytes()
