@@ -74,6 +74,27 @@ fn links_resolve_to_percent_encoded_urls() {
 }
 
 #[test]
+fn a_wikilink_with_an_empty_label_shows_its_target() {
+    let index = Index::new(["people/Jane Doe.md"]);
+    let body = render_body(
+        "a.md",
+        "---\nup: \"[[jane doe|]]\"\nby: \"[[jane doe| ]]\"\n---\n[[jane doe|]] [[jane doe#Top|]] [[nobody|]] ![[nobody|]]\n\n## [[jane doe|]]",
+        &index,
+        &Sources::new(),
+    );
+    for link in [
+        "<dd><a href=\"/people/Jane%20Doe\">jane doe</a></dd>",
+        "<p><a href=\"/people/Jane%20Doe\">jane doe</a> ",
+        "<a href=\"/people/Jane%20Doe#top\">jane doe#Top</a>",
+        "<a class=\"broken-link\">nobody</a> <a class=\"broken-link\">nobody</a>",
+        "<dt>by</dt><dd><a href=\"/people/Jane%20Doe\">jane doe</a></dd>",
+        "<h2 id=\"jane-doe\"><a href=\"/people/Jane%20Doe\">jane doe</a></h2>",
+    ] {
+        assert!(body.html.contains(link), "missing {link} in {}", body.html);
+    }
+}
+
+#[test]
 fn broken_and_ambiguous_links_render_without_href() {
     let index = Index::new(["a/r.md", "b/r.md"]);
     let body = render_body(
