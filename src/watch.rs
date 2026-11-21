@@ -860,12 +860,16 @@ mod tests {
         let (_tmp, vault) = vault();
         let mut watcher = watcher(&vault);
         let root = wd(&watcher, "");
-        fs::write(vault.join(config::FILE), "exclude = []\n").unwrap();
+        fs::write(vault.join(config::FILE), "exclude = [\"d\"]\n").unwrap();
+        // The save's own events, read as the batch below. Left queued, they read as mid-save.
+        watcher.config_written().unwrap();
+        watcher.pending.clear();
         let events = vec![
             event(root, ReadFlags::DELETE, "n.md"),
             event(root, ReadFlags::CLOSE_WRITE, config::FILE),
         ];
         let (_, removed) = watcher.changes(events).unwrap();
+        assert!(watcher.site.exclude().path("d/n.md"));
         assert!(removed.contains("n.md"));
     }
 
