@@ -27,10 +27,9 @@
   diagrams();
 
   // The quick switcher: a fuzzy match over every note's title, aliases and path.
-  // How well `query` matches `text` as a subsequence: fewer runs first, then an earlier
-  // start. Infinity when it does not.
+  // How well `query` matches lowercase `text` as a subsequence: fewer runs first, then an
+  // earlier start. Infinity when it does not.
   const score = (query, text) => {
-    text = text.toLowerCase();
     const at = text.indexOf(query);
     if (at >= 0) return at;
     let runs = 0;
@@ -45,7 +44,7 @@
     }
     return runs * 1000 + start;
   };
-  // A title match outranks an alias or path match of its kind. A whole match, under 1000,
+  // A title match outranks an alias or path match of its kind. A whole match, under 2000,
   // outranks a loose one of two runs or more, so the top 20 never drop it.
   const rank = (query, [title, , ...rest]) => {
     const other = Math.min(...rest.map((t) => score(query, t)));
@@ -96,9 +95,10 @@
     const id = ++asked;
     notes.then((list) => {
       if (id !== asked) return;
+      const low = (list.low ??= list.map((n) => n.map((t) => t.toLowerCase())));
       const names = query
         ? list
-            .map((n) => [rank(query, n), n])
+            .map((n, i) => [rank(query, low[i]), n])
             .filter(([r]) => r < Infinity)
             .sort((a, b) => a[0] - b[0] || a[1][0].length - b[1][0].length)
             .slice(0, 20)
@@ -106,7 +106,7 @@
       // Three groups, 20 rows in all: the names that hold the query whole, then the notes
       // whose text holds its words, then the names that hold only its letters in order.
       // The last group waits for the text rows, so no row moves once it is drawn.
-      const whole = names.filter(([, [title, , ...rest]]) => [title, ...rest].some((t) => score(query, t) < 1000));
+      const whole = names.filter(([r]) => r < 2000);
       draw = (found) => {
         const seen = new Set();
         const rows = [];
@@ -323,7 +323,12 @@
       .then((html) => new DOMParser().parseFromString(html, "text/html"));
   // The pages a switch would show, loaded ahead, so it waits for no read and no parse.
   let ahead = {};
-  const hold = (url) => (ahead[url] ??= load(url));
+  const hold = (url) => {
+    const doc = (ahead[url] ??= load(url));
+    // One that failed is read again next time.
+    doc.catch(() => ahead[url] === doc && delete ahead[url]);
+    return doc;
+  };
   const get = (url, cache) => (!cache && ahead[url]) || load(url, cache);
   // The Today page lists daily notes newest first, each with its date. Only this device
   // knows its own today, so it picks the newest dated on or before it.
@@ -334,9 +339,10 @@
     const a = [...doc.querySelectorAll("main a[data-date]")].find((a) => a.dataset.date <= today);
     return a ? [a.pathname, a.dataset.date < today] : [TODAY, true];
   };
-  // Holds every other tab, and the note Today would show.
-  const prepare = () => {
-    ahead = {};
+  // Holds every other tab, and the note Today would show. The worker's message, that a sync
+  // changed its cache, drops every copy, so none held is older than it.
+  const prepare = (stored) => {
+    if (stored) ahead = {};
     const all = tabs();
     const at = all.findIndex(current);
     for (const a of at < 0 ? [] : all)
@@ -345,7 +351,6 @@
           .then((doc) => a.pathname === TODAY && hold(pick(doc)[0]))
           .catch(() => {});
   };
-  // The worker says when a sync has changed its cache, so no copy held is older than it.
   worker?.addEventListener("message", prepare);
   // Brings on screen what the tab at `url` shows: its own page, or for Today its pick in
   // place of the list. `doc` is the tab's page, when the caller holds it. The last call wins.
@@ -363,6 +368,10 @@
         history.replaceState(null, "", url);
         scrollTo(0, 0);
       }
+      // Adopted, a copy has lost its main to the page. The tab shown is read again when it is
+      // left, so pushes and fresh lists stored meanwhile come with it.
+      delete ahead[to];
+      delete ahead[url];
       adopt(doc);
       connect();
       prepare();
@@ -396,11 +405,8 @@
       // An edge swipe is the system's Back. Pinched in, a sideways move pans the page.
       let free = e.touches.length === 1 && t.clientX > 32 && t.clientX < innerWidth - 32;
       free &&= !dialog?.open && !(window.visualViewport?.scale > 1) && tabs().some(current);
-      // A sideways scroller keeps its touches: the pins row, a wide code block or table.
-      for (let n = e.target; free && n instanceof Element; n = n.parentElement)
-        free = n.scrollWidth <= n.clientWidth || getComputedStyle(n).overflowX === "visible";
       // The numbers, not the touch: old Safari reuses the object for the next event.
-      down = free ? [t.clientX, t.clientY] : null;
+      down = free ? [t.clientX, t.clientY, e.target] : null;
     },
     { passive: true },
   );
@@ -413,6 +419,9 @@
     const dy = e.changedTouches[0].clientY - from[1];
     // A long press that selected text is no swipe.
     if (Math.abs(dx) < 60 || Math.abs(dx) < 2 * Math.abs(dy) || !getSelection().isCollapsed) return;
+    // A sideways scroller keeps its touches: the pins row, a wide code block or table.
+    for (let n = from[2]; n instanceof Element; n = n.parentElement)
+      if (n.scrollWidth > n.clientWidth && getComputedStyle(n).overflowX !== "visible") return;
     const all = tabs();
     const to = all[all.findIndex(current) + (dx < 0 ? 1 : -1)];
     if (to) go(to.pathname);

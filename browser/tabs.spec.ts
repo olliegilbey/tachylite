@@ -184,6 +184,29 @@ test.describe("the Today tab", () => {
     await live(page, `/days/${iso(0)}`);
   });
 
+  test("fetches its page once when it opens with a cached copy", async ({ page, context }) => {
+    await page.goto(base + "/");
+    await synced(page, TODAY, latest);
+    await context.serviceWorkers()[0].evaluate("queue");
+    // Counts the worker's own fetches of the page. A refresh starts before the cached copy is answered.
+    const worker = context.serviceWorkers()[0];
+    await worker.evaluate((today) => {
+      const native = self.fetch;
+      (self as any).fetched = 0;
+      self.fetch = (request, init) => {
+        if (String((request as Request).url ?? request).endsWith(today)) (self as any).fetched++;
+        return native(request, init);
+      };
+    }, TODAY);
+    // The page asks twice: the navigation, answered from the cache, then the network's list.
+    let asked = 0;
+    page.on("requestfinished", (r) => r.url().endsWith(TODAY) && asked++);
+    await page.goto(base + TODAY);
+    await shows(page, "Today");
+    await expect.poll(() => asked).toBe(2);
+    expect(await worker.evaluate(() => (self as any).fetched)).toBe(1);
+  });
+
   test("moves to a new day's note when the browser tab is visible again", async ({ page }) => {
     await page.goto(base + TODAY);
     await shows(page, "Today");
@@ -540,7 +563,7 @@ test("a copy held ahead is read again after a sync, so a tab opens fresh offline
   await expect(page.locator("main ul.recent").last()).toContainText("fresh");
 });
 
-test("a switch to another tab reads nothing: its copy is held", async ({ page }) => {
+test("a switch to another tab reads only the tab it left: the others' copies are held", async ({ page, context }) => {
   await page.addInitScript(() => {
     const reads: string[] = ((window as any).reads = []);
     const match = caches.match.bind(caches);
@@ -552,14 +575,33 @@ test("a switch to another tab reads nothing: its copy is held", async ({ page })
   await page.goto(base + "/");
   await synced(page, "/", TODAY, RECENT, latest);
   await live(page, "/");
+  // `queue` is the chain of jobs in `src/sw.js`. It settles when the first sync has told the page.
+  await context.serviceWorkers()[0].evaluate("queue");
   await rested(page);
   expect(await page.evaluate(() => (window as any).reads)).toEqual(expect.arrayContaining([TODAY, latest, RECENT]));
   await page.evaluate(() => ((window as any).reads.length = 0));
   await page.locator("header > a", { hasText: "Today" }).click();
   await shows(page, "Today");
-  // After the switch it reads the other tabs, and neither page it now shows.
-  const reads: string[] = await page.evaluate(() => (window as any).reads);
-  expect(reads.filter((url) => url === TODAY || url === latest)).toEqual([]);
+  // The switch reads the tab it left, in the same task that put Today on screen.
+  expect(await page.evaluate(() => (window as any).reads)).toEqual(["/"]);
+});
+
+test("a tab whose copy failed to load is read again, and opens in place", async ({ page, context, allowedErrors }) => {
+  allowedErrors.push(/ERR_FAILED|status of 503/);
+  // The first load has no worker yet, so the copy of Recent comes from the network, and fails.
+  await context.route(/\/\.tachylite\/recent$/, (route) =>
+    route.request().resourceType() === "document" ? route.continue() : route.abort(),
+  );
+  const failed = page.waitForEvent("requestfailed", (r) => r.url().endsWith(RECENT));
+  await page.goto(base + "/");
+  await shows(page, "Home");
+  await failed;
+  await rested(page);
+  await context.unroute(/\/\.tachylite\/recent$/);
+  await page.evaluate(() => ((window as any).kept = true));
+  await page.locator("header > a", { hasText: "Recent" }).click();
+  await shows(page, "Recent");
+  expect(await page.evaluate(() => (window as any).kept)).toBe(true);
 });
 
 test("a vault with no daily settings swipes between its two tabs", async ({ page, hasTouch }) => {

@@ -56,11 +56,12 @@ self.addEventListener("activate", (e) =>
   ),
 );
 
-// The version of each page a push stored, so a refresh begun before the push keeps off it.
+// The version of each page a push or a sync stored, so a refresh begun before it keeps off it.
 const pushed = new Map();
 
-// Stale-while-revalidate: the cached copy at once, and a fresh one stored behind it. The
-// switcher asks for its list with `no-cache` while connected, and gets the fresh one first.
+// Stale-while-revalidate: the cached copy at once, and a fresh one stored behind it. A page
+// asks for a `FRESH` URL again with `no-cache` when it needs the network's copy, and gets it
+// first, so a cached copy of one is not refreshed behind.
 self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== "GET" || url.origin !== location.origin || PASS.has(url.pathname)) return;
@@ -69,19 +70,24 @@ self.addEventListener("fetch", (e) => {
       const cache = await caches.open(CACHE);
       const hit = await cache.match(url.pathname);
       const before = pushed.get(url.pathname);
-      const fresh = fetch(e.request).then((r) => {
+      const fresh = () => fetch(e.request).then((r) => {
         // The body is read before the check, so a push during a slow download still wins.
         const keep = (b) => pushed.get(url.pathname) === before && cache.put(url.pathname, copy(b, r));
         if (r.status === 200) e.waitUntil(r.clone().blob().then(keep).catch(() => {}));
-        // The server binds only after its first build, so a 404 means the file is gone.
-        if (r.status === 404) e.waitUntil(cache.delete(url.pathname));
+        // The server binds only after its first build, so a 404 means the file is gone. The
+        // manifest can still list it, so the next sync makes a full pass.
+        if (r.status === 404) {
+          changes++;
+          e.waitUntil(cache.delete(url.pathname));
+        }
         return r;
       });
-      if (hit && !(FRESH.has(url.pathname) && e.request.cache === "no-cache")) {
-        e.waitUntil(fresh.catch(() => {}));
+      if (hit && !FRESH.has(url.pathname)) {
+        e.waitUntil(fresh().catch(() => {}));
         return hit;
       }
-      return fresh.then(
+      if (hit && e.request.cache !== "no-cache") return hit;
+      return fresh().then(
         (r) => (r.ok || !hit ? r : hit),
         () => hit ?? new Response("Offline, and this page is not cached yet.", { status: 503 }),
       );
@@ -114,10 +120,16 @@ async function store({ url, version, html }) {
   const old = await cache.match(url);
   if (!old) return;
   pushed.set(url, version);
+  changes++;
   await cache.put(url, copy(html, old));
   const have = await (await cache.match(MANIFEST))?.json();
   if (have) await cache.put(MANIFEST, json({ ...have, [url]: version }));
 }
+
+// The manifest's ETag and the count of pushes and 404s, as the last sync to leave every listed
+// page at its listed version began. A worker restart forgets it.
+let done = null;
+let changes = 0;
 
 // The stored manifest maps each listed page to the version its cached copy carries, or ""
 // for one not fetched yet. It is saved before the fetches and every 50 pages, so a worker
@@ -128,6 +140,11 @@ async function sync() {
   const cache = await caches.open(CACHE);
   const response = await get(MANIFEST).catch(() => null);
   if (!response?.ok) return;
+  const etag = response.headers.get("etag");
+  const tag = etag && etag + " " + changes;
+  // A cache the browser evicted lost its stored manifest too.
+  if (tag && tag === done && (await cache.match(MANIFEST))) return;
+  done = null;
   const { pages: want, files = [] } = await response.json();
   const held = (await (await cache.match(MANIFEST))?.json()) ?? {};
   const keys = (await cache.keys()).map((r) => new URL(r.url).pathname);
@@ -162,6 +179,8 @@ async function sync() {
         const version = html
           ? (/<meta name="tachylite-version" content="([0-9a-f]+)">/.exec(text)?.[1] ?? "")
           : want[url];
+        // Before the write, as a push does: a refresh that ends during it must keep off too.
+        pushed.set(url, version);
         await cache.put(url, r);
         have[url] = version;
         if (!cached.has(MERMAID) && text.includes(DIAGRAM)) {
@@ -194,4 +213,5 @@ async function sync() {
     delete have[MERMAID];
     await save();
   }
+  done = Object.entries(want).every(([url, version]) => have[url] === version) ? tag : null;
 }
