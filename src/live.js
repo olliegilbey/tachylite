@@ -62,6 +62,8 @@
   let left = 0;
   let hits = [];
   let draw = () => {};
+  // The query whose rows the list shows, or null when it shows none.
+  let shown = null;
   const answer = (e) => {
     if (e.data.id !== asked) return;
     hits.push(...e.data.hits);
@@ -117,10 +119,12 @@
         if (found) for (const [, [title, url, path]] of names) add(url, title, path);
         dialog.list.replaceChildren(...rows);
         dialog.list.setAttribute("aria-busy", !found);
+        shown = query;
       };
       const search = query && whole.length < 20 && pool.length;
-      // Asked again, the rows stay until the answer, so none moves.
-      if (again !== true || !search) draw(search ? null : []);
+      // Asked again, the rows stay until the answer, so none moves. A query not drawn yet
+      // has no rows to keep: the fresh list came before the first one.
+      if (again !== true || !search || shown !== query) draw(search ? null : []);
       if (!search) return;
       hits = [];
       left = pool.length;
@@ -191,6 +195,7 @@
     dialog.input.value = "";
     // An answer to the query of an earlier open is late.
     asked++;
+    shown = null;
     dialog.list.replaceChildren();
     dialog.list.removeAttribute("aria-busy");
     dialog.showModal();
