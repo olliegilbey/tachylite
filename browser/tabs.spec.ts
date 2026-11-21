@@ -165,7 +165,8 @@ test.describe("the Today tab", () => {
 
   test("opens offline, from the cached list and the cached note", async ({ page }) => {
     await page.goto(base + "/a");
-    await synced(page, TODAY, latest);
+    // The note holds a diagram, and the sync fetches the diagram script last.
+    await synced(page, TODAY, latest, "/.tachylite/mermaid.js");
     await stop(server!);
     await page.goto(base + TODAY);
     await shows(page, "Today");
