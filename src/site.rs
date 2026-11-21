@@ -786,17 +786,19 @@ impl Site {
         }
         self.lost = lost;
 
-        let (mut own, deps, foot) = self.link(&won, &mut fresh);
+        let added: Vec<String> = won.difference(&self.winners).cloned().collect();
+        let removed: Vec<String> = self.winners.difference(&won).cloned().collect();
+        let (mut own, deps, foot) = self.link(&won, &added, &removed, &mut fresh);
 
         // A new note always pushes, so its key stays live and gets no gone. No other
         // winner can hold a key a removed winner held.
-        let live: HashSet<&str> = won
+        let live: HashSet<&str> = added
             .iter()
-            .filter(|p| !self.winners.contains(*p) && self.entries.get(*p) == Some(&Kind::Note))
+            .filter(|p| self.entries.get(*p) == Some(&Kind::Note))
             .map(|p| note_key(p))
             .collect();
         let mut gone = Vec::new();
-        for path in self.winners.difference(&won) {
+        for path in &removed {
             // Its kind by extension: the path may be excluded now.
             let kind = classify(path, &Exclude::default()).unwrap_or(Kind::Asset);
             let (_, out) = claim(path, kind);
@@ -819,8 +821,8 @@ impl Site {
 
         // Html pages and assets go first, so no pushed page links to a file not yet written.
         // Only a new or touched one is copied, so a save walks no other path.
-        let copies: BTreeSet<&String> = won
-            .difference(&self.winners)
+        let copies: BTreeSet<&String> = added
+            .iter()
             .chain(touched.iter().filter(|p| won.contains(*p)))
             .collect();
         for path in copies {
@@ -1447,35 +1449,22 @@ impl Site {
     fn manifest(&self, won: &BTreeSet<String>) -> String {
         let mut json = String::with_capacity(16 + self.versions.len() * 64);
         json.push_str("{\"pages\":{");
-        for (i, (path, version)) in self.versions.iter().enumerate() {
-            if i > 0 {
+        let start = json.len();
+        let mut page = |url: &str, version: &str| {
+            if json.len() > start {
                 json.push(',');
             }
             json.push('"');
-            json.push_str(&url(path));
+            json.push_str(url);
             json.push_str("\":\"");
             json.push_str(version);
             json.push('"');
+        };
+        for (path, version) in &self.versions {
+            page(&url(path), version);
         }
-        for (key, version) in &self.generated {
-            if json.len() > "{\"pages\":{".len() {
-                json.push(',');
-            }
-            json.push_str("\"/");
-            json.push_str(&encode(key));
-            json.push_str("\":\"");
-            json.push_str(version);
-            json.push('"');
-        }
-        for (path, version) in &self.html {
-            if json.len() > "{\"pages\":{".len() {
-                json.push(',');
-            }
-            json.push_str("\"/");
-            json.push_str(&encode(path));
-            json.push_str("\":\"");
-            json.push_str(version);
-            json.push('"');
+        for (key, version) in self.generated.iter().chain(&self.html) {
+            page(&format!("/{}", encode(key)), version);
         }
         json.push_str("},\"files\":[");
         let files = won
@@ -1500,15 +1489,14 @@ impl Site {
     fn link(
         &mut self,
         won: &BTreeSet<String>,
+        added: &[String],
+        removed: &[String],
         fresh: &mut HashMap<String, Fresh>,
     ) -> (Vec<String>, BTreeSet<String>, BTreeSet<Arc<str>>) {
-        let removed: Vec<String> = self.winners.difference(won).cloned().collect();
-        let added: Vec<String> = won.difference(&self.winners).cloned().collect();
-
         // A link can resolve differently once a path or an alias with its key appears or
         // vanishes. Its note links to a path in that key's buckets now, or it is unresolved.
-        let mut keys: HashSet<String> = removed.iter().chain(&added).map(|p| key(p)).collect();
-        for path in &removed {
+        let mut keys: HashSet<String> = removed.iter().chain(added).map(|p| key(p)).collect();
+        for path in removed {
             keys.extend(self.index.aliases(path).iter().map(|a| key(a)));
             self.titles.remove(path);
         }
@@ -1596,7 +1584,7 @@ impl Site {
         let embedders: Vec<String> = own
             .iter()
             .chain(&deps)
-            .chain(&removed)
+            .chain(removed)
             .filter_map(|p| self.embedded_by.get(p.as_str()))
             .flatten()
             .map(|n| n.to_string())
@@ -1604,7 +1592,7 @@ impl Site {
         deps.extend(embedders);
         deps.retain(|p| won.contains(p) && !fresh.contains_key(p));
 
-        for path in &removed {
+        for path in removed {
             if let Some(note) = self.index.get(path) {
                 self.relink(&note, Links::default(), &mut foot);
                 self.links.remove(path.as_str());
@@ -1612,7 +1600,7 @@ impl Site {
             self.retag(path, Vec::new());
             self.index.remove(path);
         }
-        for path in &added {
+        for path in added {
             self.index.insert(path);
         }
         for (path, aliases) in aliased {
