@@ -484,48 +484,48 @@ fn winners(entries: &BTreeMap<String, Kind>) -> (BTreeSet<String>, Vec<(String, 
     (won, lost)
 }
 
-/// Renders each note's body, on as many threads as the batch is worth. A save of a few notes
-/// stays on this thread, so the push path pays no spawn.
+/// Maps `items` in order, on as many threads as they are worth at `each` to a thread. A
+/// few stay on this thread, so a save pays no spawn.
+fn spread<T: Sync, R: Send>(items: &[T], each: usize, work: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let cores = std::thread::available_parallelism().map_or(1, usize::from);
+    let threads = cores.min(RENDER_THREADS).min(items.len().div_ceil(each));
+    if items.len() <= each || threads <= 1 {
+        return items.iter().map(work).collect();
+    }
+    let work = &work;
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = items
+            .chunks(items.len().div_ceil(threads))
+            .map(|part| scope.spawn(move || part.iter().map(work).collect::<Vec<R>>()))
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
+            .collect()
+    })
+}
+
+/// Renders each note's body.
 fn render_all<'p>(
     notes: &[(&'p str, Vec<u8>)],
     index: &Index,
     sources: &Sources,
 ) -> Vec<(&'p str, Body)> {
-    let render = |notes: &[(&'p str, Vec<u8>)]| -> Vec<(&'p str, Body)> {
-        notes
-            .iter()
-            .map(|(path, bytes)| {
-                (
-                    *path,
-                    render_body(path, &String::from_utf8_lossy(bytes), index, sources),
-                )
-            })
-            .collect()
+    let render = |(path, bytes): &(&'p str, Vec<u8>)| {
+        let text = String::from_utf8_lossy(bytes);
+        (*path, render_body(path, &text, index, sources))
     };
     if notes.len() <= 16 {
-        return render(notes);
+        return notes.iter().map(render).collect();
     }
-    let cores = std::thread::available_parallelism().map_or(1, usize::from);
-    let threads = cores.min(RENDER_THREADS).min(notes.len().div_ceil(16));
-    if threads <= 1 {
-        return render(notes);
-    }
-    let size = notes.len().div_ceil(threads);
-    std::thread::scope(|scope| {
-        let handles: Vec<_> = notes
-            .chunks(size)
-            .map(|part| scope.spawn(move || render(part)))
-            .collect();
-        handles
-            .into_iter()
-            .flat_map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
-            // Copied on this thread, so a worker's heap holds no page once its batch is done.
-            .map(|(path, body)| {
-                let html = body.html.as_str().to_owned();
-                (path, Body { html, ..body })
-            })
-            .collect()
-    })
+    spread(notes, 16, render)
+        .into_iter()
+        // Copied on this thread, so a worker's heap holds no page once its batch is done.
+        .map(|(path, body)| {
+            let html = body.html.as_str().to_owned();
+            (path, Body { html, ..body })
+        })
+        .collect()
 }
 
 impl Site {
@@ -1249,29 +1249,48 @@ impl Site {
                 paths.push(path.clone());
             }
         }
+        let notes: Vec<(u32, Vec<String>)> = notes.into_iter().collect();
         let mut changed = false;
-        for (shard, paths) in notes {
-            let mut rows = String::new();
-            for path in &paths {
-                if let Some((page, (start, len))) = self.written(path, sink) {
-                    let modified = self.modified.get(path).copied().unwrap_or_default();
-                    indexes::search_row(&mut rows, &url(path), modified, &page[start..start + len]);
+        // A batch holds its pages while their rows are made, so a full build never holds them all.
+        for batch in notes.chunks(64) {
+            let pages: Vec<_> = batch
+                .iter()
+                .map(|(_, paths)| {
+                    let mut pages = Vec::new();
+                    for path in paths {
+                        if let Some(page) = self.written(path, sink) {
+                            pages.push((path, page));
+                        }
+                    }
+                    pages
+                })
+                .collect();
+            let built = spread(&pages, 4, |pages| {
+                let mut rows = String::new();
+                for (path, (page, (start, len))) in pages {
+                    let modified = self.modified.get(*path).copied().unwrap_or_default();
+                    indexes::search_row(
+                        &mut rows,
+                        &url(path),
+                        modified,
+                        &page[*start..start + len],
+                    );
                 }
-            }
-            let key = indexes::shard_key(shard);
-            if rows.is_empty() {
-                if self.generated.remove(&key).is_some() {
+                let mut hasher = DefaultHasher::new();
+                rows.hash(&mut hasher);
+                // Short, since the manifest lists hundreds of them: 32 bits tell two
+                // contents of one shard apart.
+                (rows, format!("{:08x}", hasher.finish() & 0xffff_ffff))
+            });
+            for ((shard, _), (rows, version)) in batch.iter().zip(built) {
+                let key = indexes::shard_key(*shard);
+                if !rows.is_empty() {
+                    changed |= self.emit(key, version, rows, sink);
+                } else if self.generated.remove(&key).is_some() {
                     sink.delete(generated_out(&key));
                     changed = true;
                 }
-                continue;
             }
-            let mut hasher = DefaultHasher::new();
-            rows.hash(&mut hasher);
-            // Short, since the manifest lists hundreds of them: 32 bits tell two
-            // contents of one shard apart.
-            let version = format!("{:08x}", hasher.finish() & 0xffff_ffff);
-            changed |= self.emit(key, version, rows, sink);
         }
         changed
     }
