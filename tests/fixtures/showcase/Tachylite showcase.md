@@ -17,7 +17,8 @@ These pages show what a note can do in Tachylite. Every name, number and plant i
 | Page | What it shows |
 |---|---|
 | [[Allotment plan]] | Properties, callouts, a table, a footnote, highlights, tags, an image |
-| [[Allotment tasks]] | The four task statuses, nested tasks, tasks in a callout |
+| [[Allotment tasks]] | The four task statuses, nested tasks, tasks in a callout. The Tasks tab gathers them |
+| [[Seed order]] | A short task list, with a link on a task line |
 | [[Planting calendar]] | Mermaid diagrams, code, a folded block, a figure with a caption |
 | [[Harvest report]] | A report as an agent would write it: a summary, an embedded chart, an embedded note |
 | [[Soil test]] | A short note that other notes embed and link to. Its foot lists them, as backlinks |

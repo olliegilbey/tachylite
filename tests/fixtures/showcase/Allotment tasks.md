@@ -41,4 +41,6 @@ A task is a list line that starts with a checkbox. The note is the task list, in
 > - [ ] Ask the site secretary about the hedge
 > - [x] Pay the plot rent
 
+The Tasks tab gathers the open tasks of every note onto one board. On a wide screen its doing tasks sit beside its todo tasks.
+
 Tasks are read-only in the browser. To change one, edit its character in the note.

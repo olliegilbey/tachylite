@@ -11,12 +11,12 @@ expression: "built(\"chores/week\")"
 <link rel="manifest" href="/.tachylite/app.webmanifest">
 <link rel="icon" href="/.tachylite/icon.svg">
 <link rel="stylesheet" href="/.tachylite/style.css">
-<meta name="tachylite-version" content="c1e8fa5e55de08fc">
+<meta name="tachylite-version" content="4bfe20f018eb1d9a">
 <title>Week chores</title>
 <script src="/.tachylite/live.js" defer></script>
 </head>
 <body>
-<header><a href="/">Home</a><a href="/.tachylite/recent">Recent</a><button type="button" class="find" title="Find a note (Ctrl-K)">Find</button></header>
+<header><a href="/">Home</a><a href="/.tachylite/recent">Recent</a><a href="/.tachylite/tasks">Tasks</a><button type="button" class="find" title="Find a note (Ctrl-K)">Find</button></header>
 <main>
 <nav class="crumbs"><a href="/.tachylite/folders/chores">chores</a></nav>
 <dl class="properties"><dt>title</dt><dd>Week chores</dd></dl>

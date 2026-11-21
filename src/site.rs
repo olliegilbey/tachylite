@@ -12,7 +12,7 @@ use crate::indexes::{self, Folder, Item, Tab};
 use crate::links::{Index, key};
 use crate::render::{
     Body, Broken, EMBED_DEPTH, NAME_MAX, Page, Sources, crumbs, day_links, embed_targets, encode,
-    folder_url, note_title, render_body, render_page, url,
+    Tasks, folder_url, note_title, render_body, render_page, url,
 };
 use crate::vault::{Entry, Kind, ReadError, SkipReason, Skipped, VaultDir, classify};
 
@@ -247,6 +247,9 @@ const RECENT_IN: &str = ".tachylite/recent/";
 /// The URL key of the Today page.
 const TODAY: &str = ".tachylite/today";
 
+/// The URL key of the board.
+const TASKS: &str = ".tachylite/tasks";
+
 /// The URL key prefix of the tag pages. A tag holds no `.`, so `<tag>.html` never clashes
 /// with the folder of a nested tag.
 const TAGS: &str = ".tachylite/tags/";
@@ -345,6 +348,8 @@ pub struct Site {
     modified: HashMap<String, i64>,
     /// Each winning note's tag keys, sorted.
     tags: HashMap<String, Vec<String>>,
+    /// The tasks of each winning note with an open task, as the board shows them.
+    tasks: HashMap<String, Tasks>,
     /// The winning notes that carry each tag key.
     tagged: BTreeMap<String, BTreeSet<String>>,
     /// The tag keys whose pages may have changed since the last apply.
@@ -369,8 +374,9 @@ pub struct Site {
     days: BTreeSet<(String, String)>,
     /// Every page's header, from `nav` and `daily` alone.
     header: String,
-    /// The headers of the home page, the Today page and the Recent page: each marks its tab.
-    tabs: [String; 3],
+    /// The headers of the home page, the Today page, the Recent page and the board: each
+    /// marks its tab.
+    tabs: [String; 4],
     /// What each folder's recent page was built from, hashed, so a derive rebuilds only the
     /// pages of the folders a save reached.
     scoped: HashMap<String, u64>,
@@ -534,7 +540,11 @@ fn render_all<'p>(
         // Copied on this thread, so a worker's heap holds no page once its batch is done.
         .map(|(path, body)| {
             let html = body.html.as_str().to_owned();
-            (path, Body { html, ..body })
+            let mut tasks = body.tasks.clone();
+            for (_, line) in &mut tasks.shown {
+                *line = line.as_str().to_owned();
+            }
+            (path, Body { html, tasks, ..body })
         })
         .collect()
 }
@@ -606,7 +616,7 @@ impl Site {
         self.due = true;
         if header != self.header {
             self.header = header;
-            self.tabs = [Tab::Home, Tab::Today, Tab::Recent]
+            self.tabs = [Tab::Home, Tab::Today, Tab::Recent, Tab::Tasks]
                 .map(|tab| indexes::header(today, &pins, Some(tab)));
             // Tag pages derive only where marked; every one holds the header.
             self.dirty_tags.extend(self.tagged.keys().cloned());
@@ -1044,7 +1054,7 @@ impl Site {
         let mut inputs: HashMap<String, u64> = HashMap::new();
         {
             let header = self.header.as_str();
-            let [home, today, recent_tab] = &self.tabs;
+            let [home, today, recent_tab, tasks_tab] = &self.tabs;
             // Every folder that holds a page, with its subfolders and pages.
             let mut tree: BTreeMap<&str, (BTreeSet<&str>, Vec<Item>)> = BTreeMap::new();
             tree.entry("").or_default();
@@ -1195,6 +1205,8 @@ impl Site {
                 let page = indexes::today(today, &days);
                 built.push((TODAY.into(), page.version, page.html));
             }
+            let page = self.board(tasks_tab);
+            built.push((TASKS.into(), page.version, page.html));
             let json = json.finish();
             let mut hasher = DefaultHasher::new();
             json.hash(&mut hasher);
@@ -1351,6 +1363,38 @@ impl Site {
         }
         self.generated.insert(key, version);
         true
+    }
+
+    /// The board: the task lists with a doing task first, then the rest, each part newest
+    /// first by modified time and equal times by path, up to `TASK_LISTS`.
+    fn board(&self, header: &str) -> Page {
+        let mut lists: Vec<(bool, i64, &str, &Tasks)> = self
+            .tasks
+            .iter()
+            .map(|(path, tasks)| {
+                let doing = tasks.shown.iter().any(|(doing, _)| *doing);
+                let modified = self.modified.get(path).copied().unwrap_or_default();
+                (doing, modified, path.as_str(), tasks)
+            })
+            .collect();
+        let shown = lists.len().min(indexes::TASK_LISTS);
+        let order = |a: &(bool, i64, &str, &Tasks), b: &(bool, i64, &str, &Tasks)| {
+            b.0.cmp(&a.0).then(b.1.cmp(&a.1)).then(a.2.cmp(b.2))
+        };
+        if shown < lists.len() {
+            lists.select_nth_unstable_by(shown, order);
+            lists.truncate(shown);
+        }
+        lists.sort_unstable_by(order);
+        let lists: Vec<indexes::TaskList> = lists
+            .into_iter()
+            .map(|(_, _, path, tasks)| indexes::TaskList {
+                title: self.title(path),
+                url: url(path),
+                tasks,
+            })
+            .collect();
+        indexes::tasks(header, &lists, self.tasks.len() - shown)
     }
 
     /// Takes the dirty tags, with every tag above each, since a tag's page lists the notes
@@ -1619,6 +1663,7 @@ impl Site {
                 self.links.remove(path.as_str());
             }
             self.retag(path, Vec::new());
+            self.tasks.remove(path);
             self.index.remove(path);
         }
         for path in added {
@@ -1676,6 +1721,11 @@ impl Site {
                     self.relink(&note, links, &mut done.foot);
                 }
                 self.retag(path, body.tags.into_iter().collect());
+                if body.tasks.open > 0 {
+                    self.tasks.insert(path.to_string(), body.tasks);
+                } else {
+                    self.tasks.remove(path);
+                }
                 done.rendered.insert(path.to_string());
                 done.hold(path, body.html);
             }

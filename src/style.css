@@ -110,6 +110,20 @@ th { background: var(--raise); }
 /* A line-through stops at an inline block, so a list under a cancelled task keeps its own look. */
 [data-task="cancelled"] > :is(ul, ol) { display: inline-block; width: 100%; color: var(--fg); }
 
+/* The board lists each task list's tasks in line order. A wide screen sets its doing tasks beside its todo tasks. */
+.tasks h2 { font-size: 1.1rem; margin: 1.2em 0 0.3em; }
+.tasks ul { margin: 0; padding: 0; }
+.tasks [data-task] { margin: 0; }
+.tasks .meta { margin: 0.2em 0 0; }
+@media (min-width: 40rem) {
+  main:has(> .tasks) { max-width: 64rem; }
+  .tasks ul { display: grid; grid-template-columns: 1fr 1fr; grid-auto-flow: dense; gap: 0 2rem; }
+  .tasks [data-task="todo"] { grid-column: 1; }
+  .tasks [data-task="doing"] { grid-column: 2; }
+  .tasks:first-of-type ul::before { content: "Todo"; grid-area: 1 / 1; color: var(--dim); font-size: 0.85rem; }
+  .tasks:first-of-type ul::after { content: "Doing"; grid-area: 1 / 2; color: var(--dim); font-size: 0.85rem; }
+}
+
 .properties {
   display: grid; grid-template-columns: fit-content(40%) minmax(0, 1fr); gap: 0.15rem 1rem; margin: 0 0 1rem;
   padding: 0.5rem 0.75rem; background: var(--raise); border-radius: 6px; font-size: 0.9rem;

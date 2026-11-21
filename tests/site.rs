@@ -2408,6 +2408,8 @@ fn a_nav_change_rewrites_every_page_with_the_new_header() {
 
 const RECENT: &str = "pages/.tachylite/recent.html";
 
+const TASKS: &str = "pages/.tachylite/tasks.html";
+
 /// A page's header, as written.
 fn header_of(out: &Out, path: &str) -> String {
     let html = page_text(out, path);
@@ -2427,13 +2429,14 @@ fn a_tab_page_marks_its_own_tab_and_no_other_page_marks_any() {
     fold(&mut out, &site.apply(vec![sync_all(&mem)], &mut mem), &mem);
 
     let plain = "<header><a href=\"/\">Home</a><a href=\"/.tachylite/today\">Today</a>\
-                 <a href=\"/.tachylite/recent\">Recent</a>\
+                 <a href=\"/.tachylite/recent\">Recent</a><a href=\"/.tachylite/tasks\">Tasks</a>\
                  <button type=\"button\" class=\"find\" title=\"Find a note (Ctrl-K)\">Find</button>\
                  <nav class=\"pins\"><a href=\"/a\">a</a></nav>";
     let tabs = [
         (HOME, "/"),
         (TODAY, "/.tachylite/today"),
         (RECENT, "/.tachylite/recent"),
+        (TASKS, "/.tachylite/tasks"),
     ];
     for (page, url) in tabs {
         let link = format!("<a href=\"{url}\">");
@@ -2470,6 +2473,7 @@ fn with_no_daily_settings_the_tab_bar_has_no_today() {
     assert_eq!(
         header_of(&out, "pages/a.html"),
         "<header><a href=\"/\">Home</a><a href=\"/.tachylite/recent\">Recent</a>\
+         <a href=\"/.tachylite/tasks\">Tasks</a>\
          <button type=\"button\" class=\"find\" title=\"Find a note (Ctrl-K)\">Find</button>"
     );
     assert!(header_of(&out, HOME).contains("<a href=\"/\" aria-current=\"page\">Home</a>"));
