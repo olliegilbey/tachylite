@@ -412,7 +412,7 @@ test.describe("a swipe", () => {
       }).observe({ type: "element" });
     });
     await page.goto(base + "/");
-    await synced(page, "/", TODAY, RECENT, latest);
+    await synced(page, "/", TODAY, RECENT, TASKS, latest);
     await live(page, "/");
     // `queue` is the chain of jobs in `src/sw.js`. Once it settles, the first sync is over.
     await page.context().serviceWorkers()[0].evaluate("queue");
@@ -421,13 +421,15 @@ test.describe("a swipe", () => {
     const round = [
       [left, "Today", latest],
       [left, "Recent", RECENT],
+      [left, "Tasks", TASKS],
+      [right, "Recent", RECENT],
       [right, "Today", latest],
       [right, "Home", "/"],
     ] as const;
     for (let i = 0; i < 12; i++) {
       // A reader rests on a tab before the next swipe: its stream is open and the page is idle.
       await rested(page);
-      const [gesture, tab, stream] = round[i % 4];
+      const [gesture, tab, stream] = round[i % round.length];
       await gesture(page);
       await page.waitForFunction((n) => (window as any).gaps.length === n, i + 1);
       await shows(page, tab);

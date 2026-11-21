@@ -350,6 +350,9 @@ pub struct Site {
     tags: HashMap<String, Vec<String>>,
     /// The tasks of each winning note with an open task, as the board shows them.
     tasks: HashMap<String, Tasks>,
+    /// Whether the board may have changed since it was built: a note with an open task was
+    /// rendered or removed, or the header changed.
+    board_due: bool,
     /// The winning notes that carry each tag key.
     tagged: BTreeMap<String, BTreeSet<String>>,
     /// The tag keys whose pages may have changed since the last apply.
@@ -540,10 +543,7 @@ fn render_all<'p>(
         // Copied on this thread, so a worker's heap holds no page once its batch is done.
         .map(|(path, body)| {
             let html = body.html.as_str().to_owned();
-            let mut tasks = body.tasks.clone();
-            for (_, line) in &mut tasks.shown {
-                *line = line.as_str().to_owned();
-            }
+            let tasks = body.tasks.clone();
             (
                 path,
                 Body {
@@ -625,6 +625,7 @@ impl Site {
             self.header = header;
             self.tabs = [Tab::Home, Tab::Today, Tab::Recent, Tab::Tasks]
                 .map(|tab| indexes::header(today, &pins, Some(tab)));
+            self.board_due = true;
             // Tag pages derive only where marked; every one holds the header.
             self.dirty_tags.extend(self.tagged.keys().cloned());
         }
@@ -1210,13 +1211,18 @@ impl Site {
                 let page = indexes::today(today, &days);
                 built.push((TODAY.into(), page.version, page.html));
             }
-            let page = self.board(tasks_tab);
-            built.push((TASKS.into(), page.version, page.html));
+            if self.board_due || !self.generated.contains_key(TASKS) {
+                let page = self.board(tasks_tab);
+                built.push((TASKS.into(), page.version, page.html));
+            } else {
+                kept.push(TASKS.into());
+            }
             let json = json.finish();
             built.push((NOTES_JSON.into(), crate::render::version(&json), json));
         }
 
         self.scoped = inputs;
+        self.board_due = false;
         let fresh: HashSet<String> = built
             .iter()
             .map(|(key, ..)| key.clone())
@@ -1663,7 +1669,7 @@ impl Site {
                 self.links.remove(path.as_str());
             }
             self.retag(path, Vec::new());
-            self.tasks.remove(path);
+            self.board_due |= self.tasks.remove(path).is_some();
             self.index.remove(path);
         }
         for path in added {
@@ -1721,10 +1727,12 @@ impl Site {
                     self.relink(&note, links, &mut done.foot);
                 }
                 self.retag(path, body.tags.into_iter().collect());
+                // A render may move a task list in the board's order, by its modified time.
                 if body.tasks.open > 0 {
+                    self.board_due = true;
                     self.tasks.insert(path.to_string(), body.tasks);
                 } else {
-                    self.tasks.remove(path);
+                    self.board_due |= self.tasks.remove(path).is_some();
                 }
                 done.rendered.insert(path.to_string());
                 done.hold(path, body.html);
