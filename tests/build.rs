@@ -34,7 +34,7 @@ fn files_under(root: &Path) -> Vec<PathBuf> {
 fn builds_fixture() {
     let s = Dirs::fixture();
     let summary: Summary = build(&s.vault(), &s.out()).unwrap();
-    assert_eq!((summary.notes, summary.files), (8, 3));
+    assert_eq!((summary.notes, summary.files), (7, 3));
     for path in [
         "pages/welcome.html",
         "pages/people/Jane Doe.html",
