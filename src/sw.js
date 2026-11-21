@@ -179,8 +179,9 @@ async function sync() {
         const version = html
           ? (/<meta name="tachylite-version" content="([0-9a-f]+)">/.exec(text)?.[1] ?? "")
           : want[url];
-        await cache.put(url, r);
+        // Before the write, as a push does: a refresh that ends during it must keep off too.
         pushed.set(url, version);
+        await cache.put(url, r);
         have[url] = version;
         if (!cached.has(MERMAID) && text.includes(DIAGRAM)) {
           have[MERMAID] = "";
