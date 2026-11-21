@@ -360,6 +360,7 @@ fn property(body: &mut Body, from: &str, index: &Index, key: &str, value: &str) 
         if empty(target) {
             return escape(value);
         }
+        let label = if label.is_empty() { target } else { label };
         let (path, heading) = split(target);
         let open = open(body, from, index, path.trim(), heading);
         return format!("{open}{}</a>", escape(label));
@@ -515,6 +516,11 @@ fn render(
         }
         let link = match &node.data().value {
             NodeValue::WikiLink(link) => {
+                // `[[b|]]` has no label, and a link with no text cannot be followed.
+                if node.first_child().is_none() {
+                    let text = NodeValue::Text(Cow::Owned(link.url.clone()));
+                    node.append(arena.alloc(AstNode::from(text)));
+                }
                 let (path, heading) = split(&link.url);
                 Some((path.trim().to_string(), heading.map(str::to_string)))
             }
