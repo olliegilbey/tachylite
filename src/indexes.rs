@@ -398,13 +398,46 @@ pub fn shard_key(shard: u32) -> String {
     format!(".tachylite/search/{shard:03x}.txt")
 }
 
-/// Tags that sit inside a word or a sentence. One leaves no gap in the text, so
+/// Whether a tag sits inside a word or a sentence. One leaves no gap in the text, so
 /// `<b>bold</b>ly` reads `boldly`. Any other tag leaves a space.
-const INLINE: [&str; 28] = [
-    "a", "abbr", "b", "bdi", "bdo", "cite", "code", "del", "dfn", "em", "i", "ins", "kbd", "mark",
-    "q", "s", "samp", "small", "span", "strike", "strong", "sub", "sup", "time", "tt", "u", "var",
-    "wbr",
-];
+fn inline(name: &str) -> bool {
+    let mut lower = [0; 6];
+    let Some(lower) = lower.get_mut(..name.len()) else {
+        return false;
+    };
+    lower.copy_from_slice(name.as_bytes());
+    lower.make_ascii_lowercase();
+    matches!(
+        &*lower,
+        b"a" | b"abbr"
+            | b"b"
+            | b"bdi"
+            | b"bdo"
+            | b"cite"
+            | b"code"
+            | b"del"
+            | b"dfn"
+            | b"em"
+            | b"i"
+            | b"ins"
+            | b"kbd"
+            | b"mark"
+            | b"q"
+            | b"s"
+            | b"samp"
+            | b"small"
+            | b"span"
+            | b"strike"
+            | b"strong"
+            | b"sub"
+            | b"sup"
+            | b"time"
+            | b"tt"
+            | b"u"
+            | b"var"
+            | b"wbr"
+    )
+}
 
 /// Appends a note's search row: its URL, its modified time and the text of `body`, with a
 /// tab between and a newline after. The text is the HTML with tags dropped, character
@@ -416,22 +449,31 @@ pub fn search_row(out: &mut String, url: &str, modified: i64, body: &str) {
     out.push('\t');
     let start = out.len();
     let bytes = body.as_bytes();
+    // A byte of text: not whitespace, a control, or the start of a tag or a reference.
+    let text = |b: u8| b > b' ' && !matches!(b, b'<' | b'&' | 0x7f);
     let mut gap = false;
     let mut at = 0;
     while at < bytes.len() {
-        let special = |b: &u8| *b <= b' ' || matches!(*b, b'<' | b'&' | 0x7f);
-        let run = bytes[at..]
-            .iter()
-            .position(special)
-            .unwrap_or(bytes.len() - at);
-        if run > 0 {
+        // A run of words with one space between each is copied whole.
+        let mut end = at;
+        while end < bytes.len() {
+            if text(bytes[end]) {
+                end += 1;
+            } else if end > at && bytes[end] == b' ' && bytes.get(end + 1).is_some_and(|b| text(*b))
+            {
+                end += 2;
+            } else {
+                break;
+            }
+        }
+        if end > at {
             if gap && out.len() > start {
                 out.push(' ');
             }
             gap = false;
             // A run ends at an ASCII byte, so it ends on a character boundary.
-            out.push_str(&body[at..at + run]);
-            at += run;
+            out.push_str(&body[at..end]);
+            at = end;
             continue;
         }
         let (decoded, len) = match bytes[at] {
@@ -466,15 +508,20 @@ fn element(html: &str) -> (usize, bool) {
         .bytes()
         .position(|b| !b.is_ascii_alphanumeric())
         .unwrap_or(name.len())];
-    let inline = INLINE.iter().any(|t| t.eq_ignore_ascii_case(name));
-    let mut quote = None;
-    for (at, byte) in html.bytes().enumerate().skip(1) {
-        match (quote, byte) {
-            (None, b'>') => return (at + 1, inline),
-            (None, b'"' | b'\'') => quote = Some(byte),
-            (Some(q), _) if q == byte => quote = None,
+    let inline = inline(name);
+    let bytes = html.as_bytes();
+    let mut at = 1;
+    while let Some(byte) = bytes.get(at) {
+        match byte {
+            b'>' => return (at + 1, inline),
+            // A quoted value runs to its closing quote, or to the end.
+            b'"' | b'\'' => {
+                let close = bytes[at + 1..].iter().position(|b| b == byte);
+                at += close.map_or(bytes.len(), |close| close + 1);
+            }
             _ => {}
         }
+        at += 1;
     }
     (html.len(), inline)
 }
@@ -503,4 +550,41 @@ fn reference(html: &str) -> (Option<char>, usize) {
         Some((Some(c), end + 1))
     });
     decoded.unwrap_or((Some('&'), 1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::search_row;
+
+    fn text(body: &str) -> String {
+        let mut row = String::new();
+        search_row(&mut row, "/u", 1, body);
+        let text = row
+            .strip_prefix("/u\t1\t")
+            .and_then(|r| r.strip_suffix('\n'));
+        text.expect("a row is url, time, text and a newline")
+            .to_string()
+    }
+
+    #[test]
+    fn a_search_row_keeps_words_and_drops_markup() {
+        for (body, want) in [
+            ("  one  two \n three ", "one two three"),
+            ("<p>one</p>\n<p>two</p>", "one two"),
+            ("<B>bold</B>ly <Em>so</Em>", "boldly so"),
+            ("one <b>two</b> three", "one two three"),
+            ("one<br>two<span>three</span>", "one twothree"),
+            ("<a title=\"a > b\" href='c>d'>link</a>", "link"),
+            ("<div title=\"it's > x\">in</div> out", "in out"),
+            ("cut <a title=\"no end>text", "cut"),
+            (
+                "a &amp; b&nbsp;c &#x41;&#66; &unknown; &",
+                "a & b c AB &unknown; &",
+            ),
+            ("é one\u{7f}two", "é one two"),
+            ("", ""),
+        ] {
+            assert_eq!(text(body), want, "{body:?}");
+        }
+    }
 }

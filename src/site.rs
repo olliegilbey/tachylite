@@ -210,6 +210,9 @@ const FRESH_MAX: usize = 1024 * 1024;
 /// faster past 6 threads, and a thread that shares a core billed CPU time for no speed.
 const RENDER_THREADS: usize = 8;
 
+/// The notes a full sync renders at a time, and the pages it reads back at a time.
+const RENDER_BATCH: usize = 256;
+
 /// The site's name when config names none.
 const SITE: &str = "Tachylite";
 
@@ -484,48 +487,56 @@ fn winners(entries: &BTreeMap<String, Kind>) -> (BTreeSet<String>, Vec<(String, 
     (won, lost)
 }
 
-/// Renders each note's body, on as many threads as the batch is worth. A save of a few notes
-/// stays on this thread, so the push path pays no spawn.
+/// The threads `count` items are worth, at `each` to a thread. A few are worth one, so a
+/// save pays no spawn, and no look at the cores.
+fn threads(count: usize, each: usize) -> usize {
+    if count <= each {
+        return 1;
+    }
+    let cores = std::thread::available_parallelism().map_or(1, usize::from);
+    cores.min(RENDER_THREADS).min(count.div_ceil(each))
+}
+
+/// Maps `items` in order on `threads` threads. One thread is this one.
+fn spread<T: Sync, R: Send>(items: &[T], threads: usize, work: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    if threads <= 1 {
+        return items.iter().map(work).collect();
+    }
+    let work = &work;
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = items
+            .chunks(items.len().div_ceil(threads))
+            .map(|part| scope.spawn(move || part.iter().map(work).collect::<Vec<R>>()))
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
+            .collect()
+    })
+}
+
+/// Renders each note's body.
 fn render_all<'p>(
     notes: &[(&'p str, Vec<u8>)],
     index: &Index,
     sources: &Sources,
 ) -> Vec<(&'p str, Body)> {
-    let render = |notes: &[(&'p str, Vec<u8>)]| -> Vec<(&'p str, Body)> {
-        notes
-            .iter()
-            .map(|(path, bytes)| {
-                (
-                    *path,
-                    render_body(path, &String::from_utf8_lossy(bytes), index, sources),
-                )
-            })
-            .collect()
+    let render = |(path, bytes): &(&'p str, Vec<u8>)| {
+        let text = String::from_utf8_lossy(bytes);
+        (*path, render_body(path, &text, index, sources))
     };
-    if notes.len() <= 16 {
-        return render(notes);
-    }
-    let cores = std::thread::available_parallelism().map_or(1, usize::from);
-    let threads = cores.min(RENDER_THREADS).min(notes.len().div_ceil(16));
+    let threads = threads(notes.len(), 16);
     if threads <= 1 {
-        return render(notes);
+        return notes.iter().map(render).collect();
     }
-    let size = notes.len().div_ceil(threads);
-    std::thread::scope(|scope| {
-        let handles: Vec<_> = notes
-            .chunks(size)
-            .map(|part| scope.spawn(move || render(part)))
-            .collect();
-        handles
-            .into_iter()
-            .flat_map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
-            // Copied on this thread, so a worker's heap holds no page once its batch is done.
-            .map(|(path, body)| {
-                let html = body.html.as_str().to_owned();
-                (path, Body { html, ..body })
-            })
-            .collect()
-    })
+    spread(notes, threads, render)
+        .into_iter()
+        // Copied on this thread, so a worker's heap holds no page once its batch is done.
+        .map(|(path, body)| {
+            let html = body.html.as_str().to_owned();
+            (path, Body { html, ..body })
+        })
+        .collect()
 }
 
 impl Site {
@@ -786,17 +797,19 @@ impl Site {
         }
         self.lost = lost;
 
-        let (mut own, deps, foot) = self.link(&won, &mut fresh);
+        let added: Vec<String> = won.difference(&self.winners).cloned().collect();
+        let removed: Vec<String> = self.winners.difference(&won).cloned().collect();
+        let (mut own, deps, foot) = self.link(&won, &added, &removed, &mut fresh);
 
         // A new note always pushes, so its key stays live and gets no gone. No other
         // winner can hold a key a removed winner held.
-        let live: HashSet<&str> = won
+        let live: HashSet<&str> = added
             .iter()
-            .filter(|p| !self.winners.contains(*p) && self.entries.get(*p) == Some(&Kind::Note))
+            .filter(|p| self.entries.get(*p) == Some(&Kind::Note))
             .map(|p| note_key(p))
             .collect();
         let mut gone = Vec::new();
-        for path in self.winners.difference(&won) {
+        for path in &removed {
             // Its kind by extension: the path may be excluded now.
             let kind = classify(path, &Exclude::default()).unwrap_or(Kind::Asset);
             let (_, out) = claim(path, kind);
@@ -819,8 +832,8 @@ impl Site {
 
         // Html pages and assets go first, so no pushed page links to a file not yet written.
         // Only a new or touched one is copied, so a save walks no other path.
-        let copies: BTreeSet<&String> = won
-            .difference(&self.winners)
+        let copies: BTreeSet<&String> = added
+            .iter()
             .chain(touched.iter().filter(|p| won.contains(*p)))
             .collect();
         for path in copies {
@@ -1249,29 +1262,58 @@ impl Site {
                 paths.push(path.clone());
             }
         }
+        let notes: Vec<(u32, Vec<String>)> = notes.into_iter().collect();
         let mut changed = false;
-        for (shard, paths) in notes {
-            let mut rows = String::new();
-            for path in &paths {
-                if let Some((page, (start, len))) = self.written(path, sink) {
-                    let modified = self.modified.get(path).copied().unwrap_or_default();
-                    indexes::search_row(&mut rows, &url(path), modified, &page[start..start + len]);
+        // A batch holds its pages while their rows are made: a render batch of them, so a
+        // full build never holds them all.
+        let mut rest = notes.as_slice();
+        while !rest.is_empty() {
+            let mut held = 0;
+            let full = |(_, paths): &(u32, Vec<String>)| {
+                held += paths.len();
+                held >= RENDER_BATCH
+            };
+            let (batch, later) =
+                rest.split_at(rest.iter().position(full).map_or(rest.len(), |i| i + 1));
+            rest = later;
+            let pages: Vec<_> = batch
+                .iter()
+                .map(|(_, paths)| {
+                    let mut pages = Vec::new();
+                    for path in paths {
+                        if let Some(page) = self.written(path, sink) {
+                            pages.push((path, page));
+                        }
+                    }
+                    pages
+                })
+                .collect();
+            let built = spread(&pages, threads(pages.len(), 4), |pages| {
+                let mut rows = String::new();
+                for (path, (page, (start, len))) in pages {
+                    let modified = self.modified.get(*path).copied().unwrap_or_default();
+                    indexes::search_row(
+                        &mut rows,
+                        &url(path),
+                        modified,
+                        &page[*start..start + len],
+                    );
                 }
-            }
-            let key = indexes::shard_key(shard);
-            if rows.is_empty() {
-                if self.generated.remove(&key).is_some() {
+                let mut hasher = DefaultHasher::new();
+                rows.hash(&mut hasher);
+                // Short, since the manifest lists hundreds of them: 32 bits tell two
+                // contents of one shard apart.
+                (rows, format!("{:08x}", hasher.finish() & 0xffff_ffff))
+            });
+            for ((shard, _), (rows, version)) in batch.iter().zip(built) {
+                let key = indexes::shard_key(*shard);
+                if !rows.is_empty() {
+                    changed |= self.emit(key, version, rows, sink);
+                } else if self.generated.remove(&key).is_some() {
                     sink.delete(generated_out(&key));
                     changed = true;
                 }
-                continue;
             }
-            let mut hasher = DefaultHasher::new();
-            rows.hash(&mut hasher);
-            // Short, since the manifest lists hundreds of them: 32 bits tell two
-            // contents of one shard apart.
-            let version = format!("{:08x}", hasher.finish() & 0xffff_ffff);
-            changed |= self.emit(key, version, rows, sink);
         }
         changed
     }
@@ -1428,35 +1470,22 @@ impl Site {
     fn manifest(&self, won: &BTreeSet<String>) -> String {
         let mut json = String::with_capacity(16 + self.versions.len() * 64);
         json.push_str("{\"pages\":{");
-        for (i, (path, version)) in self.versions.iter().enumerate() {
-            if i > 0 {
+        let start = json.len();
+        let mut page = |url: &str, version: &str| {
+            if json.len() > start {
                 json.push(',');
             }
             json.push('"');
-            json.push_str(&url(path));
+            json.push_str(url);
             json.push_str("\":\"");
             json.push_str(version);
             json.push('"');
+        };
+        for (path, version) in &self.versions {
+            page(&url(path), version);
         }
-        for (key, version) in &self.generated {
-            if json.len() > "{\"pages\":{".len() {
-                json.push(',');
-            }
-            json.push_str("\"/");
-            json.push_str(&encode(key));
-            json.push_str("\":\"");
-            json.push_str(version);
-            json.push('"');
-        }
-        for (path, version) in &self.html {
-            if json.len() > "{\"pages\":{".len() {
-                json.push(',');
-            }
-            json.push_str("\"/");
-            json.push_str(&encode(path));
-            json.push_str("\":\"");
-            json.push_str(version);
-            json.push('"');
+        for (key, version) in self.generated.iter().chain(&self.html) {
+            page(&format!("/{}", encode(key)), version);
         }
         json.push_str("},\"files\":[");
         let files = won
@@ -1481,15 +1510,14 @@ impl Site {
     fn link(
         &mut self,
         won: &BTreeSet<String>,
+        added: &[String],
+        removed: &[String],
         fresh: &mut HashMap<String, Fresh>,
     ) -> (Vec<String>, BTreeSet<String>, BTreeSet<Arc<str>>) {
-        let removed: Vec<String> = self.winners.difference(won).cloned().collect();
-        let added: Vec<String> = won.difference(&self.winners).cloned().collect();
-
         // A link can resolve differently once a path or an alias with its key appears or
         // vanishes. Its note links to a path in that key's buckets now, or it is unresolved.
-        let mut keys: HashSet<String> = removed.iter().chain(&added).map(|p| key(p)).collect();
-        for path in &removed {
+        let mut keys: HashSet<String> = removed.iter().chain(added).map(|p| key(p)).collect();
+        for path in removed {
             keys.extend(self.index.aliases(path).iter().map(|a| key(a)));
             self.titles.remove(path);
         }
@@ -1577,7 +1605,7 @@ impl Site {
         let embedders: Vec<String> = own
             .iter()
             .chain(&deps)
-            .chain(&removed)
+            .chain(removed)
             .filter_map(|p| self.embedded_by.get(p.as_str()))
             .flatten()
             .map(|n| n.to_string())
@@ -1585,7 +1613,7 @@ impl Site {
         deps.extend(embedders);
         deps.retain(|p| won.contains(p) && !fresh.contains_key(p));
 
-        for path in &removed {
+        for path in removed {
             if let Some(note) = self.index.get(path) {
                 self.relink(&note, Links::default(), &mut foot);
                 self.links.remove(path.as_str());
@@ -1593,7 +1621,7 @@ impl Site {
             self.retag(path, Vec::new());
             self.index.remove(path);
         }
-        for path in &added {
+        for path in added {
             self.index.insert(path);
         }
         for (path, aliases) in aliased {
@@ -1617,7 +1645,7 @@ impl Site {
         broken: &mut Vec<Broken>,
     ) {
         // Batches keep a full sync from holding every source at once.
-        for batch in paths.chunks(256) {
+        for batch in paths.chunks(RENDER_BATCH) {
             // A dependent that cannot be read keeps its page; its own event follows.
             let notes: Vec<(&str, Vec<u8>)> = batch
                 .iter()

@@ -733,3 +733,21 @@ fn a_live_config_save_names_an_unmatched_pattern() {
         Some("exclude \"peple\" matched no published path; check it for a typo")
     );
 }
+
+#[test]
+fn a_search_shard_is_gzipped_at_any_size() {
+    let d = Dirs::fixture();
+    let long: String = (0..60_000).map(|i| format!("word{i} ")).collect();
+    fs::write(d.vault().join("long.md"), long).unwrap();
+    let server = Server::start(&d.vault(), &d.out());
+    let manifest = server.get("/.tachylite/manifest.json").text();
+    let shard = manifest
+        .split('"')
+        .filter(|url| url.starts_with("/.tachylite/search/"))
+        .find(|url| server.get(url).body.len() > 256 * 1024)
+        .expect("one shard holds the long note");
+    let r = get(server.addr, shard, &[("Accept-Encoding", "gzip")]);
+    assert_eq!(r.status, 200);
+    assert_eq!(r.header("content-encoding"), Some("gzip"));
+    assert!(r.body.len() < 256 * 1024, "{} bytes", r.body.len());
+}
