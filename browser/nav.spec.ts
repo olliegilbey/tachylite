@@ -215,7 +215,7 @@ async function daily(page: Page) {
     'daily = { folder = "days" }\n' +
       'pins = ["garden", "a.md|Aye", "garden/Rose.md", "garden/Fern care.md|Ferns", "days|Journal"]\n',
   );
-  // A note saved before its new folder's watch is held as mid-save, so each day comes alone.
+  // A note saved before its new folder's watch is held as mid-save, so days can come apart.
   for (const day of [iso(-3), iso(-1), iso(2)]) {
     await expect
       .poll(async () => (await page.request.get(base + "/.tachylite/today")).text())
