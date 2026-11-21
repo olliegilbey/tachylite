@@ -75,7 +75,7 @@ self.addEventListener("fetch", (e) => {
         const keep = (b) => pushed.get(url.pathname) === before && cache.put(url.pathname, copy(b, r));
         if (r.status === 200) e.waitUntil(r.clone().blob().then(keep).catch(() => {}));
         // The server binds only after its first build, so a 404 means the file is gone. The
-        // next sync checks the rest, since the manifest can still list it.
+        // manifest can still list it, so the next sync makes a full pass.
         if (r.status === 404) {
           done = null;
           e.waitUntil(cache.delete(url.pathname));
@@ -127,7 +127,7 @@ async function store({ url, version, html }) {
 }
 
 // The manifest's ETag when the last sync left every listed page at its listed version, and
-// no push or 404 has changed the cache since. A worker restart forgets it, so the next sync makes one full pass.
+// no push or 404 has changed the cache since. A worker restart forgets it.
 let done = null;
 
 // The stored manifest maps each listed page to the version its cached copy carries, or ""
@@ -140,7 +140,7 @@ async function sync() {
   const response = await get(MANIFEST).catch(() => null);
   if (!response?.ok) return;
   const tag = response.headers.get("etag");
-  // An evicted cache lost the stored manifest too, so it syncs again.
+  // A cache the browser evicted lost its stored manifest too.
   if (tag && tag === done && (await cache.match(MANIFEST))) return;
   done = null;
   const { pages: want, files = [] } = await response.json();
