@@ -59,8 +59,9 @@ self.addEventListener("activate", (e) =>
 // The version of each page a push or a sync stored, so a refresh begun before it keeps off it.
 const pushed = new Map();
 
-// Stale-while-revalidate: the cached copy at once, and a fresh one stored behind it. The
-// switcher asks for its list with `no-cache` while connected, and gets the fresh one first.
+// Stale-while-revalidate: the cached copy at once, and a fresh one stored behind it. A page
+// asks for a `FRESH` URL again with `no-cache` when it needs the network's copy, and gets it
+// first, so a cached copy of one is not refreshed behind.
 self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== "GET" || url.origin !== location.origin || PASS.has(url.pathname)) return;
@@ -69,7 +70,7 @@ self.addEventListener("fetch", (e) => {
       const cache = await caches.open(CACHE);
       const hit = await cache.match(url.pathname);
       const before = pushed.get(url.pathname);
-      const fresh = fetch(e.request).then((r) => {
+      const fresh = () => fetch(e.request).then((r) => {
         // The body is read before the check, so a push during a slow download still wins.
         const keep = (b) => pushed.get(url.pathname) === before && cache.put(url.pathname, copy(b, r));
         if (r.status === 200) e.waitUntil(r.clone().blob().then(keep).catch(() => {}));
@@ -81,11 +82,12 @@ self.addEventListener("fetch", (e) => {
         }
         return r;
       });
-      if (hit && !(FRESH.has(url.pathname) && e.request.cache === "no-cache")) {
-        e.waitUntil(fresh.catch(() => {}));
+      if (hit && !FRESH.has(url.pathname)) {
+        e.waitUntil(fresh().catch(() => {}));
         return hit;
       }
-      return fresh.then(
+      if (hit && e.request.cache !== "no-cache") return hit;
+      return fresh().then(
         (r) => (r.ok || !hit ? r : hit),
         () => hit ?? new Response("Offline, and this page is not cached yet.", { status: 503 }),
       );

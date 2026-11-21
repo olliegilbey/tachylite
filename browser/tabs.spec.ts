@@ -183,6 +183,29 @@ test.describe("the Today tab", () => {
     await live(page, `/days/${iso(0)}`);
   });
 
+  test("fetches its page once when it opens with a cached copy", async ({ page, context }) => {
+    await page.goto(base + "/");
+    await synced(page, TODAY, latest);
+    await context.serviceWorkers()[0].evaluate("queue");
+    // Counts the worker's own fetches of the page. A refresh starts before the cached copy is answered.
+    const worker = context.serviceWorkers()[0];
+    await worker.evaluate((today) => {
+      const native = self.fetch;
+      (self as any).fetched = 0;
+      self.fetch = (request, init) => {
+        if (String((request as Request).url ?? request).endsWith(today)) (self as any).fetched++;
+        return native(request, init);
+      };
+    }, TODAY);
+    // The page asks twice: the navigation, answered from the cache, then the network's list.
+    let asked = 0;
+    page.on("requestfinished", (r) => r.url().endsWith(TODAY) && asked++);
+    await page.goto(base + TODAY);
+    await shows(page, "Today");
+    await expect.poll(() => asked).toBe(2);
+    expect(await worker.evaluate(() => (self as any).fetched)).toBe(1);
+  });
+
   test("moves to a new day's note when the browser tab is visible again", async ({ page }) => {
     await page.goto(base + TODAY);
     await shows(page, "Today");
