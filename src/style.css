@@ -115,7 +115,8 @@ th { background: var(--raise); }
 .tasks { content-visibility: auto; contain-intrinsic-size: auto 12rem; }
 .tasks h2 { font-size: 1.1rem; margin: 1.2em 0 0.3em; }
 .tasks ul { margin: 0; padding: 0; }
-.tasks [data-task] { margin: 0; }
+.tasks [data-task] { margin: 0; padding-left: 1.45em; }
+.tasks [data-task] > input { margin-left: -1.45em; }
 .tasks .meta { margin: 0.2em 0 0; }
 @media (min-width: 40rem) {
   main:has(> .tasks) { max-width: 64rem; }
