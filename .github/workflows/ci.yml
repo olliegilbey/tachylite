@@ -3,6 +3,7 @@ name: ci
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
 
 permissions:
@@ -49,3 +50,30 @@ jobs:
         with:
           key: ${{ matrix.target }}
       - run: make size TARGET=${{ matrix.target }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: tachylite-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/tachylite
+          if-no-files-found: error
+          retention-days: 3
+
+  # A pushed v* tag publishes the two binaries, once the gate and both builds pass.
+  publish:
+    if: github.ref_type == 'tag'
+    needs: [check, release]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - name: The tag matches the crate's version
+        run: grep -Fqx "version = \"${GITHUB_REF_NAME#v}\"" Cargo.toml
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: tachylite-*-unknown-linux-gnu
+          path: bin
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for arch in x86_64 aarch64; do mv bin/tachylite-$arch-unknown-linux-gnu/tachylite tachylite-$arch-linux; done
+          gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes tachylite-*-linux

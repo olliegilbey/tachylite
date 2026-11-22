@@ -36,14 +36,15 @@ Tachylite renders the vault into `<out>`, watches it, and serves the site on `ht
 
 ## Run it on a server
 
-This example keeps Tachylite running on a Linux box, and reaches it from a phone over a tailnet. Build the static binary and put it on your path:
+This example keeps Tachylite running on a Linux box, and reaches it from a phone over a tailnet. Download the static binary for your machine and put it on your path:
 
 ```sh
-make release
-install -m 755 target/x86_64-unknown-linux-gnu/release/tachylite ~/.local/bin/
+curl -fsSLo tachylite "https://github.com/olliegilbey/tachylite/releases/latest/download/tachylite-$(uname -m)-linux"
+install -m 755 tachylite ~/.local/bin/
 ```
 
-On an ARM board such as a Raspberry Pi, run `make release TARGET=aarch64-unknown-linux-gnu`, and install from `target/aarch64-unknown-linux-gnu/release/`.
+- Each [release](https://github.com/olliegilbey/tachylite/releases) carries two binaries: `x86_64`, and `aarch64` for a 64-bit ARM board such as a Raspberry Pi. Neither needs anything installed.
+- To build it yourself, run `make release` in a clone, and install from `target/x86_64-unknown-linux-gnu/release/`. On an ARM board, run `make release TARGET=aarch64-unknown-linux-gnu`.
 
 Run it as a systemd user service. Save this as `~/.config/systemd/user/tachylite.service`, with your own vault and output paths:
 
