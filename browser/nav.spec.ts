@@ -100,7 +100,7 @@ test("the home page opens offline", async ({ page }) => {
 test("the tabs and a folder index work, and a tab page marks its own tab", async ({ page }) => {
   const current = page.locator('header a[aria-current="page"]');
   await page.goto(base + "/garden/Rose");
-  await expect(page.locator("header > a")).toHaveText(["Home", "Recent"]);
+  await expect(page.locator("header > a")).toHaveText(["Home", "Recent", "Tasks"]);
   await expect(current).toHaveCount(0);
   await page.locator("nav.crumbs a", { hasText: "garden" }).click();
   await expect(page).toHaveURL(base + "/.tachylite/folders/garden");
@@ -110,6 +110,9 @@ test("the tabs and a folder index work, and a tab page marks its own tab", async
   await expect(page).toHaveURL(base + "/.tachylite/recent");
   await expect(page.locator("main ul.recent li")).toHaveCount(3);
   await expect(current).toHaveText("Recent");
+  await page.locator("header > a", { hasText: "Tasks" }).click();
+  await expect(page).toHaveURL(base + "/.tachylite/tasks");
+  await expect(current).toHaveText("Tasks");
   await page.locator("header > a", { hasText: "Home" }).click();
   await expect(page).toHaveURL(base + "/");
   await expect(page.locator("main ul.folders")).toContainText("garden");
@@ -258,7 +261,7 @@ test("five pins keep the header on its lines and the page its width", async ({ p
   const tabs = await page.locator("header > a").evaluateAll((els) =>
     els.map((e) => { const r = e.getBoundingClientRect(); return Math.min(r.width, r.height); }),
   );
-  expect(tabs.length).toBe(3);
+  expect(tabs.length).toBe(4);
   for (const side of tabs) expect(side).toBeGreaterThanOrEqual(48);
   const find = await page.locator("header button.find").boundingBox();
   expect(find!.height).toBeGreaterThanOrEqual(44);

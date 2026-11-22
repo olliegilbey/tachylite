@@ -46,6 +46,11 @@ fn dated(name: &str) -> bool {
 
 pub const HOME_RECENT: usize = 5;
 pub const RECENT: usize = 50;
+/// The task lists the board shows. A board is read at a glance on a phone, and a client
+/// holds a parsed copy of it ahead of each tab switch.
+pub const TASK_LISTS: usize = 50;
+/// The open tasks the board shows for one task list, for the same reasons.
+pub const TASK_LINES: usize = 5;
 /// The newest daily notes that open the Recent page, and that the home page leaves out.
 pub const DAILY: usize = 3;
 /// The daily notes the Today page lists. Enough to reach back two months, and small.
@@ -68,10 +73,11 @@ pub enum Tab {
     Home,
     Today,
     Recent,
+    Tasks,
 }
 
 /// The header every page carries: the tab bar of Home, Today when there is a Today page,
-/// and Recent; then Find, and then the pins. A tab page marks its own tab as `current`. It
+/// Recent and Tasks; then Find, and then the pins. A tab page marks its own tab as `current`. It
 /// comes from config alone, so a save never changes it.
 pub fn header(today: bool, pins: &[Pin], current: Option<Tab>) -> String {
     let mut html = String::from("<header>");
@@ -79,6 +85,7 @@ pub fn header(today: bool, pins: &[Pin], current: Option<Tab>) -> String {
         (Tab::Home, "/", "Home"),
         (Tab::Today, "/.tachylite/today", "Today"),
         (Tab::Recent, "/.tachylite/recent", "Recent"),
+        (Tab::Tasks, "/.tachylite/tasks", "Tasks"),
     ] {
         if tab == Tab::Today && !today {
             continue;
@@ -316,6 +323,62 @@ pub fn today(header: &str, days: &[(&str, &str, String)]) -> Page {
         main.push_str("</ul>\n</div>\n");
     }
     shell(header, "Today", &main)
+}
+
+/// A task list as the board shows it.
+pub struct TaskList<'a> {
+    pub title: &'a str,
+    pub url: String,
+    pub tasks: &'a crate::render::Tasks,
+}
+
+/// `/.tachylite/tasks`: the task lists in board order, and how many more there are. Each
+/// shows its lines, a link to the note for the open tasks it leaves out, and its counts of
+/// done and cancelled tasks. The stylesheet sets each list's doing tasks beside its todo
+/// tasks on a wide screen. The Tasks tab names the page.
+pub fn tasks(header: &str, lists: &[TaskList], more: usize) -> Page {
+    let mut main = String::from("<h1 class=\"sr\">Tasks</h1>\n");
+    if lists.is_empty() {
+        main.push_str("<p>No open tasks.</p>\n");
+    }
+    for list in lists {
+        main.push_str(&format!(
+            "<section class=\"tasks\"><h2><a href=\"{}\">{}</a></h2>\n<ul>",
+            list.url,
+            escape(list.title)
+        ));
+        for (doing, line) in &list.tasks.shown {
+            let status = if *doing { "doing" } else { "todo" };
+            main.push_str(&format!(
+                "<li data-task=\"{status}\"><input type=\"checkbox\" disabled> {line}</li>"
+            ));
+        }
+        main.push_str("</ul>\n");
+        let mut counts = Vec::new();
+        let hidden = list.tasks.open - list.tasks.shown.len();
+        if hidden > 0 {
+            counts.push(format!("<a href=\"{}\">{hidden} more</a>", list.url));
+        }
+        for (n, name) in [
+            (list.tasks.done, "done"),
+            (list.tasks.cancelled, "cancelled"),
+        ] {
+            if n > 0 {
+                counts.push(format!("{n} {name}"));
+            }
+        }
+        if !counts.is_empty() {
+            main.push_str(&format!("<p class=\"meta\">{}</p>\n", counts.join(" · ")));
+        }
+        main.push_str("</section>\n");
+    }
+    if more > 0 {
+        let lists = if more == 1 { "task list" } else { "task lists" };
+        main.push_str(&format!(
+            "<p class=\"meta\">{more} more {lists} with open tasks not shown.</p>\n"
+        ));
+    }
+    shell(header, "Tasks", &main)
 }
 
 /// `/.tachylite/notes.json`: `[[title, url, path, alias…], …]`, for the switcher.

@@ -69,6 +69,21 @@ pub struct Body {
     pub missing: BTreeSet<Arc<str>>,
     /// The keys of the tags it links, from its own text and frontmatter, not its embeds.
     pub tags: BTreeSet<String>,
+    /// Its own tasks, not its embeds', as the board shows them.
+    pub tasks: Tasks,
+}
+
+/// A note's tasks as the board shows them: the lines it may show, and counts of the rest.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Tasks {
+    /// Each open task the board shows, in line order: whether it is doing, and its line's
+    /// HTML. Every doing task, then todo tasks from the top, up to `indexes::TASK_LINES`.
+    pub shown: Vec<(bool, String)>,
+    /// How many tasks are open: todo or doing.
+    pub open: usize,
+    pub doing: usize,
+    pub done: usize,
+    pub cancelled: usize,
 }
 
 /// The notes an embed may read, by path.
@@ -460,6 +475,7 @@ fn render(
     let mut callouts = Vec::new();
     let mut blanks = Vec::new();
     let mut boxes = Vec::new();
+    let mut tasks = Vec::new();
     // Set at the first image. Nodes come in document order, so none before it is in alt text.
     let mut alt = false;
     for node in root.descendants() {
@@ -470,7 +486,14 @@ fn render(
                 continue;
             }
             NodeValue::Item(_) => {
-                boxes.extend(checkbox(node).map(|symbol| (node, symbol)));
+                if let Some(symbol) = checkbox(node) {
+                    boxes.push((node, symbol));
+                    tasks.push(node);
+                }
+                continue;
+            }
+            NodeValue::TaskItem(_) => {
+                tasks.push(node);
                 continue;
             }
             NodeValue::Heading(heading) => {
@@ -658,6 +681,10 @@ fn render(
             format!("</h{level}>\n"),
         );
     }
+    // An embedded note's tasks are its own, not this note's.
+    if depth == 0 {
+        body.tasks = collect_tasks(from, &tasks, &options);
+    }
     let mut html = props;
     let mut plugins = Plugins::default();
     plugins
@@ -758,6 +785,75 @@ fn format_node<'a>(
         context.write_str("</li>\n")?;
     }
     Ok(ChildRendering::HTML)
+}
+
+/// The counts of `items`' tasks, and the lines of the open ones the board shows.
+fn collect_tasks<'a>(from: &str, items: &[&'a AstNode<'a>], options: &Options) -> Tasks {
+    let mut tasks = Tasks::default();
+    let mut open = Vec::new();
+    for item in items {
+        let NodeValue::TaskItem(task) = &item.data().value else {
+            continue;
+        };
+        match task_status(task.symbol) {
+            "done" => tasks.done += 1,
+            "cancelled" => tasks.cancelled += 1,
+            status => open.push((status == "doing", *item)),
+        }
+    }
+    tasks.open = open.len();
+    tasks.doing = open.iter().filter(|(doing, _)| *doing).count();
+    let mut todo = crate::indexes::TASK_LINES.saturating_sub(tasks.doing);
+    for (doing, item) in open {
+        if !doing {
+            if todo == 0 {
+                continue;
+            }
+            todo -= 1;
+        }
+        tasks.shown.push((doing, task_line(from, item, options)));
+    }
+    tasks
+}
+
+/// The HTML of a task's own line: its first paragraph's text, with no nested list. The
+/// note's raw HTML is dropped, so no stray end tag reaches past the line on the board, and
+/// so are footnote references, which point into the note. A link to a heading of the note
+/// itself points into the note.
+fn task_line<'a>(from: &str, item: &'a AstNode<'a>, options: &Options) -> String {
+    let mut html = String::new();
+    // The first paragraph: a block embed that starts the line has split it off.
+    if let Some(paragraph) = item
+        .children()
+        .find(|p| matches!(p.data().value, NodeValue::Paragraph))
+    {
+        let plugins = Plugins::default();
+        // Writing into a String cannot fail.
+        let _ = format_document_with_formatter(
+            paragraph,
+            options,
+            &mut html,
+            &plugins,
+            format_line,
+            (),
+        );
+    }
+    // Text is escaped, so only a link this renderer wrote holds `href="#`.
+    html.trim_end()
+        .replace("<a href=\"#", &format!("<a href=\"{}#", url(from)))
+}
+
+/// comrak's HTML for a task line's nodes, with no `<p>`, raw HTML or footnote reference.
+fn format_line<'a>(
+    context: &mut Context,
+    node: &'a AstNode<'a>,
+    entering: bool,
+) -> Result<ChildRendering, std::fmt::Error> {
+    match node.data().value {
+        NodeValue::Paragraph => Ok(ChildRendering::HTML),
+        NodeValue::HtmlInline(_) | NodeValue::FootnoteReference(_) => Ok(ChildRendering::Skip),
+        _ => format_node_default(context, node, entering),
+    }
 }
 
 /// The byte offset of each line's start.

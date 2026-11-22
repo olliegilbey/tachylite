@@ -85,6 +85,7 @@ export type Scenario = Warm | First;
 const HOME = "/";
 const TODAY = "/.tachylite/today";
 const RECENT = "/.tachylite/recent";
+const TASKS = "/.tachylite/tasks";
 
 /** A switch from one tab page to the one beside it, by swipe and by tap. */
 function switches(from: string, start: string, to: string, tab: string, swipe: "left" | "right"): Scenario[] {
@@ -146,4 +147,7 @@ export const scenarios: Scenario[] = [
   ...switches("recent", RECENT, "today", TODAY, "right"),
   { name: "tap-home-to-recent", start: HOME, action: { tap: RECENT }, until: { tab: RECENT } },
   { name: "tap-recent-to-home", start: RECENT, action: { tap: HOME }, until: { tab: HOME } },
+  ...switches("recent", RECENT, "tasks", TASKS, "left"),
+  ...switches("tasks", TASKS, "recent", RECENT, "right"),
+  { name: "tap-home-to-tasks", start: HOME, action: { tap: TASKS }, until: { tab: TASKS } },
 ];

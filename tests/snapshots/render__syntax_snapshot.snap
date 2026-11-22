@@ -11,12 +11,12 @@ expression: "built(\"notes/syntax\")"
 <link rel="manifest" href="/.tachylite/app.webmanifest">
 <link rel="icon" href="/.tachylite/icon.svg">
 <link rel="stylesheet" href="/.tachylite/style.css">
-<meta name="tachylite-version" content="58e65773">
+<meta name="tachylite-version" content="18ac2b2d">
 <title>Syntax tour</title>
 <script src="/.tachylite/live.js" defer></script>
 </head>
 <body>
-<header><a href="/">Home</a><a href="/.tachylite/recent">Recent</a><button type="button" class="find" title="Find a note (Ctrl-K)">Find</button></header>
+<header><a href="/">Home</a><a href="/.tachylite/recent">Recent</a><a href="/.tachylite/tasks">Tasks</a><button type="button" class="find" title="Find a note (Ctrl-K)">Find</button></header>
 <main>
 <nav class="crumbs"><a href="/.tachylite/folders/notes">notes</a></nav>
 <dl class="properties"><dt>title</dt><dd>Syntax tour</dd><dt>aliases</dt><dd>tour</dd><dt>tags</dt><dd><a class="tag" href="/.tachylite/tags/sample">#sample</a></dd></dl>

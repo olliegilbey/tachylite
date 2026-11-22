@@ -102,7 +102,7 @@ A scenario names no note of its own, since the vault is generated. A path or a s
 
 Navigate by path. A scenario that taps a link by a selector breaks when the header changes.
 
-The `swipe-*` and `tap-*` scenarios time a switch between each pair of neighbouring tabs, each way. `tap-home-to-recent` and `tap-recent-to-home` time a tap across the Today tab. They use `tap`, `swipe` and `tab`.
+The `swipe-*` and `tap-*` scenarios time a switch between each pair of neighbouring tabs, each way. `tap-home-to-recent` and `tap-recent-to-home` time a tap across the Today tab, and `tap-home-to-tasks` a tap across Today and Recent to the board. They use `tap`, `swipe` and `tab`.
 
 The `search-*` scenarios time one query each in the quick switcher: one letter, a common word, a rare word, two words, two rare words, no match, and a near miss. `search-cold-open` times a rare word from a closed switcher. They use `type` and `answered`, and they skip a binary that has no search.
 

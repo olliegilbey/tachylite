@@ -63,7 +63,7 @@ fn the_showcase_vault_builds_with_only_the_broken_link_it_shows() {
     };
     let tmp = tempfile::tempdir().unwrap();
     let summary = build(&showcase, &tmp.path().join("out")).unwrap();
-    assert_eq!((summary.notes, summary.files), (7, 3));
+    assert_eq!((summary.notes, summary.files), (8, 3));
     assert!(summary.skipped.is_empty(), "{:?}", summary.skipped);
     assert_eq!(
         broken(&summary),
@@ -76,7 +76,7 @@ fn the_showcase_vault_builds_with_only_the_broken_link_it_shows() {
         fs::write(s.vault().join(name), "# Another note\n").unwrap();
     }
     let summary = build(&s.vault(), &s.out()).unwrap();
-    assert_eq!((summary.notes, summary.files), (10, 3));
+    assert_eq!((summary.notes, summary.files), (11, 3));
     assert_eq!(
         broken(&summary),
         [(
@@ -532,12 +532,23 @@ fn an_excluded_name_is_in_no_generated_file() {
             "tachylite.toml",
             "exclude = [\"secretdir\", \"**/secretnote.md\"]\n",
         ),
-        ("secretdir/plain.md", "# plain"),
-        ("notes/secretnote.md", "# plain"),
-        ("notes/y.md", "# shown"),
+        (
+            "secretdir/plain.md",
+            "# plain\n- [/] a secret task #secretive",
+        ),
+        (
+            "notes/secretnote.md",
+            "# plain\n- [ ] a secret task\n- [x] done",
+        ),
+        ("notes/y.md", "# shown\n- [ ] a task"),
     ]);
     let (vault, out) = (dir.path().join("vault"), dir.path().join("out"));
     build(&vault, &out).unwrap();
+    let board = fs::read_to_string(out.join("pages/.tachylite/tasks.html")).unwrap();
+    assert!(
+        board.contains("a task") && !board.contains("done"),
+        "{board}"
+    );
     let generated: Vec<_> = files_under(&out)
         .into_iter()
         .filter(|p| tachylite::site::generated(p.to_str().unwrap()))

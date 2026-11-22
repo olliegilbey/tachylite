@@ -24,7 +24,7 @@ const PATHS: [&str; 13] = [
     "d/2026-01-03.md",
     "d/2026-01-05.md",
 ];
-const CONTENTS: [&str; 15] = [
+const CONTENTS: [&str; 17] = [
     "# one",
     "two *b*",
     "- [ ] three",
@@ -40,6 +40,8 @@ const CONTENTS: [&str; 15] = [
     "| t |\n|---|\n| ![[a\\|x]] ![[n\\|y]] |",
     "#a #A/b x",
     "---\ntags: [a/b, Über]\ntitle: T3\n---\n#c",
+    "- [/] dig [[a]] #t\n- [x] mow\n- [-] cut\n- [ ] sow [[n]]",
+    "- [ ] a\n- [ ] b\n- [/] c\n- [ ] d\n- [ ] e\n- [ ] f [[m]]",
 ];
 
 #[derive(Debug, Clone)]
