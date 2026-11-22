@@ -13,7 +13,7 @@ These hold for every change.
 1. **Speed is the first feature.** A saved note reaches an open page on the phone in about 100 ms. A cached page opens at once. Each speed target is a budget. CI enforces the budgets it can measure, and `make budget` measures the timed ones on the reference host.
 2. **Offline after the first sync.** Every note and full search work on the device with no network.
 3. **The vault is the owner's, and Tachylite only reads it.** Notes stay plain Markdown, YAML frontmatter and `[[wikilinks]]`. Agents write the vault in a format they already know, and Tachylite changes how it is read, never how it is written.
-4. **Light enough for a Raspberry Pi.** One small static binary, no runtime dependencies, idle at zero CPU. The Pi is the bar. CI builds the `aarch64` binary on an ARM runner and runs it. No real Pi has run it yet.
+4. **Light enough for a Raspberry Pi.** One small static binary, no runtime dependencies, idle at zero CPU. The Pi is the bar. CI builds the `aarch64` binary on an ARM runner, and builds the fixture vault with it. No real Pi has run it yet.
 
 ## A note from Ollie
 
