@@ -39,10 +39,8 @@ jobs:
         include:
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
-            arch: x86_64
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-            arch: aarch64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -54,8 +52,9 @@ jobs:
       - run: make size TARGET=${{ matrix.target }}
       - uses: actions/upload-artifact@v7
         with:
-          name: tachylite-${{ matrix.arch }}-linux
+          name: tachylite-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/tachylite
+          if-no-files-found: error
           retention-days: 3
 
   # A pushed v* tag publishes the two binaries, once the gate and both builds pass.
@@ -65,15 +64,16 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
-    env:
-      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v5
-      - run: grep -qx "version = \"${GITHUB_REF_NAME#v}\"" Cargo.toml
+      - name: The tag matches the crate's version
+        run: grep -Fqx "version = \"${GITHUB_REF_NAME#v}\"" Cargo.toml
       - uses: actions/download-artifact@v8
         with:
-          pattern: tachylite-*-linux
+          pattern: tachylite-*-unknown-linux-gnu
           path: bin
-      - run: |
-          for arch in x86_64 aarch64; do mv bin/tachylite-$arch-linux/tachylite tachylite-$arch-linux; done
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for arch in x86_64 aarch64; do mv bin/tachylite-$arch-unknown-linux-gnu/tachylite tachylite-$arch-linux; done
           gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes tachylite-*-linux
