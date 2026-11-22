@@ -822,9 +822,10 @@ fn collect_tasks<'a>(from: &str, items: &[&'a AstNode<'a>], options: &Options) -
 /// itself points into the note.
 fn task_line<'a>(from: &str, item: &'a AstNode<'a>, options: &Options) -> String {
     let mut html = String::new();
+    // The first paragraph: a block embed that starts the line has split it off.
     if let Some(paragraph) = item
-        .first_child()
-        .filter(|p| matches!(p.data().value, NodeValue::Paragraph))
+        .children()
+        .find(|p| matches!(p.data().value, NodeValue::Paragraph))
     {
         let plugins = Plugins::default();
         // Writing into a String cannot fail.

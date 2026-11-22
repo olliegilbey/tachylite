@@ -3332,6 +3332,16 @@ fn a_link_on_a_task_line_resolves_again_when_its_target_comes() {
 }
 
 #[test]
+fn a_task_line_that_starts_with_an_embed_keeps_its_text() {
+    let (out, _) = full(&Mem::with(&[
+        ("a.md", "- [ ] ![[b]] check the list\n"),
+        ("b.md", "embedded\n"),
+    ]));
+    let html = page_text(&out, TASKS);
+    assert!(html.contains("disabled> check the list</li>"), "{html}");
+}
+
+#[test]
 fn raw_html_forges_no_task_on_the_board() {
     let (out, _) = full(&Mem::with(&[
         (
