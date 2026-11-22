@@ -81,6 +81,7 @@ pub struct Tasks {
     pub shown: Vec<(bool, String)>,
     /// How many tasks are open: todo or doing.
     pub open: usize,
+    pub doing: usize,
     pub done: usize,
     pub cancelled: usize,
 }
@@ -801,8 +802,8 @@ fn collect_tasks<'a>(from: &str, items: &[&'a AstNode<'a>], options: &Options) -
         }
     }
     tasks.open = open.len();
-    let doing = open.iter().filter(|(doing, _)| *doing).count();
-    let mut todo = crate::indexes::TASK_LINES.saturating_sub(doing);
+    tasks.doing = open.iter().filter(|(doing, _)| *doing).count();
+    let mut todo = crate::indexes::TASK_LINES.saturating_sub(tasks.doing);
     for (doing, item) in open {
         if !doing {
             if todo == 0 {

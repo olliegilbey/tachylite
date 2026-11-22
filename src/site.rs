@@ -348,8 +348,9 @@ pub struct Site {
     modified: HashMap<String, i64>,
     /// Each winning note's tag keys, sorted.
     tags: HashMap<String, Vec<String>>,
-    /// The tasks of each winning note with an open task, as the board shows them.
-    tasks: HashMap<String, Tasks>,
+    /// The tasks of each winning note with an open task, as the board shows them, with the
+    /// note's modified time when it was rendered, so the board reads one map.
+    tasks: HashMap<String, (i64, Tasks)>,
     /// Whether the board may have changed since it was built: a note with an open task was
     /// rendered or removed, or the header changed.
     board_due: bool,
@@ -1377,11 +1378,7 @@ impl Site {
         let mut lists: Vec<(bool, i64, &str, &Tasks)> = self
             .tasks
             .iter()
-            .map(|(path, tasks)| {
-                let doing = tasks.shown.iter().any(|(doing, _)| *doing);
-                let modified = self.modified.get(path).copied().unwrap_or_default();
-                (doing, modified, path.as_str(), tasks)
-            })
+            .map(|(path, (modified, tasks))| (tasks.doing > 0, *modified, path.as_str(), tasks))
             .collect();
         let shown = lists.len().min(indexes::TASK_LISTS);
         let order = |a: &(bool, i64, &str, &Tasks), b: &(bool, i64, &str, &Tasks)| {
@@ -1730,7 +1727,8 @@ impl Site {
                 // A render may move a task list in the board's order, by its modified time.
                 if body.tasks.open > 0 {
                     self.board_due = true;
-                    self.tasks.insert(path.to_string(), body.tasks);
+                    let modified = self.modified.get(path).copied().unwrap_or_default();
+                    self.tasks.insert(path.to_string(), (modified, body.tasks));
                 } else {
                     self.board_due |= self.tasks.remove(path).is_some();
                 }
