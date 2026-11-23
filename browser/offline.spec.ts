@@ -484,6 +484,28 @@ test("the switcher lists a note made after the last sync", async ({ page }) => {
   await expect(page.locator("dialog.switcher li").first()).toContainText("fresh");
 });
 
+test("a file removed and added again between syncs is listed once", async ({ page }) => {
+  // Enough notes that the changes are a small part of the manifest, so the answer is a delta.
+  await pad(page, 200);
+  writeFileSync(join(dir, "vault", "dot.gif"), gif);
+  await expect.poll(async () => (await listed(page)).files).toEqual(["/dot.gif"]);
+  await visit(page, "/a");
+  await synced(page);
+  rmSync(join(dir, "vault", "dot.gif"));
+  await expect.poll(async () => (await listed(page)).files).toEqual([]);
+  // A save between the two, so the manifest does not come back to the one the worker holds.
+  const before = (await listed(page)).pages["/b"];
+  note("b", "# B\n\nsaved between\n");
+  await expect.poll(async () => (await listed(page)).pages["/b"]).not.toBe(before);
+  writeFileSync(join(dir, "vault", "dot.gif"), gif);
+  await expect.poll(async () => (await listed(page)).files).toEqual(["/dot.gif"]);
+  const tag = (await page.request.get(base + MANIFEST)).headers()["etag"];
+  const held = () => page.evaluate(async (key) => (await (await caches.match(key))!.json()) as { tag: string; files: string[] }, MANIFEST + "?listed");
+  await sync(page);
+  await expect.poll(async () => (await held()).tag).toBe(tag);
+  expect((await held()).files).toEqual(["/dot.gif"]);
+});
+
 test("an html page or asset excluded while away leaves the cache", async ({ page }) => {
   mkdirSync(join(dir, "vault", "private"));
   writeFileSync(join(dir, "vault", "private", "map.html"), "<p>map</p>");

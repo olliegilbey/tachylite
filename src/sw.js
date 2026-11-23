@@ -155,7 +155,7 @@ async function sync() {
   if (listed && body.since === listed.tag) {
     want = Object.assign(listed.pages, want);
     for (const url of body.gone) delete want[url];
-    files = [...listed.files.filter((url) => !body.unfiled.includes(url)), ...files];
+    files = [...new Set([...listed.files.filter((url) => !body.unfiled.includes(url)), ...files])];
   }
   const held = (await (await cache.match(MANIFEST))?.json()) ?? {};
   const keys = (await cache.keys()).map((r) => new URL(r.url).pathname);
