@@ -1,11 +1,12 @@
-import { expect, type Browser, type BrowserContext, type Page, type Request } from "@playwright/test";
-import { cpSync } from "node:fs";
+import { expect, type Browser, type BrowserContext, type Page, type Request, type Route } from "@playwright/test";
+import { cpSync, readFileSync, writeFileSync } from "node:fs";
 import { get } from "node:http";
 import { cpus, loadavg } from "node:os";
 import { join } from "node:path";
+import { gzipSync } from "node:zlib";
 import { serve, stop, type Server } from "../server";
 import type { Cell, Result, Sample } from "./report";
-import { profiles, scenarios, type Profile, type Scenario, type Until, type Vars, type Warm } from "./scenarios";
+import { profiles, scenarios, type Profile, type Saved, type Scenario, type Until, type Vars, type Warm } from "./scenarios";
 
 export type Options = {
   /** A scratch directory. Each binary gets a copy of the vault and an output directory in it. */
@@ -38,6 +39,8 @@ const SWITCHING = "tachylite-bench-tab";
 type Session = {
   label: string;
   base: string;
+  /** The vault this binary serves, which a `save` scenario writes. */
+  vault: string;
   context: BrowserContext;
   page: Page;
   /** Resolves once no fetch of the worker's is in flight. */
@@ -67,7 +70,7 @@ export async function bench(browser: Browser, o: Options): Promise<Result> {
       const sessions: Session[] = [];
       try {
         for (const { label, server } of servers) {
-          const first = open(browser, profile, label, server.base, sessions);
+          const first = open(browser, profile, label, server.base, join(o.dir, label, "vault"), sessions);
           await within(first, `the first sync on ${profile.name}, ${label}`, 180);
         }
         for (const scenario of picked) {
@@ -131,8 +134,8 @@ async function variables(base: string): Promise<Vars> {
   // An html page is sandboxed, so the bench cannot time one: it takes a note.
   const all: [string, string][] = await (await fetch(`${base}/.tachylite/notes.json`)).json();
   const notes = all.filter(([, url]) => !url.endsWith(".html"));
-  const [title, note] = notes[Math.floor(notes.length / 2)];
-  return { note, query: title.slice(0, 3).toLowerCase() };
+  const [title, note, file] = notes[Math.floor(notes.length / 2)];
+  return { note, query: title.slice(0, 3).toLowerCase(), file };
 }
 
 function fill(text: string, vars: Vars): string {
@@ -186,7 +189,7 @@ function idleSince(from: { idle: number; total: number }): number {
 }
 
 /** A page the worker controls, with every listed page in its cache, at the profile's CPU speed. */
-async function open(browser: Browser, profile: Profile, label: string, base: string, sessions: Session[]) {
+async function open(browser: Browser, profile: Profile, label: string, base: string, vault: string, sessions: Session[]) {
   const context = await browser.newContext({ ...profile.device, baseURL: base });
   const flying = new Set<Request>();
   let landed: (() => void) | null = null;
@@ -209,7 +212,7 @@ async function open(browser: Browser, profile: Profile, label: string, base: str
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
   // Listed before the first wait, so a session that never syncs is still closed.
-  sessions.push({ label, base, context, page, quiet, errors });
+  sessions.push({ label, base, vault, context, page, quiet, errors });
   await page.goto("/");
   await page.waitForFunction(() => navigator.serviceWorker.controller !== null);
   const { pages } = await (await page.request.get(MANIFEST)).json();
@@ -457,7 +460,72 @@ const tenth = (ms: number) => Math.round(ms * 10) / 10;
 
 async function sample(browser: Browser, profile: Profile, s: Session, scenario: Scenario, vars: Vars, jitter: number): Promise<Sample | Skip> {
   if ("first" in scenario) return first(browser, profile, s, fill(scenario.first, vars));
+  if ("save" in scenario) return saved(s, scenario, vars);
   return warm(s, scenario, vars, jitter);
+}
+
+let saves = 0;
+
+/** The version the server's manifest lists for a page. */
+async function listedVersion(s: Session, url: string): Promise<string> {
+  return (await (await s.page.request.get(MANIFEST)).json()).pages[url];
+}
+
+/**
+ * A link for the worker's fetches: each response waits for the ones before it to cross at
+ * `kbps`, and half a round trip either side. A response crosses as many bytes as gzip makes
+ * of it when the server gzipped it. Every fetch gets a whole response, so no build gains
+ * from the browser's HTTP cache.
+ */
+function slowLink(kbps: number, rtt: number) {
+  let free = 0;
+  return async (route: Route) => {
+    if (!route.request().serviceWorker()) return route.continue();
+    const asked = { ...route.request().headers() };
+    delete asked["if-none-match"];
+    delete asked["if-modified-since"];
+    const response = await route.fetch({ headers: asked });
+    const body = await response.body();
+    const headers = { ...response.headers() };
+    const wire = headers["content-encoding"] ? gzipSync(body).length : body.length;
+    delete headers["content-encoding"];
+    delete headers["content-length"];
+    const now = performance.now();
+    free = Math.max(free, now + rtt / 2) + (wire * 8) / kbps;
+    await new Promise((r) => setTimeout(r, free + rtt / 2 - now));
+    await route.fulfill({ status: response.status(), headers, body });
+  };
+}
+
+async function saved(s: Session, scenario: Saved, vars: Vars): Promise<Sample> {
+  await load(s, "/");
+  const before = await listedVersion(s, vars.note);
+  const file = join(s.vault, `${vars.file}.md`);
+  const text = readFileSync(file, "utf8").replace(/\n\nbench save \d+\n$/, "");
+  writeFileSync(file, `${text}\n\nbench save ${++saves}\n`);
+  await expect.poll(() => listedVersion(s, vars.note), { timeout: 10_000 }).not.toBe(before);
+  const version = await listedVersion(s, vars.note);
+  const link = slowLink(scenario.save.kbps, scenario.save.rtt);
+  await s.context.route("**/*", link);
+  try {
+    const [worker] = s.context.serviceWorkers();
+    const holds = () =>
+      worker.evaluate(
+        ([url, v]) => caches.match(url).then(async (r) => !!(await r?.text())?.includes(`content="${v}"`)),
+        [vars.note, version],
+      );
+    const from = cpu();
+    const start = performance.now();
+    await s.page.evaluate(() => navigator.serviceWorker.controller!.postMessage("sync"));
+    while (!(await holds()));
+    const ms = performance.now() - start;
+    const idle = idleSince(from);
+    await worker.evaluate("queue");
+    await s.quiet();
+    return { ms: tenth(ms), idle };
+  } finally {
+    await s.context.unroute("**/*", link);
+  }
 }
 
 async function first(browser: Browser, profile: Profile, s: Session, path: string): Promise<Sample> {

@@ -94,11 +94,13 @@ Add an entry to `scenarios` in `scenarios.ts`. A scenario is data:
   - `{ answered: selector }`: the first paint of a row in the list at that selector, once the list says `aria-busy="false"`: every search worker has answered. A row drawn before the answer does not end the clock.
   - `{ tab: path }`: the first paint of text or an image in the `<main>` of the tab page at that path. The content may come with a new document or be put in place by the client. Both end the clock the same way, so two ways to switch tabs compare fairly.
 
+A scenario with `save: { kbps, rtt }` in place of these is a sync after one saved note. The bench appends a line to `{note}` in the vault the binary serves, waits until the server lists the new version, and asks the worker for a sync. The clock runs until the worker's cache holds the note at that version. The worker's fetches cross a link the bench makes from routes: one response after another at `kbps` kbit/s, with half of `rtt` ms either side. A response counts its gzipped bytes when the server gzipped it. Every fetch gets a whole response, so no build gains from the browser's HTTP cache. `sync-after-save-400k` runs it at 400 kbit/s and 100 ms.
+
 A scenario with `first: path` in place of these is a first load. It opens the path in a new browser context, with no service worker and nothing cached.
 
 Every other scenario is warm: it measures the cached path. Before the clock runs, the service worker controls the page and a sync has stored every listed page.
 
-A scenario names no note of its own, since the vault is generated. A path or a selector can hold `{note}`, the path of a note from the middle of the switcher list. `{query}` is the first three letters of that note's title. A `run` function gets both as its argument.
+A scenario names no note of its own, since the vault is generated. A path or a selector can hold `{note}`, the path of a note from the middle of the switcher list. `{query}` is the first three letters of that note's title, and `{file}` its vault path without `.md`. A `run` function gets all three as its argument.
 
 Navigate by path. A scenario that taps a link by a selector breaks when the header changes.
 
