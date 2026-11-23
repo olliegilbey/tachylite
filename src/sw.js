@@ -16,6 +16,8 @@ const SEARCH = "/.tachylite/search/";
 // Asked for with `no-cache`, these come from the network first: a cached copy can miss a new note.
 const FRESH = new Set([NOTES, "/.tachylite/today"]);
 const MERMAID = "/.tachylite/mermaid.js";
+// What the server last listed, with its tag. A cache key with a query matches no page.
+const LISTED = MANIFEST + "?listed";
 const KEEP = [...SHELL, MANIFEST, MERMAID];
 const DIAGRAM = '<pre class="mermaid">';
 // A fetch the worker queues for gives up after 30 s, so a hung one cannot hold the queue; the
@@ -138,14 +140,24 @@ let changes = 0;
 // records the listed version, and is never read for a version or a diagram: its content is its own.
 async function sync() {
   const cache = await caches.open(CACHE);
-  const response = await get(MANIFEST).catch(() => null);
+  // A tag the server knows gets what changed since, for that tag alone, so past the HTTP
+  // cache. Any other answer, as a static host's, is the whole manifest.
+  const listed = await (await cache.match(LISTED))?.json();
+  const asked = listed ? get(`${MANIFEST}?since=${encodeURIComponent(listed.tag)}`, 30, "no-store") : get(MANIFEST);
+  const response = await asked.catch(() => null);
   if (!response?.ok) return;
   const etag = response.headers.get("etag");
   const tag = etag && etag + " " + changes;
   // A cache the browser evicted lost its stored manifest too.
   if (tag && tag === done && (await cache.match(MANIFEST))) return;
   done = null;
-  const { pages: want, files = [] } = await response.json();
+  const body = await response.json();
+  let { pages: want, files = [] } = body;
+  if (listed && body.since === listed.tag) {
+    want = Object.assign(listed.pages, want);
+    for (const url of body.gone) delete want[url];
+    files = [...listed.files.filter((url) => !body.unfiled.includes(url)), ...files];
+  }
   const held = (await (await cache.match(MANIFEST))?.json()) ?? {};
   const keys = (await cache.keys()).map((r) => new URL(r.url).pathname);
   const cached = new Set(keys);
@@ -163,7 +175,7 @@ async function sync() {
   stale.sort((a, b) => index(b) - index(a));
   await Promise.all(keys.filter((url) => !(url in want) && !keep.has(url)).map((url) => cache.delete(url)));
   const save = () => cache.put(MANIFEST, json(have));
-  await save();
+  await Promise.all([save(), etag && cache.put(LISTED, json({ tag: etag, pages: want, files }))]);
   let stored = 0;
   let drawn = false;
   const workers = Array.from({ length: 6 }, async () => {

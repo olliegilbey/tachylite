@@ -315,6 +315,106 @@ test("an interrupted sync resumes, home and index pages first", async ({ page, c
   expect(fetched.filter(isNote)).toHaveLength(count - kept);
 });
 
+/** Notes enough that a small change is a small part of the manifest. */
+async function pad(page: Page, count: number) {
+  for (let i = 0; i < count; i++) note(`p${String(i).padStart(3, "0")}`, `# Pad ${i}\n`);
+  await expect.poll(async () => Object.keys((await listed(page)).pages).length).toBeGreaterThan(count);
+}
+
+/** The worker's next manifest response: its body, and the bytes it took on the wire. */
+function nextManifest(page: Page) {
+  const worker = (r: { url(): string; serviceWorker(): unknown }) => !!r.serviceWorker() && r.url().includes(MANIFEST);
+  return page
+    .context()
+    .waitForEvent("requestfinished", worker)
+    .then(async (r) => ({ body: await (await r.response())!.json(), bytes: (await r.sizes()).responseBodySize }));
+}
+
+test("after a save made while offline, a sync fetches a small delta, and the page opens offline", async ({ page, context }) => {
+  await pad(page, 200);
+  await visit(page, "/a");
+  await synced(page);
+  const whole = (await page.request.get(base + MANIFEST, { headers: { "accept-encoding": "gzip" } })).body();
+  await context.setOffline(true);
+  const before = (await listed(page)).pages["/b"];
+  note("b", "# B\n\nsaved while away\n");
+  await expect.poll(async () => (await listed(page)).pages["/b"]).not.toBe(before);
+  await context.setOffline(false);
+  const response = nextManifest(page);
+  await sync(page);
+  const { body, bytes } = await response;
+  expect(body.since, "a delta").toBeTruthy();
+  expect(Object.keys(body.pages)).toContain("/b");
+  expect(bytes).toBeLessThan(2048);
+  expect(bytes * 4).toBeLessThan((await whole).length);
+  await synced(page);
+  await stop(server!);
+  await page.goto(base + "/b");
+  await expect(page.locator("main")).toContainText("saved while away");
+});
+
+test("a delta sync cut short resumes from the listing it saved", async ({ page, context }) => {
+  await pad(page, 200);
+  await visit(page, "/a");
+  await synced(page);
+  const count = 20;
+  const isNew = (path: string) => /^\/n\d{3}$/.test(path);
+  // After half the new notes, the worker's fetches hang.
+  let fetched: string[] = [];
+  let limit = count / 2;
+  let hold = false;
+  const held: Route[] = [];
+  await context.route(/.*/, (route) => {
+    if (!route.request().serviceWorker()) return route.continue();
+    if (hold) return void held.push(route);
+    fetched.push(new URL(route.request().url()).pathname);
+    hold = fetched.filter(isNew).length === limit;
+    return route.continue();
+  });
+  const cut = nextManifest(page);
+  for (let i = 0; i < count; i++) note(`n${String(i).padStart(3, "0")}`, `# New ${i}\n`);
+  await expect.poll(async () => Object.keys((await listed(page)).pages).filter(isNew).length).toBe(count);
+  await sync(page);
+  expect((await cut).body.since, "the cut sync was a delta").toBeTruthy();
+  await expect.poll(() => hold).toBe(true);
+  const cdp = await context.newCDPSession(page);
+  await cdp.send("ServiceWorker.enable");
+  await cdp.send("ServiceWorker.stopAllWorkers");
+
+  fetched = [];
+  limit = Infinity;
+  hold = false;
+  for (const route of held) await route.abort().catch(() => {});
+  const resumed = nextManifest(page);
+  await page.reload();
+  const { body } = await resumed;
+  // The listing was saved before the cut, so the server has nothing new to tell.
+  expect(body.since, "the resumed sync was a delta").toBeTruthy();
+  expect(body.pages).toEqual({});
+  await synced(page);
+  expect(fetched.filter(isNew).length).toBeGreaterThan(0);
+});
+
+test("a worker holding a tag the server does not know gets the whole manifest, and ends right", async ({ page }) => {
+  await visit(page, "/a");
+  await synced(page);
+  // A listing from a server since restarted, which named a page now gone.
+  await page.evaluate(async (m) => {
+    const cache = await caches.open("tachylite");
+    const listing = { tag: 'W/"0-0000000000000000"', pages: { "/ghost": "00000000" }, files: [] };
+    await cache.put(m + "?listed", new Response(JSON.stringify(listing)));
+    await cache.put("/ghost", new Response("ghost"));
+  }, MANIFEST);
+  const before = (await listed(page)).pages["/b"];
+  note("b", "# B\n\nnew text\n");
+  await expect.poll(async () => (await listed(page)).pages["/b"]).not.toBe(before);
+  const response = nextManifest(page);
+  await sync(page);
+  expect((await response).body.since, "the whole manifest").toBeUndefined();
+  await synced(page);
+  expect(await has(page, "/ghost")).toBe(false);
+});
+
 test("an open browser tab stores pushed pages, and syncs once visible again", async ({ page }) => {
   await visit(page, "/a");
   await synced(page);
@@ -608,7 +708,7 @@ test("an upgraded worker caches no Mermaid for an html page with a diagram block
   await synced(page);
   // A new worker arrives with a deploy, and its first sync waits for the manifest.
   let held: Route | null = null;
-  await context.route(/manifest\.json$/, (route) => {
+  await context.route(/manifest\.json(\?|$)/, (route) => {
     if (!route.request().serviceWorker()) return route.continue();
     held = route;
   });
