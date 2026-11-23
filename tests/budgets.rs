@@ -187,7 +187,12 @@ fn manifest_step() {
         for at in &picks {
             bytes[*at..*at + 8].copy_from_slice(format!("{i:08x}").as_bytes());
         }
-        let json = String::from_utf8(bytes).unwrap();
+        let mut json = String::from_utf8(bytes).unwrap();
+        // Every other save creates a note, which puts the lists out of line for a while.
+        if i % 2 == 1 {
+            let at = first[..picks[3]].rfind("\",\"").unwrap() + 2;
+            json.insert_str(at, &format!("\"/new-{i}\":\"00000000\","));
+        }
         let start = Instant::now();
         let old = log.current().0;
         let step = diff(&old, &json);

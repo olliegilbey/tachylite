@@ -211,7 +211,7 @@ impl Log {
             files.extend(step.files.iter().map(|u| (&**u, true)));
             files.extend(step.unfiled.iter().map(|u| (&**u, false)));
         }
-        // A tag is `W/"…"`, so its quotes are escaped.
+        // A tag is `W/"…"`, so its quotes are escaped. A write to a `String` cannot fail.
         let mut json = format!(
             "{{\"since\":\"{}\",\"pages\":{{",
             since.replace('"', "\\\"")

@@ -256,9 +256,8 @@ fn a_restart_answers_a_tag_from_before_it_with_the_whole_manifest() {
     let (c, now, _) = whole(&server);
     assert!(matches!(ask(&server, &a).1, Answer::Whole(m) if m == now));
     // The same content gets the same tag, so a client synced before the restart is current.
-    if c == b {
-        assert!(matches!(ask(&server, &b).1, Answer::Delta(d) if d.pages.is_empty()));
-    }
+    assert_eq!(c, b);
+    assert!(matches!(ask(&server, &b).1, Answer::Delta(d) if d.pages.is_empty()));
 }
 
 #[test]
@@ -471,7 +470,9 @@ proptest! {
             for (old, held) in &seen {
                 // A held path is read when its hold ends, so the manifest can move on. A
                 // tag hashes the content, so equal tags mean equal manifests.
+                let deadline = Instant::now() + Duration::from_secs(10);
                 let (answer, current) = loop {
+                    assert!(Instant::now() < deadline, "the manifest never held still");
                     let (at, answer, _) = ask(&server, old);
                     let (tag, current, _) = whole(&server);
                     if at == tag {
