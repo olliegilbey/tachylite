@@ -5,10 +5,10 @@ import { report } from "./bench/report";
 import { expect, run, test } from "./fixture";
 
 // The bench is not part of the gate, so this run keeps it working. A bench asserts no time.
-test("the client bench times a navigation, a first load, an in-page action, Back, a tab switch and a search", async ({ browser }, info) => {
+test("the client bench times a navigation, a first load, an in-page action, Back, a tab switch, a search and a sync", async ({ browser }, info) => {
   test.skip(info.project.name !== "phone", "the bench brings its own profiles");
   test.setTimeout(120_000);
-  const names = ["home-to-note", "note-first-load", "switcher-query", "back-to-home", "swipe-home-to-today", "tap-today-to-recent", "search-one-letter", "search-cold-open"];
+  const names = ["home-to-note", "note-first-load", "switcher-query", "back-to-home", "swipe-home-to-today", "tap-today-to-recent", "search-one-letter", "search-cold-open", "sync-after-save-400k"];
   // A daily note and its settings give the fixture vault a Today tab, as the bench's own vault has.
   const vault = join(run, "bench-vault");
   cpSync(join(__dirname, "..", "tests", "fixtures", "vault"), vault, { recursive: true });

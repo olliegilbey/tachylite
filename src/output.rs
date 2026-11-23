@@ -51,6 +51,8 @@ pub struct Writer<'a, F: FnMut(Push)> {
     error: Option<Error>,
     /// Whether this batch has checked that the marker is still there.
     marked: bool,
+    /// The manifest written, if one was.
+    pub manifest: Option<String>,
 }
 
 impl<'a, F: FnMut(Push)> Writer<'a, F> {
@@ -64,6 +66,7 @@ impl<'a, F: FnMut(Push)> Writer<'a, F> {
             unwritten: Vec::new(),
             error: None,
             marked: false,
+            manifest: None,
         }
     }
 
@@ -149,6 +152,7 @@ impl<F: FnMut(Push)> Sink for Writer<'_, F> {
                 let result = write_via_tmp(&self.out.join(crate::site::MANIFEST), |tmp| {
                     fs::write(tmp, json.as_bytes())
                 });
+                self.manifest = Some(json);
                 (result, None)
             }
         };

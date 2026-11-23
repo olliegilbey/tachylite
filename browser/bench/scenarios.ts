@@ -23,6 +23,8 @@ export type Vars = {
   note: string;
   /** The first letters of that note's title, as a reader would type them. */
   query: string;
+  /** That note's path in the vault, without `.md`. */
+  file: string;
 };
 
 /** What the reader does. It runs in the page, and the clock starts as it is called. */
@@ -80,7 +82,15 @@ export type Warm = {
  */
 export type First = { name: string; first: string };
 
-export type Scenario = Warm | First;
+/**
+ * A sync after one saved note, on a slow link. The bench saves `{note}` and asks the worker
+ * for a sync. The clock runs from the ask until the worker's cache holds the note's new
+ * version. The link carries the worker's fetches one after another, at `kbps` kbit/s, and
+ * each waits `rtt` ms more.
+ */
+export type Saved = { name: string; save: { kbps: number; rtt: number } };
+
+export type Scenario = Warm | First | Saved;
 
 const HOME = "/";
 const TODAY = "/.tachylite/today";
@@ -111,6 +121,7 @@ export const scenarios: Scenario[] = [
   { name: "recent-to-home", start: "/.tachylite/recent", action: { go: "/" } },
   { name: "home-to-note", start: "/", action: { go: "{note}" } },
   { name: "note-first-load", first: "{note}" },
+  { name: "sync-after-save-400k", save: { kbps: 400, rtt: 100 } },
   {
     name: "switcher-query",
     start: "/",
