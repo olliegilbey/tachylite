@@ -160,6 +160,48 @@ fn push_latency() {
     assert_timed("file event to push, budget vault", times, push_limit());
 }
 
+/// The watch thread's work for each manifest it writes: the diff from the last, the tag,
+/// and the step recorded. It runs on the path the dependents budget times.
+#[test]
+#[ignore = "budget: run with make budget or make check"]
+fn manifest_step() {
+    use tachylite::delta::{LIMIT, Log, diff};
+    let dir = tempfile::tempdir().unwrap();
+    let vault = dir.path().join("vault");
+    tachylite::budget_vault::write(&vault, 1, 2000).unwrap();
+    tachylite::build::build(&vault, &dir.path().join("out")).unwrap();
+    let first = fs::read_to_string(dir.path().join("out/files/.tachylite/manifest.json")).unwrap();
+    // A save re-versions its page and a few index pages: here, six pages spread over the list.
+    let marks: Vec<usize> = first.match_indices("\":\"").map(|(i, _)| i + 3).collect();
+    let picks: Vec<usize> = (0..6).map(|k| marks[k * marks.len() / 6]).collect();
+    let mut log = Log::default();
+    log.record(
+        std::sync::Arc::new(first.clone()),
+        tachylite::serve::etag(first.as_bytes()),
+        None,
+        LIMIT,
+    );
+    let mut times = Vec::new();
+    for i in 0..200u32 {
+        let mut bytes = first.clone().into_bytes();
+        for at in &picks {
+            bytes[*at..*at + 8].copy_from_slice(format!("{i:08x}").as_bytes());
+        }
+        let json = String::from_utf8(bytes).unwrap();
+        let start = Instant::now();
+        let old = log.current().0;
+        let step = diff(&old, &json);
+        let tag = tachylite::serve::etag(json.as_bytes());
+        log.record(std::sync::Arc::new(json), tag, step, LIMIT);
+        times.push(start.elapsed());
+    }
+    assert_timed(
+        "manifest step, budget vault",
+        times,
+        Duration::from_secs_f64(0.001 * scale()),
+    );
+}
+
 /// The budget vault's note with the most inbound links, by its links as the site resolves them.
 fn most_linked() -> String {
     let notes = tachylite::budget_vault::generate(1, 2000);

@@ -168,7 +168,7 @@ fn not_modified() -> Response {
 }
 
 /// A hash of the bytes, so two saves within one mtime tick still differ.
-fn etag(bytes: &[u8]) -> String {
+pub fn etag(bytes: &[u8]) -> String {
     let mut hasher = DefaultHasher::new();
     bytes.hash(&mut hasher);
     format!("W/\"{:x}-{:016x}\"", bytes.len(), hasher.finish())
@@ -457,6 +457,48 @@ async fn mermaid_js(headers: HeaderMap) -> Response {
     tagged(response, "text/javascript", &TAG)
 }
 
+/// The manifest, from the copy the watch thread holds, so its tag is the one the log knows.
+/// With `since` a tag the log reaches, only the changes since that manifest. The worker asks
+/// for those past the HTTP cache, and they are marked so, since each answers one tag.
+async fn manifest(State(app): State<Arc<App>>, uri: Uri, headers: HeaderMap) -> Response {
+    let since = query(&uri, "since");
+    let (text, tag, delta) = {
+        let log = app
+            .live
+            .manifest
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let (text, tag) = log.current();
+        (text, tag.to_string(), since.and_then(|s| log.since(&s)))
+    };
+    const KIND: &str = "application/json";
+    if let Some(delta) = delta {
+        let body = delta.into_bytes();
+        let r = match accepts_gzip(&headers).then(|| gzip(&body)) {
+            Some(Ok(zipped)) => gzipped(Body::from(zipped)),
+            _ => Response::new(Body::from(body)),
+        };
+        let mut r = tagged(r, KIND, &tag);
+        r.headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        return r;
+    }
+    if text.is_empty() {
+        return status(StatusCode::NOT_FOUND);
+    }
+    let response = if matches(&headers, &tag) {
+        not_modified()
+    } else if accepts_gzip(&headers) {
+        match blocking(move || gzip(text.as_bytes())).await {
+            Ok(zipped) => gzipped(Body::from(zipped)),
+            Err(e) => return io_status(&e),
+        }
+    } else {
+        Response::new(Body::from(String::clone(&text)))
+    };
+    tagged(response, KIND, &tag)
+}
+
 /// The query parameter `name`, percent-decoded.
 fn query(uri: &Uri, name: &str) -> Option<String> {
     uri.query()?
@@ -582,6 +624,7 @@ pub fn router(app: App) -> Router {
         .route("/.tachylite/style.css", get(style_css))
         .route("/.tachylite/mermaid.js", get(mermaid_js))
         .route("/.tachylite/events", get(events))
+        .route("/.tachylite/manifest.json", get(manifest))
         .fallback(file)
         .layer(middleware::from_fn_with_state(app.clone(), edge))
         .with_state(app)
@@ -602,6 +645,7 @@ pub fn serve(vault: &Path, out: &Path, port: u16) -> Result<(), Error> {
     let live = Live {
         pushes,
         versions: Arc::new(Mutex::new(HashMap::new())),
+        manifest: Arc::default(),
     };
     let watcher = Watcher::start(vault, out.clone(), live.clone(), config)?;
     // The start rereads the config, and may wait out a save the first read saw half of.
@@ -660,6 +704,7 @@ mod tests {
         let live = Live {
             pushes,
             versions: Arc::new(Mutex::new(HashMap::from([("n".into(), "v9".into())]))),
+            manifest: Arc::default(),
         };
         let rx = live.pushes.subscribe();
         // Ten pushes into four slots: the stream lags, and v6 to v9 stay queued.

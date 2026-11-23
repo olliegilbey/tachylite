@@ -15,6 +15,7 @@ use rustix::fs::inotify::{self, CreateFlags, ReadFlags, WatchFlags};
 use tokio::sync::broadcast;
 
 use crate::config::{self, Config, Exclude, Nav};
+use crate::delta;
 use crate::output::Writer;
 use crate::site::{Change, Note, Push, Site, Source};
 use crate::vault::{ReadError, VaultDir, classify, hold, scan_under};
@@ -26,6 +27,8 @@ pub struct Live {
     pub pushes: broadcast::Sender<Arc<Push>>,
     /// The current version of each published page, by key.
     pub versions: Arc<Mutex<HashMap<String, String>>>,
+    /// The current manifest and the steps that lead to it.
+    pub manifest: Arc<Mutex<delta::Log>>,
 }
 
 const MASK: WatchFlags = WatchFlags::CLOSE_WRITE
@@ -672,8 +675,22 @@ impl Watcher {
         self.since = None;
         let mut writer = writer(&self.out, &self.vault, &self.live);
         self.site.derive_to(&mut writer);
+        let manifest = writer.manifest.take();
         // An index page whose path the output refuses is skipped.
         report::skipped(&writer.finish()?);
+        if let Some(json) = manifest {
+            // Only this thread records, so the diff runs outside the lock.
+            let lock = || {
+                self.live
+                    .manifest
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+            };
+            let old = lock().current().0;
+            let step = delta::diff(&old, &json);
+            let tag = crate::serve::etag(json.as_bytes());
+            lock().record(Arc::new(json), tag, step, delta::LIMIT);
+        }
         Ok(())
     }
 }
@@ -715,6 +732,7 @@ mod tests {
         let live = Live {
             pushes: broadcast::channel(4).0,
             versions: Arc::default(),
+            manifest: Arc::default(),
         };
         Watcher::start(vault, out, live, Config::default()).unwrap()
     }
