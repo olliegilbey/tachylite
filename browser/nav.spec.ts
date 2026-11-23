@@ -142,6 +142,18 @@ test("a long property key or value does not widen the page", async ({ page }) =>
   expect(scroll).toBeLessThanOrEqual(client);
 });
 
+test("a long word in a task keeps the board's other column on screen", async ({ page }) => {
+  note("unbroken", `# Unbroken\n\n- [ ] ${"word".repeat(80)}\n- [/] short\n`);
+  await expect
+    .poll(async () => (await (await page.request.get(base + "/.tachylite/tasks")).text()).includes("wordword"))
+    .toBe(true);
+  await page.goto(base + "/.tachylite/tasks");
+  // A wide screen sets the doing task beside the todo task: the long word wraps in its own column.
+  const doing = (await page.locator('main li[data-task="doing"]').boundingBox())!;
+  const width = await page.evaluate(() => document.documentElement.clientWidth);
+  expect(doing.x + doing.width).toBeLessThanOrEqual(width);
+});
+
 test("a tap beside a title in an index list opens the note", async ({ page }) => {
   await page.goto(base + "/.tachylite/folders/garden");
   const row = page.locator("main ul.notes li").first();
