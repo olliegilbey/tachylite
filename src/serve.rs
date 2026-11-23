@@ -458,9 +458,11 @@ async fn mermaid_js(headers: HeaderMap) -> Response {
 }
 
 /// The manifest, from the copy the watch thread holds, so its tag is the one the log knows.
-/// With `since` a tag the log reaches, only the changes since that manifest. The worker asks
-/// for those past the HTTP cache, and they are marked so, since each answers one tag.
+/// With `since` a tag the log reaches, only the changes since that manifest. An answer
+/// depends on that manifest and the current one alone, and carries the current one's tag,
+/// so the HTTP cache may keep it: a revalidation finds it current exactly when its tag is.
 async fn manifest(State(app): State<Arc<App>>, uri: Uri, headers: HeaderMap) -> Response {
+    const KIND: &str = "application/json";
     let since = query(&uri, "since");
     let (text, tag, delta) = {
         let log = app
@@ -469,32 +471,23 @@ async fn manifest(State(app): State<Arc<App>>, uri: Uri, headers: HeaderMap) -> 
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         let (text, tag) = log.current();
-        (text, tag.to_string(), since.and_then(|s| log.since(&s)))
+        let tag = tag.to_string();
+        if matches(&headers, &tag) {
+            return tagged(not_modified(), KIND, &tag);
+        }
+        (text, tag, since.and_then(|s| log.since(&s)))
     };
-    const KIND: &str = "application/json";
-    if let Some(delta) = delta {
-        let body = delta.into_bytes();
-        let r = match accepts_gzip(&headers).then(|| gzip(&body)) {
-            Some(Ok(zipped)) => gzipped(Body::from(zipped)),
-            _ => Response::new(Body::from(body)),
-        };
-        let mut r = tagged(r, KIND, &tag);
-        r.headers_mut()
-            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-        return r;
-    }
     if text.is_empty() {
         return status(StatusCode::NOT_FOUND);
     }
-    let response = if matches(&headers, &tag) {
-        not_modified()
-    } else if accepts_gzip(&headers) {
-        match blocking(move || gzip(text.as_bytes())).await {
+    let body = delta.map_or_else(|| text.as_bytes().to_vec(), String::into_bytes);
+    let response = if accepts_gzip(&headers) {
+        match blocking(move || gzip(&body)).await {
             Ok(zipped) => gzipped(Body::from(zipped)),
             Err(e) => return io_status(&e),
         }
     } else {
-        Response::new(Body::from(String::clone(&text)))
+        Response::new(Body::from(body))
     };
     tagged(response, KIND, &tag)
 }

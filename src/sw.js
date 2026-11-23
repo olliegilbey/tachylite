@@ -140,16 +140,15 @@ let changes = 0;
 // records the listed version, and is never read for a version or a diagram: its content is its own.
 async function sync() {
   const cache = await caches.open(CACHE);
-  // A tag the server knows gets what changed since, for that tag alone, so past the HTTP
-  // cache. Any other answer, as a static host's, is the whole manifest.
+  // A tag the server knows gets what changed since. Any other answer, as a static host's, is
+  // the whole manifest.
   const listed = await (await cache.match(LISTED))?.json();
-  const asked = listed ? get(`${MANIFEST}?since=${encodeURIComponent(listed.tag)}`, 30, "no-store") : get(MANIFEST);
-  const response = await asked.catch(() => null);
+  const response = await get(listed ? `${MANIFEST}?since=${encodeURIComponent(listed.tag)}` : MANIFEST).catch(() => null);
   if (!response?.ok) return;
   const etag = response.headers.get("etag");
   const tag = etag && etag + " " + changes;
-  // A cache the browser evicted lost its stored manifest too.
-  if (tag && tag === done && (await cache.match(MANIFEST))) return;
+  // A cache the browser evicted lost its stored manifest too. A body left unread holds its connection.
+  if (tag && tag === done && (await cache.match(MANIFEST))) return response.arrayBuffer();
   done = null;
   const body = await response.json();
   let { pages: want, files = [] } = body;

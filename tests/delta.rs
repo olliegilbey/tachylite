@@ -110,7 +110,6 @@ fn ask(server: &Server, since: &str) -> (String, Answer, common::Response) {
     assert_eq!(r.status, 200);
     let text = r.text();
     let answer = if text.starts_with("{\"since\":") {
-        assert_eq!(r.header("cache-control"), Some("no-store"));
         Answer::Delta(parse_delta(&text))
     } else {
         Answer::Whole(parse(&text))
@@ -222,6 +221,28 @@ fn the_plain_manifest_still_revalidates() {
     let again = common::get(server.addr, MANIFEST, &[("If-None-Match", &a)]);
     assert_eq!(again.status, 304);
     assert!(again.body.is_empty());
+}
+
+/// An answer to `since` depends on that manifest and the current one alone, so a cached
+/// answer is current exactly when its tag is.
+#[test]
+fn a_cached_delta_revalidates_against_the_current_tag() {
+    let d = padded();
+    let server = Server::start(&d.vault(), &d.out());
+    let (a, _, _) = whole(&server);
+    let (b, _) = save(&server, &d.vault(), "welcome.md", "# Welcome back");
+    let url = format!("{MANIFEST}?since={}", encode(&a));
+    let first = server.get(&url);
+    assert_eq!(first.header("cache-control"), Some("no-cache"));
+    assert_eq!(first.header("etag"), Some(b.as_str()));
+    assert_eq!(
+        common::get(server.addr, &url, &[("If-None-Match", &b)]).status,
+        304
+    );
+    let (c, _) = save(&server, &d.vault(), "welcome.md", "# Welcome again");
+    let after = common::get(server.addr, &url, &[("If-None-Match", &b)]);
+    assert_eq!(after.status, 200, "a delta to an older manifest was kept");
+    assert_eq!(after.header("etag"), Some(c.as_str()));
 }
 
 #[test]

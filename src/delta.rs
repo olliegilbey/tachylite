@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 
 /// The bytes of steps the log keeps. On the budget vault one saved note makes a step of
-/// about 600 bytes, so the log reaches back about a hundred saves.
+/// about 250 bytes, so the log reaches back about 250 saves.
 pub const LIMIT: usize = 64 * 1024;
 
 /// What changed from one manifest to the next.
