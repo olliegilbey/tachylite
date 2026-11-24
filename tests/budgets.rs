@@ -460,6 +460,11 @@ fn resident_memory() {
     let path = dir.path().join("vault").join(&note);
     fs::write(&path, "# edited").unwrap();
     events.expect("page");
+    // A config save rescans the vault, and a new pin changes every page.
+    let config = dir.path().join("vault/tachylite.toml");
+    fs::write(config, format!("pins = [{note:?}]\n")).unwrap();
+    let pinned = version(&events.expect("page"));
+    await_manifest(&dir.path().join("out"), &page, &pinned);
 
     let peak_kb = proc_field(server.child.id(), "status", "VmHWM:");
     println!(
