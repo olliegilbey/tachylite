@@ -153,7 +153,8 @@ struct Done {
     foot: BTreeSet<Arc<str>>,
     /// The notes it pushed.
     pushed: HashSet<String>,
-    /// Rendered bodies, so a page whose backlinks change later takes a new footer unread.
+    /// Rendered bodies the first build holds, so a page whose backlinks change later takes a
+    /// new footer unread.
     held: HashMap<String, String>,
     /// The held notes, oldest first.
     order: VecDeque<String>,
@@ -161,6 +162,8 @@ struct Done {
     bytes: usize,
     /// The held notes whose page is not written yet, in render order: the newest of `order`.
     unwritten: VecDeque<String>,
+    /// The notes rendered for a new footer, with no body held and no page to read back.
+    again: HashSet<String>,
 }
 
 impl Done {
@@ -174,11 +177,11 @@ impl Done {
         self.unwritten.push_back(path.to_string());
     }
 
-    /// Drops the oldest held bodies until `held` fits `max` bytes. Returns those whose page
-    /// is not written yet, to be written at once.
-    fn spill(&mut self, max: usize) -> Vec<(String, String)> {
+    /// Drops the oldest held bodies until `held` fits `max` bytes, or every one with no `max`.
+    /// Returns those whose page is not written yet, to be written at once.
+    fn spill(&mut self, max: Option<usize>) -> Vec<(String, String)> {
         let mut spilled = Vec::new();
-        while self.bytes > max {
+        while max.is_none_or(|max| self.bytes > max) {
             let Some(path) = self.order.pop_front() else {
                 break;
             };
@@ -195,11 +198,13 @@ impl Done {
     }
 }
 
-/// The rendered body bytes an apply holds after each render batch, so it holds at most this
-/// plus one batch. A full sync past it writes its oldest pages early,
+/// The rendered body bytes the first build holds after each render batch, so it holds at most
+/// this plus one batch. The first build is an apply to a site with no page yet. One past this
+/// writes its oldest pages early,
 /// and a page whose backlinks change after takes its new footer from the written page. So a
 /// vault of any size builds in bounded memory, and a small one writes each page once.
 /// The budget vault's bodies come to 27 MB: under this, so its cold build writes no page twice.
+/// A later apply holds no body past its batch, so a rescan peaks below the first build.
 const HOLD_MAX: usize = 32 * 1024 * 1024;
 
 /// The note bytes an apply keeps from its first read. A save keeps its note, so its render
@@ -324,7 +329,7 @@ pub struct Site {
     versions: BTreeMap<String, String>,
     /// Where each written note page holds its body: start and length in bytes.
     spans: HashMap<String, (usize, usize)>,
-    /// The rendered body bytes an apply holds, when not `HOLD_MAX`.
+    /// The rendered body bytes the first build holds, when not `HOLD_MAX`.
     hold_max: Option<usize>,
     /// The winners, for link resolution. The graph shares its paths.
     index: Index,
@@ -707,7 +712,8 @@ impl Site {
         &self.exclude
     }
 
-    /// Sets the rendered body bytes an apply holds. A test lowers it to reach the early writes.
+    /// Sets the rendered body bytes the first build holds. A test lowers it to reach the early
+    /// writes.
     pub fn hold_at_most(&mut self, bytes: usize) {
         self.hold_max = Some(bytes);
     }
@@ -909,10 +915,10 @@ impl Site {
                 .filter(|p| won.contains(&**p) && self.entries.get(&**p) == Some(&Kind::Note))
                 .map(|p| p.to_string())
                 .collect();
-            let again: Vec<String> = self
-                .refoot(&stale, &mut done, sink)
+            let lost = self.refoot(&stale, &mut done, sink);
+            let again: Vec<String> = lost
                 .into_iter()
-                .filter(|p| !done.rendered.contains(p))
+                .filter(|p| done.again.insert(p.clone()))
                 .collect();
             if again.is_empty() {
                 break;
@@ -1681,9 +1687,10 @@ impl Site {
     }
 
     /// Renders the bodies of `paths` in batches, and updates the link graph and tags from
-    /// each. A note whose backlinks change joins `done.foot`. Holds each body until `flush`
-    /// writes its page; past `HOLD_MAX`, the oldest bodies' pages are written at once. Reports
-    /// the broken links new to their note, so a re-render logs none twice.
+    /// each. A note whose backlinks change joins `done.foot`. The first build holds each body
+    /// until `flush` writes its page; past `HOLD_MAX`, the oldest bodies' pages are written at
+    /// once. A later apply writes each batch's pages at once. Reports the broken links new to
+    /// their note, so a re-render logs none twice.
     fn render(
         &mut self,
         paths: &[String],
@@ -1692,6 +1699,9 @@ impl Site {
         done: &mut Done,
         broken: &mut Vec<Broken>,
     ) {
+        // Held bodies would sit on top of the memory a site with pages already takes.
+        let first = self.winners.is_empty();
+        let hold = first.then(|| self.hold_max.unwrap_or(HOLD_MAX));
         // Batches keep a full sync from holding every source at once.
         for batch in paths.chunks(RENDER_BATCH) {
             // A dependent that cannot be read keeps its page; its own event follows.
@@ -1735,7 +1745,7 @@ impl Site {
                 done.rendered.insert(path.to_string());
                 done.hold(path, body.html);
             }
-            let spilled = done.spill(self.hold_max.unwrap_or(HOLD_MAX));
+            let spilled = done.spill(hold);
             let bodies: Vec<(&str, &str)> = spilled
                 .iter()
                 .map(|(p, b)| (p.as_str(), b.as_str()))

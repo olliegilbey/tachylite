@@ -1996,6 +1996,54 @@ fn a_pushed_page_links_to_no_page_of_its_apply_not_yet_written() {
     assert!(at("write files/f.html") < at("push a"), "{:?}", sink.0);
 }
 
+/// A new note with an empty body is written with its batch, before the push of its linker.
+#[test]
+fn an_empty_new_note_is_written_before_the_push_of_its_linker() {
+    let mut mem = Mem::with(&[("old.md", "# old")]);
+    let (mut site, _) = synced(&mut mem, Exclude::default());
+    mem.0.insert("a.md".into(), b"[[z]]".to_vec());
+    mem.0.insert("z.md".into(), Vec::new());
+    let mut sink = Ordered::default();
+    let changes = ["a.md", "z.md"].map(touch).to_vec();
+    site.apply_to(changes, &mut mem.clone(), &mut sink);
+    let at = |event: &str| sink.0.iter().position(|e| e == event).unwrap();
+    assert!(at("write pages/z.html") < at("push a"), "{:?}", sink.0);
+}
+
+/// An apply to a site with pages holds no body past its batch of 256. A note of the second
+/// batch links to one of the first, whose page takes its new footer from the page written,
+/// or from a second render where the sink keeps no page.
+#[test]
+fn a_backlink_from_a_later_batch_reaches_a_page_of_an_earlier_batch() {
+    let notes: Vec<(String, String)> = (0..300)
+        .map(|i| (format!("n{i:03}.md"), format!("# n{i:03}")))
+        .collect();
+    let pairs: Vec<(&str, &str)> = notes
+        .iter()
+        .map(|(p, c)| (p.as_str(), c.as_str()))
+        .collect();
+    let mut mem = Mem::with(&pairs);
+    let mut site = Site::new(Exclude::default());
+    let mut got = Out::new();
+    apply_kept(&mut site, vec![sync_all(&mem)], &mut mem, &mut got);
+    let (mut bare, _) = synced(&mut mem.clone(), Exclude::default());
+
+    mem.0.insert("n299.md".into(), b"[[n000]]".to_vec());
+    let delta = apply_kept(&mut site, vec![sync_all(&mem)], &mut mem, &mut got);
+    assert_eq!(pushed(&delta), ["n299", "n000"]);
+    let mut want = Out::new();
+    let mut fresh = Site::new(Exclude::default());
+    apply_kept(&mut fresh, vec![sync_all(&mem)], &mut mem, &mut want);
+    assert_eq!(got.len(), want.len());
+    for (path, html) in &want {
+        assert!(got.get(path) == Some(html), "{path} differs");
+    }
+
+    let delta = bare.apply(vec![sync_all(&mem)], &mut mem.clone());
+    assert_eq!(pushed(&delta), ["n299", "n000"]);
+    assert!(html(&delta, "n000").contains("href=\"/n299\""));
+}
+
 /// 300 notes pass the bodies this site holds within their first batch of 256, so a full
 /// sync writes its oldest pages early. The notes of the next batch link to them, so those
 /// pages take their final footer from the page written.
