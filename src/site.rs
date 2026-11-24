@@ -153,7 +153,8 @@ struct Done {
     foot: BTreeSet<Arc<str>>,
     /// The notes it pushed.
     pushed: HashSet<String>,
-    /// Rendered bodies, so a page whose backlinks change later takes a new footer unread.
+    /// Rendered bodies the first build holds, so a page whose backlinks change later takes a
+    /// new footer unread.
     held: HashMap<String, String>,
     /// The held notes, oldest first.
     order: VecDeque<String>,
@@ -161,6 +162,8 @@ struct Done {
     bytes: usize,
     /// The held notes whose page is not written yet, in render order: the newest of `order`.
     unwritten: VecDeque<String>,
+    /// The notes rendered for a new footer, with no body held and no page to read back.
+    again: HashSet<String>,
 }
 
 impl Done {
@@ -174,11 +177,11 @@ impl Done {
         self.unwritten.push_back(path.to_string());
     }
 
-    /// Drops the oldest held bodies until `held` fits `max` bytes. Returns those whose page
-    /// is not written yet, to be written at once.
-    fn spill(&mut self, max: usize) -> Vec<(String, String)> {
+    /// Drops the oldest held bodies until `held` fits `max` bytes, or every one with no `max`.
+    /// Returns those whose page is not written yet, to be written at once.
+    fn spill(&mut self, max: Option<usize>) -> Vec<(String, String)> {
         let mut spilled = Vec::new();
-        while self.bytes > max {
+        while max.is_none_or(|max| self.bytes > max) {
             let Some(path) = self.order.pop_front() else {
                 break;
             };
@@ -196,7 +199,8 @@ impl Done {
 }
 
 /// The rendered body bytes the first build holds after each render batch, so it holds at most
-/// this plus one batch. A build past it writes its oldest pages early,
+/// this plus one batch. The first build is an apply to a site with no page yet. One past this
+/// writes its oldest pages early,
 /// and a page whose backlinks change after takes its new footer from the written page. So a
 /// vault of any size builds in bounded memory, and a small one writes each page once.
 /// The budget vault's bodies come to 27 MB: under this, so its cold build writes no page twice.
@@ -911,10 +915,10 @@ impl Site {
                 .filter(|p| won.contains(&**p) && self.entries.get(&**p) == Some(&Kind::Note))
                 .map(|p| p.to_string())
                 .collect();
-            let again: Vec<String> = self
-                .refoot(&stale, &mut done, sink)
+            let lost = self.refoot(&stale, &mut done, sink);
+            let again: Vec<String> = lost
                 .into_iter()
-                .filter(|p| !done.rendered.contains(p))
+                .filter(|p| done.again.insert(p.clone()))
                 .collect();
             if again.is_empty() {
                 break;
@@ -1695,6 +1699,9 @@ impl Site {
         done: &mut Done,
         broken: &mut Vec<Broken>,
     ) {
+        // Held bodies would sit on top of the memory a site with pages already takes.
+        let first = self.winners.is_empty();
+        let hold = first.then(|| self.hold_max.unwrap_or(HOLD_MAX));
         // Batches keep a full sync from holding every source at once.
         for batch in paths.chunks(RENDER_BATCH) {
             // A dependent that cannot be read keeps its page; its own event follows.
@@ -1738,14 +1745,7 @@ impl Site {
                 done.rendered.insert(path.to_string());
                 done.hold(path, body.html);
             }
-            // Held bodies would sit on top of the memory the site already takes.
-            let first = self.winners.is_empty();
-            let max = if first {
-                self.hold_max.unwrap_or(HOLD_MAX)
-            } else {
-                0
-            };
-            let spilled = done.spill(max);
+            let spilled = done.spill(hold);
             let bodies: Vec<(&str, &str)> = spilled
                 .iter()
                 .map(|(p, b)| (p.as_str(), b.as_str()))

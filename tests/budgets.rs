@@ -460,18 +460,26 @@ fn resident_memory() {
     let path = dir.path().join("vault").join(&note);
     fs::write(&path, "# edited").unwrap();
     events.expect("page");
-    // A config save rescans the vault, and a new pin changes every page.
-    let config = dir.path().join("vault/tachylite.toml");
-    fs::write(config, format!("pins = [{note:?}]\n")).unwrap();
-    let pinned = version(&events.expect("page"));
-    await_manifest(&dir.path().join("out"), &page, &pinned);
-
     let peak_kb = proc_field(server.child.id(), "status", "VmHWM:");
     println!(
         "peak resident memory, budget vault: {} MB (limit 65 MB)",
         peak_kb / 1024
     );
     assert!(peak_kb <= 65 * 1024);
+
+    // A config save rescans the vault, and a new pin changes every page. The kernel counts
+    // the peak from here, so the rescan's own shows.
+    fs::write(format!("/proc/{}/clear_refs", server.child.id()), "5").unwrap();
+    let config = dir.path().join("vault/tachylite.toml");
+    fs::write(config, format!("pins = [{note:?}]\n")).unwrap();
+    let pinned = version(&events.expect("page"));
+    await_manifest(&dir.path().join("out"), &page, &pinned);
+    let rescan_kb = proc_field(server.child.id(), "status", "VmHWM:");
+    println!(
+        "peak resident memory over a config save, budget vault: {} MB (limit 65 MB)",
+        rescan_kb / 1024
+    );
+    assert!(rescan_kb <= 65 * 1024);
 
     // A sync of every page touches the freed memory again, and the next batch trims it.
     let manifest = server.get("/.tachylite/manifest.json").text();
