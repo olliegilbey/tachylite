@@ -13,7 +13,7 @@ comrak = { version = "0.59.0", default-features = false }
 flate2 = "1.1.11"
 futures-util = { version = "0.3.34", default-features = false }
 glob = "0.3.4"
-rustix = { version = "1.1.6", features = ["event", "fs"] }
+rustix = { version = "1.1.6", features = ["event", "fs", "param"] }
 tokio = { version = "1.54.1", features = ["rt", "net", "sync"] }
 toml = { version = "1.2.0", default-features = false, features = ["std", "parse"] }
 
@@ -24,7 +24,8 @@ strip = true
 panic = "abort"
 
 [lints.rust]
-unsafe_code = "forbid"
+# `src/trim.rs` holds the one exception, and a test fails on a second.
+unsafe_code = "deny"
 
 [lints.clippy]
 unwrap_used = "deny"

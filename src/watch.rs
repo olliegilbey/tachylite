@@ -19,7 +19,7 @@ use crate::delta;
 use crate::output::Writer;
 use crate::site::{Change, Note, Push, Site, Source};
 use crate::vault::{ReadError, VaultDir, classify, hold, scan_under};
-use crate::{Error, report};
+use crate::{Error, report, trim};
 
 /// What the watch thread shares with the HTTP thread.
 #[derive(Clone)]
@@ -85,6 +85,8 @@ pub struct Watcher {
     pending: Vec<Event>,
     /// The `hosts` of the config in force. The server reads it once, after the start.
     hosts: Option<Vec<String>>,
+    /// Resident memory after the last trim, in bytes.
+    floor: usize,
 }
 
 fn join(dir: &str, name: &str) -> String {
@@ -170,6 +172,7 @@ impl Watcher {
             since: None,
             pending: Vec::new(),
             hosts: config.hosts,
+            floor: 0,
         };
         watcher.watch_tree("")?;
         // A config saved before the root watch existed sent no event. One still being saved
@@ -226,6 +229,8 @@ impl Watcher {
                     self.derive()?;
                 }
                 if drained {
+                    // After the pushes and the manifest, so neither waits for a trim.
+                    self.floor = trim::settle(self.floor);
                     self.wait()?;
                 }
                 Ok(())

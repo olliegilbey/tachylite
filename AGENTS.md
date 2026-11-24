@@ -96,7 +96,7 @@ The stack: Rust stable, edition 2024, one crate until a second earns its place. 
 - `make budget` runs the timed budgets on the reference host. Put its numbers in the PR body.
 - Functions over structs where there is no real state.
 - Errors are explicit. A library function returns a typed error. The binary reports it once, at the top. Nothing is swallowed. No `unwrap` outside tests.
-- No `unsafe`.
+- No `unsafe`, with one exception: `src/trim.rs` declares glibc's `malloc_trim`. The design doc's "Memory at rest" gives the reason and the cost. A test fails on a second exception.
 - Test at the highest seam that can fail. The build seam takes a vault and checks the output directory. The live seam runs `tachylite serve` and checks HTTP and SSE. The browser seam drives headless Chromium through Playwright against a real server. Lower tests exist only where an invariant lives.
 - Snapshot tests for rendering: one fixture note in, HTML out. Property tests where invariants live: link resolution, the manifest, exclusion, and live output equal to a fresh full build after any sequence of edits.
 - Watcher, push and browser tests await the event they expect. A test that sleeps to pass is wrong. Clippy's `disallowed-methods` forbids sleeping, and the browser suite never uses fixed timeouts.

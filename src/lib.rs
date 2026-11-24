@@ -14,5 +14,6 @@ pub mod report;
 pub mod sanitize;
 pub mod serve;
 pub mod site;
+mod trim;
 pub mod vault;
 pub mod watch;
