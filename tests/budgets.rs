@@ -470,9 +470,8 @@ fn resident_memory() {
 
     // A sync of every page touches the freed memory again, and the next batch trims it.
     let manifest = server.get("/.tachylite/manifest.json").text();
-    for page in manifest.split('"').filter(|part| part.starts_with('/')) {
-        server.get(page);
-    }
+    let listed = manifest.split('"').filter(|part| part.starts_with('/'));
+    assert!(listed.inspect(|url| drop(server.get(url))).count() > 2000);
     // The trim follows the batch's manifest, and the watcher reads no save before it ends.
     fs::write(&path, "# edited again").unwrap();
     await_manifest(

@@ -194,7 +194,6 @@ impl Watcher {
         let sync = watcher.sync("")?;
         watcher.apply(vec![sync], HashSet::new())?;
         watcher.derive()?;
-        watcher.floor = trim::settle(watcher.floor);
         Ok(watcher)
     }
 
@@ -230,7 +229,7 @@ impl Watcher {
                     self.derive()?;
                 }
                 if drained {
-                    // After the pushes, so no reader waits for a trim.
+                    // After the pushes and the manifest, so neither waits for a trim.
                     self.floor = trim::settle(self.floor);
                     self.wait()?;
                 }
