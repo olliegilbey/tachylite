@@ -467,6 +467,27 @@ fn resident_memory() {
         peak_kb / 1024
     );
     assert!(peak_kb <= 65 * 1024);
+
+    // A sync of every page touches the freed memory again, and the next batch trims it.
+    let manifest = server.get("/.tachylite/manifest.json").text();
+    for page in manifest.split('"').filter(|part| part.starts_with('/')) {
+        server.get(page);
+    }
+    // The trim follows the batch's manifest, and the watcher reads no save before it ends.
+    fs::write(&path, "# edited again").unwrap();
+    await_manifest(
+        &dir.path().join("out"),
+        &page,
+        &version(&events.expect("page")),
+    );
+    fs::write(&path, "# edited once more").unwrap();
+    events.expect("page");
+    let rest_kb = proc_field(server.child.id(), "status", "VmRSS:");
+    println!(
+        "resident memory at rest, budget vault: {} MB (limit 40 MB)",
+        rest_kb / 1024
+    );
+    assert!(rest_kb <= 40 * 1024);
 }
 
 /// A deterministic budget, so it runs in every `cargo test`: the median budget-vault page
