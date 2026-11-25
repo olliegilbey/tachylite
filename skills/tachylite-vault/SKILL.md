@@ -78,6 +78,7 @@ A task is a list item that starts with a checkbox. Four statuses exist:
 - Indent a task to nest it. A task works in a callout and in an embedded note.
 - A reader can tick a task in the browser when the vault's `tachylite.toml` sets `writes = true`. A tick changes the character in the box to `x`, or back to a space. Any other change is an edit to the note.
 - Put a space after the box, and do not define a link reference named `x`, as `[x]: https://example.com`: a ticked `[x]` would become a link.
+- Keep `%%comments%%` off a task's line: a task on a line that a comment touches cannot be ticked.
 - Due dates and plugin fields show as plain text.
 
 ## Daily notes

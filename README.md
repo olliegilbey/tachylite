@@ -132,12 +132,12 @@ writes = true
 ```
 
 - A tap on a task's box, on its note page or on the board, ticks the task. A second tap unticks it. Tachylite changes one character in the note, the one between the brackets, and nothing else in the vault.
-- A task in progress, `[/]`, ticks to done, and unticks to todo. A cancelled task, `[-]`, cannot be ticked. A task shown inside another note through an embed is ticked on its own note's page.
-- Offline, a tick waits on the phone, marked with a dashed outline. It is sent the next time a page is open with a connection.
+- A task in progress, `[/]`, ticks to done, and unticks to todo. A cancelled task, `[-]`, cannot be ticked, nor can a task on a line that a `%%comment%%` touches. A task shown inside another note through an embed is ticked on its own note's page.
+- Offline, or while the server is busy, a tick waits on the phone, marked with a dashed outline. An open page sends it again after 2 seconds, then at twice the gap each time, up to a minute. A page also sends it when it loads or connects again.
 - A tick is refused when the task's line changed after the page was rendered, or when a line with the same text was added or removed. The box goes back. The page then updates, and you can tick again. A waiting tick that is refused while its note is off screen is dropped, and the page shows the task as the note has it.
-- A saved change to `writes` takes effect at once. `writes = false`, or no key, turns ticks off. So does a `tachylite.toml` that is deleted or saved with an error: ticks stay off until a config with `writes = true` loads, and the rest of the previous config stays in force.
+- A saved change to `writes` takes effect at once. `writes = false`, or no key, turns ticks off. So does a `tachylite.toml` that is deleted or saved with an error: ticks stay off until a config with `writes = true` loads, and the rest of the previous config stays in force. The log says each time ticks turn off or on.
 - A tick writes its one character in place, and no lock keeps another program out. If another program saves the same note in place at the same instant as a tick, the tick's one character can land in the new text, or past its end, where it leaves NUL bytes and an `x` after the text. The window is the gap between two system calls, a few microseconds, longer on a loaded machine. A program that saves by rename is not affected.
-- There is no login. With `writes = true`, anyone who can reach the server can tick and untick tasks. Keep the route tailnet-only, and set `hosts` to the proxy's name. A tick is accepted only from a page of the site itself, opened at `127.0.0.1`, `localhost` or a name in `hosts`. Without `hosts`, a tick works only from the machine itself.
+- There is no login. With `writes = true`, anyone who can reach the server can tick and untick tasks. Keep the route tailnet-only, and set `hosts` to the proxy's name. A new or changed `hosts` needs a restart, though `writes` applies at once. A tick is accepted only from a page of the site itself, opened at `127.0.0.1`, `localhost` or a name in `hosts`. Without `hosts`, a tick works only from the machine itself.
 - A request built by hand can set the box of any line shaped like a task in a published note, including one inside a code block or a comment, and never any other character.
 
 ## Who it is for
