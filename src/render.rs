@@ -24,6 +24,25 @@ pub fn note_title(path: &str) -> &str {
     name.rsplit_once('.').map_or(name, |(stem, _)| stem)
 }
 
+/// LaTeX as MathML, or its source where it does not parse.
+fn math(latex: &str, display: bool) -> String {
+    use math_core::{LatexToMathML, MathCoreConfig, MathDisplay};
+    static CONVERTER: std::sync::LazyLock<Option<LatexToMathML>> =
+        std::sync::LazyLock::new(|| LatexToMathML::new(MathCoreConfig::default(), Vec::new()).ok());
+    let mode = if display {
+        MathDisplay::Block
+    } else {
+        MathDisplay::Inline
+    };
+    let done = CONVERTER
+        .as_ref()
+        .and_then(|c| c.convert_with_local_state(latex, mode).ok());
+    match done {
+        Some(done) => done.mathml,
+        None => format!("<code class=\"math-error\">{}</code>", escape(latex)),
+    }
+}
+
 fn options() -> Options<'static> {
     let mut options = Options::default();
     options.extension.strikethrough = true;
@@ -35,6 +54,7 @@ fn options() -> Options<'static> {
     options.extension.ofm_callouts = true;
     options.parse.escaped_char_spans = true;
     options.extension.highlight = true;
+    options.extension.math_dollars = true;
     // Raw HTML reaches the page only through `sanitize`, node by node.
     options.render.r#unsafe = true;
     options
@@ -463,6 +483,12 @@ fn render(
         body.broken.clear();
         body.tags.clear();
         return body;
+    }
+    for node in root.descendants() {
+        let mut data = node.data_mut();
+        if let NodeValue::Math(m) = &data.value {
+            data.value = NodeValue::Raw(math(&m.literal, m.display_math));
+        }
     }
     let mut rewrites = Vec::new();
     let mut texts = Vec::new();
