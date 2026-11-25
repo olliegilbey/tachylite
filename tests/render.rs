@@ -1813,6 +1813,34 @@ fn a_task_the_write_path_cannot_find_stays_read_only() {
 }
 
 #[test]
+fn a_task_on_a_line_a_comment_touches_stays_read_only() {
+    for md in [
+        // The comment ends on the task's line, and hides a box where the shown one would be.
+        "%% parked\n- [ ] %%- [ ] shown\n",
+        "%% parked\n- [x] %%- [ ] shown\n",
+        // The comment starts, ends or sits whole on the line.
+        "- [ ] shown %% parked\nstill parked %%\n",
+        "%%parked%%- [ ] shown\n",
+        "- [ ] shown %%parked%% too\n",
+        "- %%parked%%[ ] shown\n",
+    ] {
+        let html = ticked(md);
+        assert!(html.contains("data-task=\"todo\""), "{md:?} gave {html}");
+        assert!(!html.contains("data-box"), "{md:?} gave {html}");
+        assert_eq!(html, plain(md), "{md:?}");
+    }
+    // A task on a line of its own keeps its token beside one a comment touches.
+    let md = "- [ ] free\n- [ ] shown %%parked%%\n%% open\n- [ ] hidden\n%%\n- [ ] after\n";
+    assert_eq!(
+        boxes(&ticked(md)),
+        [
+            (token(md, 1), "todo".to_string()),
+            (token(md, 6), "todo".to_string())
+        ]
+    );
+}
+
+#[test]
 fn an_embedded_task_has_no_token() {
     let notes = [("b.md", "- [ ] embedded\n")];
     let index = Index::new(["a.md", "b.md"]);
@@ -1899,6 +1927,11 @@ const NOTE_LINES: &[&str] = &[
     "%% a comment %%",
     "%% an open comment",
     "closes here %% - [ ] after a comment",
+    "- [ ] %%- [ ] shown",
+    "- [ ] opens %%",
+    "%%- [ ] after a close",
+    "- [ ] mid %%c%% tail",
+    "- %%c%%[ ] box after comment",
     "```",
     "```",
     "%%",

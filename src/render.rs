@@ -802,8 +802,7 @@ fn item_start<'a>(item: &'a AstNode<'a>) -> (usize, usize) {
 /// The token of each of `tasks` a client may tick. `file` is the note as read, `text` its
 /// body after the frontmatter, and `parsed` that body as the parser read it, without its
 /// comments. A task has a token when its line of the file holds a box by `tick::boxes`, the
-/// box holds the task's status, and the parser read the same box there. A cancelled task
-/// has none.
+/// box holds the task's status, and no comment touches the line. A cancelled task has none.
 fn tokens<'a>(file: &str, text: &str, parsed: &str, tasks: &[&'a AstNode<'a>]) -> Boxes {
     let mut boxes = Boxes::new();
     if tasks.is_empty() || !tick::numbered(file.as_bytes()) {
@@ -816,8 +815,9 @@ fn tokens<'a>(file: &str, text: &str, parsed: &str, tasks: &[&'a AstNode<'a>]) -
         .iter()
         .filter(|b| **b == b'\n')
         .count();
-    // Without a comment, the parser read the body as it is.
-    let read = (!std::ptr::eq(parsed, text)).then(|| split_lines(parsed));
+    // Without a comment, the parser read the body as it is. With one, a line the comment
+    // touches lost bytes, and the box the parser read may not be the file's first.
+    let read = (!std::ptr::eq(parsed, text)).then(|| (split_lines(parsed), split_lines(file)));
     for item in tasks {
         let NodeValue::TaskItem(task) = &item.data().value else {
             continue;
@@ -837,12 +837,9 @@ fn tokens<'a>(file: &str, text: &str, parsed: &str, tasks: &[&'a AstNode<'a>]) -
             b'x' | b'X' => "done",
             _ => continue,
         };
-        // A comment that ends on the line can hide the box the file's line starts with.
-        let at = boxed.at - boxed.start;
-        let same = read.as_ref().is_none_or(|read| {
-            read.get(above)
-                .is_some_and(|l| tick::find(l) == Some(at) && l[at] == symbol)
-        });
+        let same = read
+            .as_ref()
+            .is_none_or(|(parsed, file)| parsed.get(above) == file.get(before + above));
         if same && task_status(task.symbol) == status {
             boxes.insert((line, column), boxed.token.to_string());
         }
