@@ -263,6 +263,7 @@
   };
   let busy = false;
   let again = 0;
+  let later = 2e3;
   const flush = async () => {
     if (busy) return;
     busy = true;
@@ -272,12 +273,15 @@
         const url = `/.tachylite/task?note=${encodeURIComponent(note)}&at=${at}&to=${to}`;
         const { status } = await fetch(url, { method: "POST" });
         // The server is rescanning, or a proxy has none behind it: the tick waits, and one
-        // timer sends it again. The server's own 500 is a refusal, like any lower status.
+        // timer sends it again, from 2 s, doubling to a minute while the server stays away.
+        // The server's own 500 is a refusal, like any lower status.
         if (status > 500) {
           clearTimeout(again);
-          again = setTimeout(flush, 2e3);
+          again = setTimeout(flush, later);
+          later = Math.min(later * 2, 6e4);
           break;
         }
+        later = 2e3;
         // A newer tick for the box stays queued.
         keep(queue().filter((t) => JSON.stringify(t) !== JSON.stringify(tick)));
         for (const li of boxes(tick)) {
