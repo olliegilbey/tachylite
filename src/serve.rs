@@ -29,7 +29,7 @@ use crate::config::Exclude;
 use crate::site::Push;
 use crate::tick::{To, Token};
 use crate::vault::{Kind, TickError, VaultDir, classify};
-use crate::watch::{Live, Watcher};
+use crate::watch::{Live, Ticks, Watcher};
 use crate::{Error, output, report};
 
 pub const DEFAULT_PORT: u16 = 7420;
@@ -214,10 +214,12 @@ async fn file(
 ) -> Response {
     if method == Method::POST && uri.path() == TASK {
         let lock = app.live.ticks.lock();
-        let notes = lock.unwrap_or_else(PoisonError::into_inner).clone();
-        // With `writes` off there is no such route, and this is a path like any other.
-        if let Some(notes) = notes {
-            return tick(app, &notes, &uri, &headers).await;
+        let ticks = lock.unwrap_or_else(PoisonError::into_inner).clone();
+        match ticks {
+            // With `writes` off there is no such route, and this is a path like any other.
+            Ticks::Off => {}
+            Ticks::Busy => return tick(app, None, &uri, &headers).await,
+            Ticks::On(notes) => return tick(app, Some(&notes), &uri, &headers).await,
         }
     }
     if method != Method::GET && method != Method::HEAD {
@@ -244,13 +246,19 @@ async fn file(
     response
 }
 
-/// The write route: `POST /.tachylite/task?note=<path>&at=<line>-<hash>&to=done|todo`.
+/// The write route: `POST /.tachylite/task?note=<path>&at=<token>&to=done|todo`.
 const TASK: &str = "/.tachylite/task";
 
 /// Ticks a task in a note of `notes`, the vault paths that have a page. A path outside them
 /// is answered as a missing one is, and the vault is not opened for it: an excluded note, a
-/// note that lost its URL and a path that names nothing read the same.
-async fn tick(app: Arc<App>, notes: &BTreeSet<String>, uri: &Uri, headers: &HeaderMap) -> Response {
+/// note that lost its URL and a path that names nothing read the same. With no `notes`, a
+/// new config's rescan is running, and the client is told to send the tick again.
+async fn tick(
+    app: Arc<App>,
+    notes: Option<&BTreeSet<String>>,
+    uri: &Uri,
+    headers: &HeaderMap,
+) -> Response {
     // Unset, `hosts` lists no name, so a tick takes the loopback's alone.
     if !known_host(Some(app.hosts.as_deref().unwrap_or_default()), headers) {
         return status(StatusCode::MISDIRECTED_REQUEST);
@@ -258,6 +266,9 @@ async fn tick(app: Arc<App>, notes: &BTreeSet<String>, uri: &Uri, headers: &Head
     if !same_origin(headers) {
         return status(StatusCode::FORBIDDEN);
     }
+    let Some(notes) = notes else {
+        return status(StatusCode::SERVICE_UNAVAILABLE);
+    };
     let note = query(uri, "note")
         .filter(|n| classify(n, &Exclude::default()) == Some(Kind::Note) && notes.contains(n));
     let Some(note) = note else {
@@ -286,10 +297,15 @@ async fn tick(app: Arc<App>, notes: &BTreeSet<String>, uri: &Uri, headers: &Head
 
 /// True when `Origin` names the host and port the request came to, in any case, as a page
 /// of this site sends with a POST. Another site's page sends its own origin, so it cannot
-/// tick a task for a reader who opens it.
+/// tick a task for a reader who opens it. `Origin` is not compared by scheme: behind a
+/// proxy that ends TLS the server cannot tell its own. So a browser's `Sec-Fetch-Site`,
+/// which counts the scheme, must say `same-origin` when it is sent.
 fn same_origin(headers: &HeaderMap) -> bool {
-    let text = |name| headers.get(name).and_then(|v| v.to_str().ok());
-    let (Some(origin), Some(host)) = (text(header::ORIGIN), text(header::HOST)) else {
+    let text = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+    if headers.contains_key("sec-fetch-site") && text("sec-fetch-site") != Some("same-origin") {
+        return false;
+    }
+    let (Some(origin), Some(host)) = (text("origin"), text("host")) else {
         return false;
     };
     origin
@@ -802,5 +818,43 @@ mod tests {
             stream.next().now_or_never().is_none(),
             "a stale push followed the current page"
         );
+    }
+
+    #[test]
+    fn a_tick_during_a_rescan_is_told_to_come_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let live = Live {
+            pushes: broadcast::channel(4).0,
+            versions: Arc::default(),
+            manifest: Arc::default(),
+            ticks: Arc::new(Mutex::new(Ticks::Busy)),
+        };
+        let app = Arc::new(App {
+            out: dir.path().to_path_buf(),
+            live: live.clone(),
+            hosts: None,
+            vault: VaultDir::open(dir.path()).unwrap(),
+        });
+        let post = |headers: &[(&'static str, &'static str)]| {
+            let mut map = HeaderMap::new();
+            for (name, value) in headers {
+                map.insert(*name, HeaderValue::from_static(value));
+            }
+            let uri = Uri::from_static("/.tachylite/task?note=n.md&at=00000000&to=done");
+            let answer = file(State(Arc::clone(&app)), Method::POST, uri, map);
+            answer.now_or_never().unwrap().status()
+        };
+        let page = [("host", "localhost:8"), ("origin", "http://localhost:8")];
+        assert_eq!(post(&page), StatusCode::SERVICE_UNAVAILABLE);
+        // The busy route still takes a tick from a page of this site alone.
+        let other = [("host", "localhost:8"), ("origin", "http://evil.example")];
+        assert_eq!(post(&other), StatusCode::FORBIDDEN);
+        let rebound = [("host", "evil.example"), ("origin", "http://evil.example")];
+        assert_eq!(post(&rebound), StatusCode::MISDIRECTED_REQUEST);
+        // Off, there is no route. On, the note has no page.
+        *live.ticks.lock().unwrap() = Ticks::Off;
+        assert_eq!(post(&page), StatusCode::METHOD_NOT_ALLOWED);
+        *live.ticks.lock().unwrap() = Ticks::On(Arc::default());
+        assert_eq!(post(&page), StatusCode::NOT_FOUND);
     }
 }

@@ -1694,10 +1694,11 @@ fn ticked(md: &str) -> String {
     render_with("a.md", md, &Index::default(), &Sources::new(), true).html
 }
 
-/// The token of the box on line `number` of `md`.
+/// The token of the box on line `number` of `md`, counted from 1.
 fn token(md: &str, number: usize) -> String {
-    let (_, raw) = tick::lines(md.as_bytes()).nth(number - 1).unwrap();
-    Token::of(number, raw).unwrap().0.to_string()
+    let boxes = tick::boxes(md.as_bytes());
+    let boxed = boxes.iter().find(|b| b.line == number).unwrap();
+    boxed.token.to_string()
 }
 
 /// Each task of `html` a client may tick, as its token and status, in page order.
@@ -1732,18 +1733,59 @@ fn a_task_a_client_may_tick_carries_its_token() {
 }
 
 #[test]
-fn a_token_counts_lines_from_the_top_of_the_file() {
+fn a_token_is_its_lines_own_below_frontmatter_and_comments() {
     for md in [
         "---\ntitle: t\n---\n\n- [ ] a\n",
         "---\r\ntitle: t\r\n---\r\n\r\n- [ ] a\r\n",
         "\n\n\n\n> - [ ] a\n",
         "%% a\ncomment %%\n\n- one\n  - [ ] a\n",
+        // The line above holds a box too, in the frontmatter or as plain text.
+        "---\ntags:\n  - [x] b\n---\n- [ ] a\n",
+        "\n\n\n- [x] b\n- [ ] a\n",
     ] {
         let html = ticked(md);
+        let own: Vec<(String, String)> = boxes(&html)
+            .into_iter()
+            .filter(|(_, status)| status == "todo")
+            .collect();
         assert_eq!(
-            boxes(&html),
+            own,
             [(token(md, 5), "todo".to_string())],
             "{md:?} gave {html}"
+        );
+    }
+}
+
+#[test]
+fn tasks_of_one_text_carry_their_place_among_its_lines() {
+    // The same line in the frontmatter, under two headings, in a code block and in a comment.
+    let md = "---\nlist:\n- [ ] ship\n---\n# a\n- [ ] ship\n```\n- [x] ship\n```\n# b\n\
+              - [ ] ship\n- [ ] other\n\n%%\n- [ ] ship\n%%\n";
+    let html = ticked(md);
+    let got = boxes(&html);
+    let hash = &token(md, 6)[..8];
+    assert_eq!(
+        got,
+        [
+            (format!("{hash}.1.5"), "todo".to_string()),
+            (format!("{hash}.3.5"), "todo".to_string()),
+            (token(md, 12), "todo".to_string()),
+        ],
+        "{html}"
+    );
+    assert_eq!(token(md, 12).len(), 8);
+    // Each ticks its own line, here and after lines come in above.
+    for (text, line) in [(&got[0].0, 6), (&got[1].0, 11)] {
+        let token = Token::parse(text).unwrap();
+        let at: usize = md.split_inclusive('\n').take(line - 1).map(str::len).sum();
+        assert_eq!(
+            tick::plan(md.as_bytes(), token, To::Done),
+            Ok(Some((at + 3, b'x')))
+        );
+        let moved = format!("intro\n\n{md}");
+        assert_eq!(
+            tick::plan(moved.as_bytes(), token, To::Done),
+            Ok(Some((at + 10, b'x')))
         );
     }
 }
@@ -1753,8 +1795,12 @@ fn a_task_the_write_path_cannot_find_stays_read_only() {
     for md in [
         // A lone carriage return ends a line for the parser alone.
         "one\rtwo\n- [ ] a\n",
+        // So the parser's line of the first task is the file's line of the second.
+        "one\rtwo\n- [ ] a\n- [ ] b\n",
         // A comment hides the line's first box, and the parser reads the second.
         "%% open\n- [x] hidden %% - [ ] shown\n",
+        // The two hold one status, so only where each sits tells them apart.
+        "%% open\n- [ ] hidden %% - [ ] shown\n",
         // The parser takes a box with no space after it; the finder does not.
         "- [ ]a\n",
         // A byte order mark before the first line.
@@ -1803,9 +1849,9 @@ fn the_board_line_of_a_task_carries_its_token() {
 #[test]
 fn raw_html_cannot_forge_a_token_or_a_source() {
     let html = ticked(
-        "<ul data-src=\"other.md\"><li data-box=\"1-00000000\">a</li></ul>\n\n\
+        "<ul data-src=\"other.md\"><li data-box=\"00000000\">a</li></ul>\n\n\
          <main data-src=\"other.md\">\n\n<div data-src=\"other.md\" data-pending>\n\n\
-         - [ ] real\n\n</div>\n\n- b <span data-box=\"1-00000000\" data-src=\"x.md\">c</span>\n",
+         - [ ] real\n\n</div>\n\n- b <span data-box=\"00000000.0.2\" data-src=\"x.md\">c</span>\n",
     );
     assert_eq!(html.matches("data-box").count(), 1, "{html}");
     assert!(
@@ -1821,11 +1867,16 @@ fn a_page_names_its_note_only_for_a_task_a_client_may_tick() {
     assert!(page(false).contains("</header>\n<main>\n"));
 }
 
-/// Lines a generated note is made of: tasks in every container, lines that look like one,
-/// and the text that moves a line number.
+/// Lines a generated note is made of: tasks in every container, tasks of one text, lines
+/// that look like a task, and the text that puts a line in a code block or a comment.
 const NOTE_LINES: &[&str] = &[
     "- [ ] water the fern",
     "- [ ] water the fern",
+    "- [ ] water the fern",
+    "- [x] water the fern",
+    "- [/] water the fern",
+    "  - [ ] nested",
+    "> - [ ] quoted",
     "- [x] sweep the porch",
     "- [X] oil the gate",
     "- [/] repot the basil #shed",
@@ -1849,6 +1900,8 @@ const NOTE_LINES: &[&str] = &[
     "%% an open comment",
     "closes here %% - [ ] after a comment",
     "```",
+    "```",
+    "%%",
     "<div>",
     "caf\u{e9} - [ ] not at the start",
 ];
@@ -1856,29 +1909,46 @@ const NOTE_LINES: &[&str] = &[
 proptest::proptest! {
     #![proptest_config(proptest::prelude::ProptestConfig::with_cases(1000))]
 
-    /// The write path takes each token the renderer writes. The tick changes one byte, and
-    /// the note rendered again shows that task with its new status and every other task as
-    /// it was.
+    /// The write path takes each token the renderer writes, and no two tasks share one. The
+    /// tick changes one byte, and the note rendered again shows that task with its new
+    /// status and every other task as it was. Lines added above the tasks change nothing.
     #[test]
     fn a_rendered_token_ticks_its_own_task(
         picks in proptest::collection::vec(proptest::sample::select(NOTE_LINES), 1..16),
-        front in proptest::bool::ANY,
+        front in 0..3u8,
         crlf in proptest::bool::ANY,
         pick in proptest::prelude::any::<proptest::sample::Index>(),
         done in proptest::bool::ANY,
+        above in 0..3usize,
     ) {
         let end = if crlf { "\r\n" } else { "\n" };
-        let mut note = String::new();
-        if front {
-            note = format!("---{end}title: t{end}---{end}");
-        }
+        let mut note = match front {
+            1 => format!("---{end}title: t{end}---{end}"),
+            // A line of the frontmatter with a task's own text.
+            2 => format!("---{end}list:{end}- [ ] water the fern{end}---{end}"),
+            _ => String::new(),
+        };
         note.push_str(&picks.join(end));
         let before = boxes(&ticked(&note));
         proptest::prop_assume!(!before.is_empty());
+        let mut tokens: Vec<&String> = before.iter().map(|(token, _)| token).collect();
+        tokens.sort();
+        tokens.dedup();
+        proptest::prop_assert_eq!(tokens.len(), before.len(), "note={:?}", note);
         let at = pick.index(before.len());
         let (text, status) = &before[at];
         let to = if done { To::Done } else { To::Todo };
         let plan = tick::plan(note.as_bytes(), Token::parse(text).unwrap(), to);
+        // A page older than its note: the same tick, that many bytes further on.
+        let shift = format!("intro{end}").repeat(above);
+        let later = format!("{shift}{note}");
+        let moved = tick::plan(later.as_bytes(), Token::parse(text).unwrap(), to);
+        proptest::prop_assert_eq!(
+            moved,
+            plan.map(|write| write.map(|(offset, byte)| (offset + shift.len(), byte))),
+            "note={:?}",
+            note
+        );
         let Ok(Some((offset, byte))) = plan else {
             // Already so: the only answer that writes nothing for a rendered token.
             proptest::prop_assert_eq!(plan, Ok(None), "note={:?}", note);

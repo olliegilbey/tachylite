@@ -28,7 +28,7 @@ fn keeps_formatting_tags_and_their_safe_attributes() {
 fn drops_the_attributes_a_tick_reads() {
     assert_eq!(
         sanitize(
-            "<div data-src=\"a.md\"><ul><li data-box=\"1-00000000\" data-task=\"todo\" \
+            "<div data-src=\"a.md\"><ul><li data-box=\"00000000\" data-task=\"todo\" \
              data-pending data-was=\"done\">a</li></ul></div>"
         ),
         "<div><ul><li>a</li></ul></div>"

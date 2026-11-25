@@ -228,7 +228,8 @@
   let ticks = null;
   const queue = () => {
     try {
-      return ticks ?? JSON.parse(localStorage.tachyliteTicks ?? "[]");
+      const q = ticks ?? JSON.parse(localStorage.tachyliteTicks ?? "[]");
+      return Array.isArray(q) ? q : [];
     } catch {
       return (ticks = []);
     }
@@ -261,6 +262,7 @@
       }
   };
   let busy = false;
+  let again = 0;
   const flush = async () => {
     if (busy) return;
     busy = true;
@@ -269,8 +271,13 @@
         const [note, at, to] = tick;
         const url = `/.tachylite/task?note=${encodeURIComponent(note)}&at=${at}&to=${to}`;
         const { status } = await fetch(url, { method: "POST" });
-        // No server, or a proxy with none behind it: the tick waits for the next connection.
-        if (status > 499) break;
+        // The server is rescanning, or a proxy has none behind it: the tick waits, and one
+        // timer sends it again. The server's own 500 is a refusal, like any lower status.
+        if (status > 500) {
+          clearTimeout(again);
+          again = setTimeout(flush, 2e3);
+          break;
+        }
         // A newer tick for the box stays queued.
         keep(queue().filter((t) => JSON.stringify(t) !== JSON.stringify(tick)));
         for (const li of boxes(tick)) {
@@ -281,6 +288,7 @@
         }
         paint();
       }
+      // No answer: the tick waits for the event stream to open again.
     } catch {}
     busy = false;
   };

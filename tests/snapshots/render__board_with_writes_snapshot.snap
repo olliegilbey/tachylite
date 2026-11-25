@@ -11,7 +11,7 @@ expression: "built_with_writes(\".tachylite/tasks\")"
 <link rel="manifest" href="/.tachylite/app.webmanifest">
 <link rel="icon" href="/.tachylite/icon.svg">
 <link rel="stylesheet" href="/.tachylite/style.css">
-<meta name="tachylite-version" content="035e883b">
+<meta name="tachylite-version" content="99e719ed">
 <title>Tasks</title>
 <script src="/.tachylite/live.js" defer></script>
 </head>
@@ -20,15 +20,15 @@ expression: "built_with_writes(\".tachylite/tasks\")"
 <main>
 <h1 class="sr">Tasks</h1>
 <section class="tasks" data-src="chores/errands.md"><h2><a href="/chores/errands">errands</a></h2>
-<ul><li data-task="doing" data-box="3-4471cd23"><input type="checkbox"> Post the parcel</li></ul>
+<ul><li data-task="doing" data-box="4471cd23"><input type="checkbox"> Post the parcel</li></ul>
 <p class="meta">1 cancelled</p>
 </section>
 <section class="tasks" data-src="chores/week.md"><h2><a href="/chores/week">Week chores</a></h2>
-<ul><li data-task="todo" data-box="7-a0f29d06"><input type="checkbox"> Water the fern</li><li data-task="doing" data-box="8-20476c0b"><input type="checkbox"> Repot the basil <a class="tag" href="/.tachylite/tags/shed">#shed</a></li><li data-task="doing" data-box="17-c0aa9017"><input type="checkbox"> Tidy the shed</li><li data-task="todo" data-box="19-775533ce"><input type="checkbox"> Hang the rake</li><li data-task="doing" data-box="31-529dbd02"><input type="checkbox"> Mend the hose</li></ul>
+<ul><li data-task="todo" data-box="a0f29d06"><input type="checkbox"> Water the fern</li><li data-task="doing" data-box="20476c0b"><input type="checkbox"> Repot the basil <a class="tag" href="/.tachylite/tags/shed">#shed</a></li><li data-task="doing" data-box="c0aa9017"><input type="checkbox"> Tidy the shed</li><li data-task="todo" data-box="775533ce"><input type="checkbox"> Hang the rake</li><li data-task="doing" data-box="529dbd02"><input type="checkbox"> Mend the hose</li></ul>
 <p class="meta"><a href="/chores/week">3 more</a> · 3 done · 2 cancelled</p>
 </section>
 <section class="tasks" data-src="welcome.md"><h2><a href="/welcome">Welcome</a></h2>
-<ul><li data-task="todo" data-box="19-a0f29d06"><input type="checkbox"> Water the fern</li></ul>
+<ul><li data-task="todo" data-box="a0f29d06"><input type="checkbox"> Water the fern</li></ul>
 <p class="meta">1 done</p>
 </section>
 </main>

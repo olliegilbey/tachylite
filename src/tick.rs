@@ -1,7 +1,9 @@
-//! A tick: the pure half. A token names a task's box by its line in the note's file and a
-//! hash of that line. The renderer writes tokens and the write path finds a token's box, both
-//! through `find`, so a token exists only for a box the write path can find.
+//! A tick: the pure half. A token names a task's box by a hash of its line, and by the
+//! line's place among the lines of the note's file with that hash. The renderer writes tokens
+//! and the write path finds a token's box, both through `boxes`, so a token exists only for
+//! a box the write path can find, and both count the lines of one hash alike.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::hash::{DefaultHasher, Hasher};
 
@@ -66,56 +68,99 @@ pub fn numbered(text: &[u8]) -> bool {
         .any(|(at, b)| *b == b'\r' && text.get(at + 1) != Some(&b'\n'))
 }
 
-/// A task's box: the 1-based line of the note's file it was rendered from, and that line's
-/// hash. On a page it reads `<line>-<hash>`, the hash as 8 hex digits.
+/// A task's box: its line's hash, and the line's place among the lines of the note's file
+/// that hold a box and have that hash: it is line `nth` of `of`, counted from 0. On a page
+/// it reads `<hash>`, 8 hex digits, when the line is the only one, else `<hash>.<nth>.<of>`.
+/// It holds no line number, so lines added or removed elsewhere leave it as it was.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Token {
-    pub line: usize,
     pub hash: u32,
+    pub nth: usize,
+    pub of: usize,
 }
 
 impl Token {
-    /// The token of the box on line `number`, and the box's character.
-    pub fn of(number: usize, line: &[u8]) -> Option<(Token, u8)> {
-        let at = find(line)?;
-        let hash = hash(line, at);
-        Some((Token { line: number, hash }, line[at]))
-    }
-
     pub fn parse(text: &str) -> Option<Token> {
-        let (line, hash) = text.split_once('-')?;
         let digits = |s: &str, radix| !s.is_empty() && s.chars().all(|c| c.is_digit(radix));
-        if !digits(line, 10) || hash.len() != 8 || !digits(hash, 16) {
-            return None;
-        }
-        Some(Token {
-            line: line.parse().ok()?,
-            hash: u32::from_str_radix(hash, 16).ok()?,
-        })
+        let mut parts = text.split('.');
+        let hash = parts.next().filter(|h| h.len() == 8 && digits(h, 16))?;
+        let hash = u32::from_str_radix(hash, 16).ok()?;
+        let (nth, of) = match (parts.next(), parts.next(), parts.next()) {
+            (None, ..) => (0, 1),
+            (Some(nth), Some(of), None) if digits(nth, 10) && digits(of, 10) => {
+                (nth.parse().ok()?, of.parse().ok()?)
+            }
+            _ => return None,
+        };
+        let token = Token { hash, nth, of };
+        // Each token reads one way: the way it is written.
+        (nth < of && token.to_string() == text).then_some(token)
     }
 }
 
 impl fmt::Display for Token {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}-{:08x}", self.line, self.hash)
+        write!(f, "{:08x}", self.hash)?;
+        if self.of != 1 {
+            write!(f, ".{}.{}", self.nth, self.of)?;
+        }
+        Ok(())
     }
 }
 
-/// The offset in `text` of the box's character that `token` names. Its own line, when that
-/// holds a box and has the hash. Else the line moved: the one line that holds a box and has
-/// the hash. `None` when no line does, or several do.
-pub fn locate(text: &[u8], token: Token) -> Option<usize> {
-    let boxed = |(start, line): (usize, &[u8])| {
-        let at = find(line)?;
-        (hash(line, at) == token.hash).then_some(start + at)
-    };
-    let own = token.line.checked_sub(1).and_then(|n| lines(text).nth(n));
-    if let Some(at) = own.and_then(boxed) {
-        return Some(at);
+/// A line of a note's file that holds a box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Boxed {
+    /// The line's number in the file, from 1.
+    pub line: usize,
+    /// The offset in the file of the line's start, and of the box's character.
+    pub start: usize,
+    pub at: usize,
+    pub token: Token,
+}
+
+/// Every line of `text`, a note's whole file, that holds a box, in line order, each with
+/// its token. A line in the frontmatter, in a code block or in a comment counts like any
+/// other: the write path reads the file without parsing it, so the renderer counts so too.
+pub fn boxes(text: &[u8]) -> Vec<Boxed> {
+    let mut found: Vec<Boxed> = lines(text)
+        .enumerate()
+        .filter_map(|(number, (start, line))| {
+            let at = find(line)?;
+            let hash = hash(line, at);
+            Some(Boxed {
+                line: number + 1,
+                start,
+                at: start + at,
+                token: Token {
+                    hash,
+                    nth: 0,
+                    of: 0,
+                },
+            })
+        })
+        .collect();
+    let mut counts: HashMap<u32, usize> = HashMap::new();
+    for boxed in &mut found {
+        let count = counts.entry(boxed.token.hash).or_default();
+        boxed.token.nth = *count;
+        *count += 1;
     }
-    let mut found = lines(text).filter_map(boxed);
-    let at = found.next()?;
-    found.next().is_none().then_some(at)
+    for boxed in &mut found {
+        boxed.token.of = counts[&boxed.token.hash];
+    }
+    found
+}
+
+/// The offset in `text` of the box's character that `token` names: the box of line `nth`
+/// among the lines that hold a box and have its hash, when there are `of` of them. `None`
+/// when their count is any other: a line of that text came or went since the token was
+/// written, so its place no longer says which line it was.
+pub fn locate(text: &[u8], token: Token) -> Option<usize> {
+    boxes(text)
+        .into_iter()
+        .find(|boxed| boxed.token == token)
+        .map(|boxed| boxed.at)
 }
 
 /// What a tick asks for.
@@ -247,70 +292,145 @@ mod tests {
 
     #[test]
     fn a_token_reads_as_it_is_written() {
-        let token = Token {
-            line: 12,
+        let only = Token {
             hash: 0x00ab_cdef,
+            nth: 0,
+            of: 1,
         };
-        assert_eq!(token.to_string(), "12-00abcdef");
-        assert_eq!(Token::parse("12-00abcdef"), Some(token));
+        assert_eq!(only.to_string(), "00abcdef");
+        assert_eq!(Token::parse("00abcdef"), Some(only));
+        let second = Token {
+            hash: 0x00ab_cdef,
+            nth: 1,
+            of: 12,
+        };
+        assert_eq!(second.to_string(), "00abcdef.1.12");
+        assert_eq!(Token::parse("00abcdef.1.12"), Some(second));
         for bad in [
             "",
             "12",
-            "12-",
-            "-00abcdef",
-            "12-abcdef",
-            "12-00abcdefa",
-            "+12-00abcdef",
-            "12-00abcdeg",
-            "1 2-00abcdef",
-            "12-+0abcdef",
-            "99999999999999999999999-00abcdef",
+            "abcdef",
+            "00abcdefa",
+            "00abcdeg",
+            "+0abcdef",
+            "00ABCDEF",
+            "3-00abcdef",
+            "00abcdef.",
+            "00abcdef.1",
+            "00abcdef.1.",
+            "00abcdef..2",
+            "00abcdef.1.2.3",
+            "00abcdef.0.1",
+            "00abcdef.0.0",
+            "00abcdef.2.2",
+            "00abcdef.3.2",
+            "00abcdef.01.2",
+            "00abcdef.+1.2",
+            "00abcdef.1.-2",
+            "00abcdef.1 .2",
+            "00abcdef.1.99999999999999999999999",
         ] {
             assert_eq!(Token::parse(bad), None, "{bad:?}");
         }
     }
 
+    /// The token of the box on line `line` of `text`, counted from 1.
     fn token(text: &str, line: usize) -> Token {
-        let raw = lines(text.as_bytes()).nth(line - 1).unwrap().1;
-        Token::of(line, raw).unwrap().0
+        let found = boxes(text.as_bytes());
+        found.iter().find(|b| b.line == line).unwrap().token
+    }
+
+    /// The offset of the box before `text`, which starts at the box's `]`.
+    fn box_of(note: &str, text: &str) -> usize {
+        note.find(text).unwrap() - 1
     }
 
     #[test]
-    fn a_token_finds_its_line_or_the_one_line_that_moved() {
+    fn every_line_with_a_box_counts_wherever_it_is() {
+        let note = "---\ntags:\n  - [ ] a\n---\n- [ ] a\n```\n- [x] a\n```\ntext\n- [/] b\n";
+        let found: Vec<(usize, usize, String)> = boxes(note.as_bytes())
+            .iter()
+            .map(|b| (b.line, b.at - b.start, b.token.to_string()))
+            .collect();
+        let a = format!("{:08x}", hash(b"- [ ] a", 3));
+        let b = format!("{:08x}", hash(b"- [ ] b", 3));
+        assert_eq!(
+            found,
+            [
+                // Indented, so another hash.
+                (3, 5, format!("{:08x}", hash(b"  - [ ] a", 5))),
+                (5, 3, format!("{a}.0.2")),
+                (7, 3, format!("{a}.1.2")),
+                (10, 3, b),
+            ]
+        );
+        assert_eq!(boxes(b""), []);
+        assert_eq!(boxes(b"text\n\n- [] a\n"), []);
+    }
+
+    #[test]
+    fn a_token_finds_its_line_wherever_it_moved() {
         let note = "# n\n- [ ] one\n- [ ] two\n";
         let two = token(note, 3);
-        assert_eq!(
-            locate(note.as_bytes(), two),
-            Some(note.find("] two").unwrap() - 1)
-        );
+        assert_eq!(two.to_string().len(), 8);
+        assert_eq!(locate(note.as_bytes(), two), Some(box_of(note, "] two")));
         // Lines added above: the line moved, and its text is still the only one.
         let moved = format!("intro\n\n{note}");
-        assert_eq!(
-            locate(moved.as_bytes(), two),
-            Some(moved.find("] two").unwrap() - 1)
-        );
+        assert_eq!(locate(moved.as_bytes(), two), Some(box_of(&moved, "] two")));
         // Ticked since: the same task.
         let ticked = note.replace("- [ ] two", "- [x] two");
         assert_eq!(
             locate(ticked.as_bytes(), two),
-            Some(ticked.find("] two").unwrap() - 1)
+            Some(box_of(&ticked, "] two"))
         );
         // Reworded, or gone.
         assert_eq!(locate(b"# n\n- [ ] one\n- [ ] 2\n", two), None);
         assert_eq!(locate(b"", two), None);
         // No longer a box, though the hash's bytes are there.
         assert_eq!(locate(b"# n\n- [ ] one\n- [ ] two\\\n", two), None);
+        // A second line of its text: the token says there was one.
+        assert_eq!(locate(b"- [ ] two\n# n\n- [ ] two\n", two), None);
     }
 
     #[test]
-    fn the_line_number_picks_between_two_lines_of_one_text() {
-        let note = "- [ ] same\n- [ ] same\n";
-        assert_eq!(token(note, 1).hash, token(note, 2).hash);
-        assert_eq!(locate(note.as_bytes(), token(note, 1)), Some(3));
-        assert_eq!(locate(note.as_bytes(), token(note, 2)), Some(14));
-        // Moved, no line number says which.
-        let moved = format!("\n\n\n{note}");
-        assert_eq!(locate(moved.as_bytes(), token(note, 1)), None);
+    fn a_place_picks_between_lines_of_one_text() {
+        let note = "# a\n- [ ] ship\n# b\n- [ ] ship\n";
+        let (first, second) = (token(note, 2), token(note, 4));
+        assert_eq!(first.to_string(), format!("{:08x}.0.2", first.hash));
+        assert_eq!(second.to_string(), format!("{:08x}.1.2", first.hash));
+        assert_eq!(locate(note.as_bytes(), first), Some(7));
+        assert_eq!(locate(note.as_bytes(), second), Some(22));
+        // Three lines added above: each token still names its own line.
+        let moved = format!("one\ntwo\nthree\n{note}");
+        assert_eq!(locate(moved.as_bytes(), first), Some(14 + 7));
+        assert_eq!(locate(moved.as_bytes(), second), Some(14 + 22));
+        // Either ticked: the other keeps its place.
+        let ticked = note.replacen("- [ ] ship", "- [x] ship", 1);
+        assert_eq!(locate(ticked.as_bytes(), second), Some(22));
+        // One of the two removed, or a third added: no place says which line is which.
+        for changed in [
+            "# a\n# b\n- [ ] ship\n".to_string(),
+            "# a\n- [ ] ship\n# b\n".to_string(),
+            format!("- [ ] ship\n{note}"),
+            format!("{note}- [x] ship\n"),
+        ] {
+            assert_eq!(locate(changed.as_bytes(), first), None, "{changed:?}");
+            assert_eq!(locate(changed.as_bytes(), second), None, "{changed:?}");
+        }
+    }
+
+    #[test]
+    fn a_task_deleted_beside_its_text_in_a_code_block_is_a_conflict() {
+        let note = "- [ ] ship\n\n```\n- [ ] ship\n```\n";
+        let task = token(note, 1);
+        assert_eq!(task.to_string(), format!("{:08x}.0.2", task.hash));
+        assert_eq!(locate(note.as_bytes(), task), Some(3));
+        // The task is gone, and the code block keeps a line of its text.
+        assert_eq!(locate(b"\n```\n- [ ] ship\n```\n", task), None);
+        assert_eq!(
+            plan(b"\n```\n- [ ] ship\n```\n", task, To::Done),
+            Err(Conflict)
+        );
     }
 
     #[test]
@@ -354,34 +474,52 @@ mod tests {
     ];
 
     proptest! {
-        /// A plan changes the box of the line it names, by one byte, to the status asked for.
+        /// A plan changes the box of the line it names, by one byte, to the status asked for,
+        /// whichever lines share its text and wherever the note's other lines moved it.
         #[test]
         fn a_plan_changes_only_the_box_it_names(
             picks in prop::collection::vec(prop::sample::select(LINES), 1..12),
             crlf in any::<bool>(),
             pick in any::<prop::sample::Index>(),
             done in any::<bool>(),
+            above in 0..4usize,
         ) {
-            let text = picks.join(if crlf { "\r\n" } else { "\n" });
-            let number = pick.index(picks.len()) + 1;
-            // An empty last line is no line.
-            let Some((start, raw)) = lines(text.as_bytes()).nth(number - 1) else {
-                return Ok(());
-            };
-            let Some((token, now)) = Token::of(number, raw) else {
-                return Ok(());
-            };
+            let end = if crlf { "\r\n" } else { "\n" };
+            let text = picks.join(end);
+            let found = boxes(text.as_bytes());
+            prop_assume!(!found.is_empty());
+            let Boxed { at, token, .. } = found[pick.index(found.len())];
+            let now = text.as_bytes()[at];
             let to = if done { To::Done } else { To::Todo };
-            let at = start + find(raw).unwrap();
+            // The page is older than the note: lines that hold no box came in above.
+            let shift = format!("text{end}").repeat(above);
+            let text = format!("{shift}{text}");
             match plan(text.as_bytes(), token, to) {
                 Ok(Some((offset, byte))) => {
-                    prop_assert_eq!(offset, at);
+                    prop_assert_eq!(offset, shift.len() + at);
                     prop_assert_ne!(byte, now);
                     prop_assert_eq!(byte, if done { b'x' } else { b' ' });
                 }
                 Ok(None) => prop_assert_eq!(done, matches!(now, b'x' | b'X')),
                 Err(Conflict) => prop_assert!(done && now == b'-'),
             }
+        }
+
+        /// A token names one box of its note, and each box has its own.
+        #[test]
+        fn each_box_has_its_own_token(
+            picks in prop::collection::vec(prop::sample::select(LINES), 0..12),
+        ) {
+            let text = picks.join("\n");
+            let found = boxes(text.as_bytes());
+            for boxed in &found {
+                prop_assert_eq!(locate(text.as_bytes(), boxed.token), Some(boxed.at));
+                prop_assert_eq!(Token::parse(&boxed.token.to_string()), Some(boxed.token));
+            }
+            let mut tokens: Vec<String> = found.iter().map(|b| b.token.to_string()).collect();
+            tokens.sort();
+            tokens.dedup();
+            prop_assert_eq!(tokens.len(), found.len());
         }
     }
 }

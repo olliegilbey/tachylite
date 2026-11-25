@@ -16,7 +16,7 @@ use crate::config::Exclude;
 use crate::front::{self, Value};
 use crate::links::{Index, Resolved, resolve, split};
 use crate::sanitize::sanitize;
-use crate::tick::{self, Token};
+use crate::tick;
 use crate::vault::{Kind, classify, is_image};
 
 /// The file stem of the last path segment: `people/Jane Doe.md` gives `Jane Doe`.
@@ -801,20 +801,21 @@ fn item_start<'a>(item: &'a AstNode<'a>) -> (usize, usize) {
 
 /// The token of each of `tasks` a client may tick. `file` is the note as read, `text` its
 /// body after the frontmatter, and `parsed` that body as the parser read it, without its
-/// comments. A task has a token when `tick::find` finds its box on its line of the file,
-/// the box holds the task's status, and the parser read the same box there. A cancelled
-/// task has none.
+/// comments. A task has a token when its line of the file holds a box by `tick::boxes`, the
+/// box holds the task's status, and the parser read the same box there. A cancelled task
+/// has none.
 fn tokens<'a>(file: &str, text: &str, parsed: &str, tasks: &[&'a AstNode<'a>]) -> Boxes {
     let mut boxes = Boxes::new();
     if tasks.is_empty() || !tick::numbered(file.as_bytes()) {
         return boxes;
     }
+    // Over the whole file, as the write path reads it, so both count a text's lines alike.
+    let found = tick::boxes(file.as_bytes());
     // The lines the frontmatter takes, which the parser never saw.
     let before = file.as_bytes()[..file.len() - text.len()]
         .iter()
         .filter(|b| **b == b'\n')
         .count();
-    let lines = split_lines(text);
     // Without a comment, the parser read the body as it is.
     let read = (!std::ptr::eq(parsed, text)).then(|| split_lines(parsed));
     for item in tasks {
@@ -822,12 +823,14 @@ fn tokens<'a>(file: &str, text: &str, parsed: &str, tasks: &[&'a AstNode<'a>]) -
             continue;
         };
         let (line, column) = item_start(item);
-        let Some(raw) = line.checked_sub(1).and_then(|n| lines.get(n)) else {
+        let Some(above) = line.checked_sub(1) else {
             continue;
         };
-        let Some((token, symbol)) = Token::of(before + line, raw) else {
+        let Ok(place) = found.binary_search_by_key(&(before + line), |boxed| boxed.line) else {
             continue;
         };
+        let boxed = found[place];
+        let symbol = file.as_bytes()[boxed.at];
         let status = match symbol {
             b' ' => "todo",
             b'/' => "doing",
@@ -835,13 +838,13 @@ fn tokens<'a>(file: &str, text: &str, parsed: &str, tasks: &[&'a AstNode<'a>]) -
             _ => continue,
         };
         // A comment that ends on the line can hide the box the file's line starts with.
+        let at = boxed.at - boxed.start;
         let same = read.as_ref().is_none_or(|read| {
-            let at = tick::find(raw);
-            read.get(line - 1)
-                .is_some_and(|l| tick::find(l) == at && at.is_some_and(|at| l[at] == symbol))
+            read.get(above)
+                .is_some_and(|l| tick::find(l) == Some(at) && l[at] == symbol)
         });
         if same && task_status(task.symbol) == status {
-            boxes.insert((line, column), token.to_string());
+            boxes.insert((line, column), boxed.token.to_string());
         }
     }
     boxes

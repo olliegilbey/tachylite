@@ -34,10 +34,10 @@ fn serving(toml: &str, notes: &[(&str, &str)]) -> (Dirs, Server) {
 
 const ON: &str = "writes = true\n";
 
-/// The token of the box on line `number` of `text`.
+/// The token of the box on line `number` of `text`, counted from 1.
 fn token(text: &str, number: usize) -> Token {
-    let (_, raw) = tick::lines(text.as_bytes()).nth(number - 1).unwrap();
-    Token::of(number, raw).unwrap().0
+    let boxes = tick::boxes(text.as_bytes());
+    boxes.iter().find(|b| b.line == number).unwrap().token
 }
 
 /// The route's path for a tick.
@@ -158,38 +158,82 @@ fn a_task_already_as_asked_takes_no_write() {
 }
 
 #[test]
-fn a_changed_task_is_a_conflict_and_a_moved_one_is_found() {
-    let text = "- [ ] water\n- [ ] same\n- [ ] same\n";
+fn a_tick_finds_its_task_by_its_text_and_its_place() {
+    let text = "- [ ] water\n# a\n- [ ] ship\n# b\n- [ ] ship\n";
     let d = vault("", &[("n.md", text)]);
     let path = d.vault().join("n.md");
     let dir = VaultDir::open(&d.vault()).unwrap();
-    let (water, first, second) = (token(text, 1), token(text, 2), token(text, 3));
-    // The line number picks between two lines of one text.
+    let (water, first, second) = (token(text, 1), token(text, 3), token(text, 5));
+    // The place picks between two lines of one text.
     dir.tick("n.md", second, To::Done).unwrap();
     assert_eq!(
         fs::read_to_string(&path).unwrap(),
-        "- [ ] water\n- [ ] same\n- [x] same\n"
+        "- [ ] water\n# a\n- [ ] ship\n# b\n- [x] ship\n"
     );
-    // Lines above move the task, and its text still finds it.
-    fs::write(&path, "intro\n\n- [ ] water\n- [ ] same\n- [x] same\n").unwrap();
+    // Three lines added above: each token still names its own task.
+    fs::write(
+        &path,
+        "one\ntwo\nthree\n- [ ] water\n# a\n- [ ] ship\n# b\n- [x] ship\n",
+    )
+    .unwrap();
+    dir.tick("n.md", second, To::Todo).unwrap();
+    dir.tick("n.md", first, To::Done).unwrap();
     dir.tick("n.md", water, To::Done).unwrap();
-    let moved = "intro\n\n- [x] water\n- [ ] same\n- [x] same\n";
-    assert_eq!(fs::read_to_string(&path).unwrap(), moved);
-    // Moved, the two lines of one text are either's.
-    let before = state(&path);
-    assert!(matches!(
-        dir.tick("n.md", first, To::Done),
-        Err(TickError::Conflict)
-    ));
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        "one\ntwo\nthree\n- [x] water\n# a\n- [x] ship\n# b\n- [ ] ship\n"
+    );
+    // A line of the text added or removed: no place says which line is which.
+    for changed in [
+        "- [ ] ship\n- [ ] water\n# a\n- [ ] ship\n# b\n- [ ] ship\n",
+        "- [ ] water\n# a\n- [ ] ship\n# b\n- [ ] ship\n\n```\n- [x] ship\n```\n",
+        "- [ ] water\n# a\n# b\n- [ ] ship\n",
+        "- [ ] water\n# a\n- [ ] ship\n# b\n",
+    ] {
+        fs::write(&path, changed).unwrap();
+        let before = state(&path);
+        for stale in [first, second] {
+            let ticked = dir.tick("n.md", stale, To::Done);
+            assert!(
+                matches!(ticked, Err(TickError::Conflict)),
+                "{changed:?}: {ticked:?}"
+            );
+        }
+        assert_eq!(state(&path), before, "{changed:?}");
+        // The task with a text of its own is still found.
+        dir.tick("n.md", water, To::Todo).unwrap();
+        assert_eq!(state(&path), before, "{changed:?}");
+    }
     // Reworded.
     fs::write(&path, "- [ ] water the fern\n").unwrap();
-    let before_reworded = state(&path);
+    let reworded = state(&path);
     assert!(matches!(
         dir.tick("n.md", water, To::Done),
         Err(TickError::Conflict)
     ));
-    assert_eq!(state(&path), before_reworded);
-    assert_ne!(before.0, before_reworded.0);
+    assert_eq!(state(&path), reworded);
+}
+
+#[test]
+fn a_note_too_large_to_render_is_a_conflict() {
+    let limit = usize::try_from(tachylite::vault::NOTE_MAX).unwrap();
+    let task = "- [ ] water\n";
+    let large = format!("{task}{}", "x".repeat(limit + 1 - task.len()));
+    let d = vault("", &[("large.md", &large), ("full.md", &large[..limit])]);
+    let dir = VaultDir::open(&d.vault()).unwrap();
+    let before = state(&d.vault().join("large.md"));
+    assert!(matches!(
+        dir.tick("large.md", token(task, 1), To::Done),
+        Err(TickError::Conflict)
+    ));
+    assert_eq!(state(&d.vault().join("large.md")), before);
+    // A note at the limit renders, so it ticks.
+    dir.tick("full.md", token(task, 1), To::Done).unwrap();
+    assert!(
+        fs::read(d.vault().join("full.md"))
+            .unwrap()
+            .starts_with(b"- [x] water\n")
+    );
 }
 
 #[test]
@@ -201,6 +245,9 @@ fn only_a_regular_file_inside_the_vault_is_written() {
     fs::write(outside.join("secret.md"), text).unwrap();
     symlink(outside.join("secret.md"), d.vault().join("link.md")).unwrap();
     symlink(&outside, d.vault().join("d")).unwrap();
+    // A symlink that stays inside the vault is still no note.
+    symlink("n.md", d.vault().join("inside.md")).unwrap();
+    symlink(d.vault(), d.vault().join("loop")).unwrap();
     fs::create_dir(d.vault().join("folder.md")).unwrap();
     let fifo = Command::new("mkfifo")
         .arg(d.vault().join("pipe.md"))
@@ -210,6 +257,8 @@ fn only_a_regular_file_inside_the_vault_is_written() {
     let dir = VaultDir::open(&d.vault()).unwrap();
     for rel in [
         "link.md",
+        "inside.md",
+        "loop/n.md",
         "d/secret.md",
         "../outside/secret.md",
         "folder.md",
@@ -412,6 +461,18 @@ fn a_tick_comes_from_a_page_of_this_site() {
         403
     );
     assert_eq!(post(&local, &[("Origin", &local)]), 403);
+    // A page of the same name over another scheme, behind a proxy on the scheme's own port:
+    // its origin reads like this site's, and the browser says it is not.
+    let origin = format!("http://{local}");
+    for site in ["cross-site", "same-site", "none", "Same-Origin", ""] {
+        assert_eq!(
+            post(&local, &[("Origin", &origin), ("Sec-Fetch-Site", site)]),
+            403,
+            "{site:?}"
+        );
+    }
+    // What a browser says is no stand-in for the origin.
+    assert_eq!(post(&local, &[("Sec-Fetch-Site", "same-origin")]), 403);
     // A name the server does not answer to, though the origin matches it.
     assert_eq!(
         post("evil.example", &[("Origin", "http://evil.example")]),
@@ -419,7 +480,10 @@ fn a_tick_comes_from_a_page_of_this_site() {
     );
     assert_eq!(state(&d.vault().join("n.md")), before);
     // A listed name, in any case.
-    let named = [("Origin", "https://BOX.example.ts.net")];
+    let named = [
+        ("Origin", "https://BOX.example.ts.net"),
+        ("Sec-Fetch-Site", "same-origin"),
+    ];
     assert_eq!(post("box.example.ts.net", &named), 204);
 }
 
@@ -458,8 +522,12 @@ fn a_tick_that_names_no_task_is_refused() {
     for (at, to) in [
         ("", "done"),
         ("1", "done"),
-        ("1-xyz", "done"),
-        ("1-0000000", "done"),
+        ("0000000", "done"),
+        ("0000000g", "done"),
+        ("1-00000000", "done"),
+        ("00000000.0", "done"),
+        ("00000000.0.1", "done"),
+        ("00000000.2.2", "done"),
         (at.as_str(), ""),
         (at.as_str(), "doing"),
         (at.as_str(), "DONE"),
@@ -472,7 +540,18 @@ fn a_tick_that_names_no_task_is_refused() {
     }
     assert_eq!(server.post("/.tachylite/task?note=n.md").status, 400);
     // No line has this hash, and a cancelled task is never ticked done.
-    assert_eq!(server.post(&task("n.md", "1-00000000", "done")).status, 409);
+    assert_eq!(server.post(&task("n.md", "00000000", "done")).status, 409);
+    assert_eq!(
+        server.post(&task("n.md", "00000000.1.2", "done")).status,
+        409
+    );
+    // One line has the task's hash, and the token says two did.
+    assert_eq!(
+        server
+            .post(&task("n.md", format!("{at}.0.2"), "done"))
+            .status,
+        409
+    );
     assert_eq!(
         server.post(&task("n.md", token(text, 2), "done")).status,
         409
@@ -482,33 +561,46 @@ fn a_tick_that_names_no_task_is_refused() {
 
 #[test]
 fn a_tick_follows_its_task_through_an_edit() {
-    let text = "- [ ] water\n- [ ] same\n- [ ] same\n";
+    let text = "- [ ] water\n# a\n- [ ] ship\n# b\n- [ ] ship\n";
     let (d, server) = serving(ON, &[("n.md", text)]);
     let path = d.vault().join("n.md");
     let page = server.get("/n").text();
     let mut events = server.subscribe("/n", &version_of(&page), None);
     let water = shown(&page, "water");
+    // Two tasks of one text: each carries its place among them.
+    let tokens: Vec<&str> = page
+        .split(" data-box=\"")
+        .skip(1)
+        .map(|rest| rest.split_once('"').unwrap().0)
+        .collect();
+    let ship = token(text, 3).hash;
+    assert_eq!(
+        tokens,
+        [
+            water.clone(),
+            format!("{ship:08x}.0.2"),
+            format!("{ship:08x}.1.2")
+        ]
+    );
+    let second = tokens[2];
     // The page a reader holds is older than the note: lines were added above its tasks.
     fs::write(&path, format!("# title\n\nintro\n\n{text}")).unwrap();
     events.expect("page");
     assert_eq!(server.post(&task("n.md", &water, "done")).status, 204);
-    let ticked = "# title\n\nintro\n\n- [x] water\n- [ ] same\n- [ ] same\n";
+    events.expect("page");
+    // The second task's token ticks the second task, not the first.
+    assert_eq!(server.post(&task("n.md", second, "done")).status, 204);
+    let ticked = "# title\n\nintro\n\n- [x] water\n# a\n- [ ] ship\n# b\n- [x] ship\n";
     assert_eq!(fs::read_to_string(&path).unwrap(), ticked);
     let pushed = events.expect("page").data;
-    // Two lines of one text: each token's line number picks its own.
-    let second = token(ticked, 7);
-    assert_eq!(server.post(&task("n.md", second, "done")).status, 204);
-    assert_eq!(
-        fs::read_to_string(&path).unwrap(),
-        "# title\n\nintro\n\n- [x] water\n- [ ] same\n- [x] same\n"
-    );
+    // A third line of the text: the first page's tokens name two, and are refused.
+    fs::write(&path, format!("{ticked}- [ ] ship\n")).unwrap();
     events.expect("page");
-    // The first page's token for either names a line that moved, and both have its text.
     let before = state(&path);
-    assert_eq!(
-        server.post(&task("n.md", token(text, 2), "done")).status,
-        409
-    );
+    for stale in [tokens[1], second] {
+        assert_eq!(server.post(&task("n.md", stale, "done")).status, 409);
+    }
+    assert_eq!(state(&path), before);
     // The task was reworded since its page was rendered.
     fs::write(&path, "- [ ] water the fern\n").unwrap();
     events.expect("page");
@@ -521,6 +613,24 @@ fn a_tick_follows_its_task_through_an_edit() {
     );
     assert_eq!(state(&path), reworded);
     assert_ne!(before.0, reworded.0);
+}
+
+#[test]
+fn a_task_deleted_beside_its_text_in_a_code_block_is_refused() {
+    let text = "- [ ] ship\n\n```\n- [ ] ship\n```\n";
+    let (d, server) = serving(ON, &[("n.md", text)]);
+    let path = d.vault().join("n.md");
+    let page = server.get("/n").text();
+    let mut events = server.subscribe("/n", &version_of(&page), None);
+    // The line in the code block counts, on the page as in the write.
+    let at = shown(&page, "ship");
+    assert_eq!(at, format!("{:08x}.0.2", token(text, 1).hash));
+    // The task is deleted, and the code block keeps a line of its text.
+    fs::write(&path, &text[11..]).unwrap();
+    events.expect("page");
+    let before = state(&path);
+    assert_eq!(server.post(&task("n.md", &at, "done")).status, 409);
+    assert_eq!(state(&path), before);
 }
 
 #[test]
@@ -586,8 +696,131 @@ fn a_config_save_turns_writes_off_and_on() {
             .data
             .contains(&format!("data-box=\"{at}\""))
     );
-    assert_eq!(server.post(&task("n.md", &at, "done")).status, 204);
+    assert_eq!(post_after_rescan(&server, &task("n.md", &at, "done")), 204);
     assert!(events.expect("page").data.contains("checked> water</li>"));
+}
+
+/// Posts a tick once the rescan of a new config is over: until then the answer is 503.
+fn post_after_rescan(server: &Server, path: &str) -> u16 {
+    loop {
+        let status = server.post(path).status;
+        if status != 503 {
+            return status;
+        }
+        std::thread::yield_now();
+    }
+}
+
+#[test]
+fn a_config_that_does_not_load_shuts_the_route() {
+    let text = "- [ ] water\n";
+    // The config is deleted, or saved with a typo, or with no boolean.
+    for case in [None, Some("writes = flase\n"), Some("writes = \"off\"\n")] {
+        let (d, server) = serving(ON, &[("n.md", text), ("bar.md", "# b0")]);
+        let (path, toml) = (d.vault().join("n.md"), d.vault().join("tachylite.toml"));
+        let page = server.get("/n").text();
+        let tick = task("n.md", shown(&page, "water"), "done");
+        let mut barrier = server.subscribe("/bar", &version_of(&server.get("/bar").text()), None);
+        // Events apply in order, so the barrier's push means the config's were handled.
+        let mut settle = |mark: &str| {
+            fs::write(d.vault().join("bar.md"), format!("# {mark}")).unwrap();
+            barrier.expect("page");
+        };
+
+        match case {
+            Some(broken) => fs::write(&toml, broken).unwrap(),
+            None => fs::remove_file(&toml).unwrap(),
+        }
+        settle("b1");
+        // The previous config stays for the pages, and no tick lands.
+        assert_eq!(server.get("/n").text(), page, "{case:?}");
+        let route = server.post(&tick);
+        assert_eq!(route.status, 405, "{case:?}");
+        assert_eq!(
+            answer(route),
+            answer(server.post("/.tachylite/no-such-route?note=n.md")),
+            "{case:?}"
+        );
+        // A later save of a note does not open the route again.
+        settle("b2");
+        assert_eq!(server.post(&tick).status, 405, "{case:?}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), text, "{case:?}");
+
+        // A config that loads and says so opens it.
+        fs::write(&toml, ON).unwrap();
+        settle("b3");
+        assert_eq!(post_after_rescan(&server, &tick), 204, "{case:?}");
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "- [x] water\n",
+            "{case:?}"
+        );
+    }
+}
+
+/// Every file of an output's `pages/`, by its path below it.
+fn pages(out: &Path) -> std::collections::BTreeMap<String, String> {
+    let mut found = std::collections::BTreeMap::new();
+    let mut stack = vec![out.join("pages")];
+    while let Some(dir) = stack.pop() {
+        for item in fs::read_dir(&dir).unwrap() {
+            let path = item.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                let rel = path.strip_prefix(out).unwrap().to_str().unwrap();
+                found.insert(rel.to_string(), fs::read_to_string(&path).unwrap());
+            }
+        }
+    }
+    found
+}
+
+#[test]
+fn a_page_with_no_task_to_tick_is_the_same_with_writes_on_and_off() {
+    let notes = [
+        ("plain.md", "# Plain\n\ntext [[tasks]]\n"),
+        ("cancelled.md", "- [-] paint the fence\n"),
+        ("embeds.md", "![[tasks]]\n"),
+        ("d/tasks.md", "- [ ] water\n- [x] sweep\n"),
+    ];
+    let (off, on) = (vault("", &notes), vault(ON, &notes));
+    tachylite::build::build(&off.vault(), &off.out()).unwrap();
+    tachylite::build::build(&on.vault(), &on.out()).unwrap();
+    let (off, on) = (pages(&off.out()), pages(&on.out()));
+    assert_eq!(
+        off.keys().collect::<Vec<_>>(),
+        on.keys().collect::<Vec<_>>()
+    );
+    let mut ticked = Vec::new();
+    for (path, page) in &on {
+        if page.contains(" data-box=\"") {
+            assert!(page.contains(" data-src=\"d/tasks.md\""), "{path}: {page}");
+            ticked.push(path.as_str());
+        } else {
+            assert_eq!(page, &off[path], "{path}");
+        }
+    }
+    assert_eq!(
+        ticked,
+        ["pages/.tachylite/tasks.html", "pages/d/tasks.html"]
+    );
+}
+
+#[test]
+fn the_board_escapes_the_path_of_a_task_list() {
+    let name = "a \"b\" & <c>.md";
+    let d = vault(ON, &[(name, "- [ ] water\n")]);
+    tachylite::build::build(&d.vault(), &d.out()).unwrap();
+    let board = fs::read_to_string(d.out().join("pages/.tachylite/tasks.html")).unwrap();
+    let src = " data-src=\"a &quot;b&quot; &amp; &lt;c&gt;.md\"";
+    assert!(board.contains(src), "{board}");
+    assert_eq!(board.matches(" data-src=").count(), 1, "{board}");
+    let page = pages(&d.out())
+        .into_values()
+        .find(|page| page.contains("<main data-src="))
+        .unwrap();
+    assert!(page.contains(&format!("<main{src}>")), "{page}");
 }
 
 #[test]

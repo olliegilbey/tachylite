@@ -164,7 +164,7 @@ fn push_latency() {
 #[test]
 #[ignore = "budget: run with make budget or make check"]
 fn tick_latency() {
-    use tachylite::tick::{Token, lines};
+    use tachylite::tick::boxes;
     let dir = tempfile::tempdir().unwrap();
     let vault = dir.path().join("vault");
     tachylite::budget_vault::write(&vault, 1, 2000).unwrap();
@@ -180,8 +180,7 @@ fn tick_latency() {
         fs::read_to_string(&path).unwrap()
     );
     fs::write(&path, &text).unwrap();
-    let (last, (_, raw)) = lines(text.as_bytes()).enumerate().last().unwrap();
-    let token = Token::of(last + 1, raw).unwrap().0;
+    let token = boxes(text.as_bytes()).last().unwrap().token;
     let server = Server::start(&vault, &dir.path().join("out"));
     let page = url(&note);
     let mut events = server.subscribe(&page, &version_of(&server.get(&page).text()), None);
