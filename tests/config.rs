@@ -94,6 +94,18 @@ fn the_designed_keys_are_accepted() {
 }
 
 #[test]
+fn writes_are_off_unless_set_true() {
+    assert!(!parse("").unwrap().writes);
+    assert!(!parse("writes = false\n").unwrap().writes);
+    assert!(parse("writes = true\n").unwrap().writes);
+    for text in ["writes = \"true\"\n", "writes = 1\n", "writes = [true]\n"] {
+        let error = parse(text).unwrap_err();
+        assert_eq!(error, ConfigError::NotBool("writes"), "{text}");
+        assert_eq!(error.to_string(), "writes must be true or false");
+    }
+}
+
+#[test]
 fn exclude_inside_a_table_is_refused() {
     for text in [
         "[daily]\nfolder = \"journal\"\n\nexclude = [\"private\"]\n",

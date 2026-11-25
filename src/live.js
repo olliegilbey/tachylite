@@ -222,6 +222,80 @@
     if (dialog?.open) show(true);
   });
 
+  // A tick: a tap on a task's box sets its status. It waits in a queue until the server
+  // takes it, so a tap offline lands on reconnect. Each use reads the queue from storage,
+  // so two browser tabs share it. If storage refuses, the queue lives in memory.
+  let ticks = null;
+  const queue = () => {
+    try {
+      return ticks ?? JSON.parse(localStorage.tachyliteTicks ?? "[]");
+    } catch {
+      return (ticks = []);
+    }
+  };
+  const keep = (q) => {
+    try {
+      if (!ticks) return (localStorage.tachyliteTicks = JSON.stringify(q));
+    } catch {}
+    ticks = q;
+  };
+  // The boxes on screen that a tick names: its token, under its note.
+  const boxes = ([note, at]) =>
+    [...document.querySelectorAll("li[data-box]")].filter(
+      (li) => li.dataset.box === at && li.closest("[data-src]")?.dataset.src === note,
+    );
+  // Shows a task with a status. `data-was` holds the status the server has, to put back.
+  const want = (li, to) => {
+    li.dataset.was ??= li.dataset.task;
+    // On a wide board a status is a column. The line keeps its own until the board's push.
+    li.style.gridColumn ||= getComputedStyle(li).gridColumnStart;
+    li.dataset.task = to;
+    li.firstChild.checked = to === "done";
+  };
+  // Each queued tick whose task is on screen shows as it asks, and as waiting.
+  const paint = () => {
+    for (const tick of queue())
+      for (const li of boxes(tick)) {
+        want(li, tick[2]);
+        li.dataset.pending = "";
+      }
+  };
+  let busy = false;
+  const flush = async () => {
+    if (busy) return;
+    busy = true;
+    try {
+      for (let tick; (tick = queue()[0]); ) {
+        const [note, at, to] = tick;
+        const url = `/.tachylite/task?note=${encodeURIComponent(note)}&at=${at}&to=${to}`;
+        const { status } = await fetch(url, { method: "POST" });
+        // No server, or a proxy with none behind it: the tick waits for the next connection.
+        if (status > 499) break;
+        // A newer tick for the box stays queued.
+        keep(queue().filter((t) => JSON.stringify(t) !== JSON.stringify(tick)));
+        for (const li of boxes(tick)) {
+          delete li.dataset.pending;
+          // A refused tick puts the box back.
+          if (status === 204) li.dataset.was = to;
+          else if (li.dataset.was) want(li, li.dataset.was);
+        }
+        paint();
+      }
+    } catch {}
+    busy = false;
+  };
+  document.addEventListener("change", (e) => {
+    if (!e.target.matches?.("li[data-box] > input")) return;
+    const li = e.target.parentNode;
+    const tick = [li.closest("[data-src]")?.dataset.src, li.dataset.box, e.target.checked ? "done" : "todo"];
+    if (!tick[0]) return;
+    keep([...queue().filter(([note, at]) => note !== tick[0] || at !== tick[1]), tick]);
+    paint();
+    flush();
+  });
+  paint();
+  flush();
+
   const VERSION = 'meta[name="tachylite-version"]';
   const meta = document.querySelector(VERSION);
   if (!meta || !window.EventSource) return;
@@ -250,6 +324,7 @@
     // The Today list is on screen only when it has no note to show.
     main.querySelector("[data-pick]")?.removeAttribute("data-pick");
     shown.replaceWith(main);
+    paint();
     // A config change moves the header: the tabs and the pins.
     const header = next.querySelector("header");
     const old = document.querySelector("header");
@@ -276,6 +351,7 @@
     events.onopen = () => {
       wait = 1500;
       sync();
+      flush();
       // So the offline copy survives storage pressure. Only Firefox prompts, never once granted.
       kept ||= !!navigator.storage
         ?.persisted?.()

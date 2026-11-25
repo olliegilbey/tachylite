@@ -25,6 +25,19 @@ fn keeps_formatting_tags_and_their_safe_attributes() {
 }
 
 #[test]
+fn drops_the_attributes_a_tick_reads() {
+    assert_eq!(
+        sanitize(
+            "<div data-src=\"a.md\"><ul><li data-box=\"1-00000000\" data-task=\"todo\" \
+             data-pending data-was=\"done\">a</li></ul></div>"
+        ),
+        "<div><ul><li>a</li></ul></div>"
+    );
+    assert_eq!(sanitize("<main data-src=\"a.md\">a</main>"), "a");
+    assert_eq!(sanitize("<input type=\"checkbox\">a"), "a");
+}
+
+#[test]
 fn drops_scripts_and_their_content() {
     for (input, want) in [
         ("<script>alert(1)</script>after", "after"),

@@ -6,7 +6,7 @@ status: approved
 
 # Tachylite: design
 
-Tachylite serves a folder of Obsidian-style Markdown as a fast, offline-capable website. It is a read-only viewer. A phone on a bad connection is the main client.
+Tachylite serves a folder of Obsidian-style Markdown as a fast, offline-capable website. It reads the vault. With `writes = true` it also makes one write: a reader ticks a task, and one byte of the note changes. A phone on a bad connection is the main client.
 
 The name: tachylite is a volcanic glass, a cousin of obsidian. It comes from the Greek *tachys*, "swift". It ends in "lite".
 
@@ -32,7 +32,7 @@ Success: the user opens a note on a phone with no signal, and it loads at once. 
 
 ## Non-goals for v1
 
-- Editing in the browser, including ticking a task. Every write needs conflict handling with edits synced from other machines, and a write path the tailnet can reach. It is a later version.
+- Editing a note in the browser. A tick is the one write (see Writes). A larger edit needs conflict handling with edits synced from other machines. It is a later version.
 - Authentication or multiple users. The network boundary (Tailscale) is the access control.
 - Graph view, canvas, themes, plugins.
 - Public internet hosting.
@@ -41,7 +41,7 @@ Success: the user opens a note on a phone with no signal, and it loads at once. 
 
 These make Tachylite a failure even if it works:
 
-- Tachylite writes to the vault. It reads the vault only. All output goes to a directory outside the vault.
+- Tachylite writes to the vault, beyond a tick. With `writes` off, the default, it only reads. With `writes = true`, one function changes one byte of a note, the character in a task's box. Every other open of a vault file is read-only, and a test fails on a second write path. All output goes to a directory outside the vault.
 - An excluded note reaches the output in any form: page, search index, backlink, manifest or metadata file. (Perlite, an existing PHP viewer, leaks the full vault structure through a `metadata.json`. Exclusion applies before anything is written.)
 - A client JavaScript framework or a Node build step.
 - A page needs the network after the first sync.
@@ -155,9 +155,38 @@ A vault already holds tasks, so Tachylite shows them. It adds no format of its o
 - The site holds, for each note with an open task, only what the board could show: the HTML of those lines, and the counts of open, done and cancelled tasks. On the budget vault that is about 12,900 lines, 2 MB of peak memory. The renderer collects them as it renders the note, so a note rendered again as a dependent, when a link on a task line resolves differently, updates them by the same path. A derive builds the board again only when a note with an open task was rendered or removed, or the header changed. A build sorts every task list, about 1 ms over a burst of 20 saves on the budget vault, so a save to a note with no open task skips it.
 - A task line on the board is its first paragraph, with no nested list. The note's raw HTML on the line is dropped and its text kept, so no stray end tag in one note reaches into another's task list, and no raw HTML forges a task or a status. Footnote references are dropped too, and a link to a heading of the note itself points into the note.
 - A narrow screen shows the board as a list grouped by task list. A wide screen shows each task list as a swimlane, its todo tasks in a left column and its doing tasks in a right one, each column from the top. CSS picks the layout with a grid per task list; there is no toggle and no script. Two columns that run the whole page, each grouped by task list, would need each task list's heading in both, and one HTML has it once. A task list off screen is laid out only as it nears the screen, through `content-visibility`, so a switch to the board paints in about the time a switch to Recent takes.
-- Tasks are read-only. On a note page each renders as a disabled checkbox, and its list item carries the status in `data-task`, for the board and a later write path to read. The sanitizer keeps neither `data-task` nor `<input>` from a note's raw HTML, so only a task carries the mark. A task changes when someone edits its note.
+- On a note page each task renders as a checkbox, and its list item carries the status in `data-task`. The sanitizer keeps neither `data-task` nor `<input>` from a note's raw HTML, so only a task carries the mark. With `writes` off, the default, the checkbox is disabled, and a task changes when someone edits its note. With `writes = true` a reader ticks a task on its note page or on the board (see Writes).
 - The four statuses read apart by shape, not by colour alone: an empty box, a half-filled box, a ticked box, and a dash in the box before a struck, dimmed line. The stylesheet draws them, with no script, image or font. A list under a cancelled task keeps its own look.
 - A public skill in the repo, `skills/tachylite-vault/SKILL.md`, tells an agent how to write tasks and notes that Tachylite renders well.
+
+### Writes
+
+A tick is Tachylite's one write to the vault. A reader taps a task's box on its note page or on the board, and the task becomes done, or todo again. Everything else about a note still changes in an editor.
+
+- **Off unless asked for.** `writes = true` in the config turns ticks on. There is no login, so it opens them to anyone who can reach the server. With `writes` off, every output file is the same, byte for byte, as before the write path existed, and the server answers the write route as it answers any unknown path: 405 for a POST. A config save applies the key at once, both ways. `tachylite build` honours it too, so a build equals what `serve` writes. A static host then refuses the POST, and the client puts the box back.
+- **One byte, in one function.** `VaultDir::tick` is the only code that opens a vault file for writing. It opens the note with the flags a read uses, beneath the vault and through no symlink, and takes a regular file alone. It reads the note, finds the box, and writes one byte over the character in it, in place. No temporary file, rename, truncate or sync: the note keeps its inode, size, owner and mode, and nothing new appears in the vault. A rename would break a hard link and an editor's open file, and a one-byte write cannot be half done. The pure half lives in `src/tick.rs`: finding a box, the hash, and the choice of byte. A test reads the source and fails on a second open for writing.
+- **What a tick may change.** Done takes a todo or a doing task and writes `x`. Todo takes a done task and writes a space. A task already as asked takes no write and answers as a success, so a repeated tick is safe. A cancelled task is never ticked: its box stays disabled, and a tick for it is refused. A doing task ticks to done, and unticks to todo. The browser sets no task to doing or cancelled.
+- **The token.** With `writes` on, a task a reader may tick carries `data-box="<line>-<hash>"` on its list item, and its checkbox is not disabled. `<line>` is the box's line in the note's file, counted from 1, frontmatter included. `<hash>` is 8 hex digits: a hash of the raw line with the box's character read as a space, so a tick leaves it as it was. A note page names its note in `data-src` on `<main>`, and the board names each task list's note on its section. The sanitizer keeps neither attribute from a note's raw HTML, so no note can point a reader's tap at another note. A page with no task a reader may tick has neither, so turning `writes` on re-syncs only the pages with tasks.
+- **One finder.** The renderer and the write path find a box with the same function: after any run of spaces, tabs and `>`, then one or more list markers each followed by spaces or tabs, `[c]` followed by a space, a tab or the line's end. The renderer writes a token only when that function finds the box on the task's own line and the character there is the status the parser read. Otherwise the task renders as with `writes` off. So a token exists only for a box the write path can find. A property test renders generated notes, ticks every token, and checks that one byte changed and that the note rendered again shows that task changed and every other task as it was.
+- **Finding the task again.** A page can be older than its note. The write path first takes the token's line: it must hold a box and have the hash. Otherwise it scans the note, and exactly one line with a box and that hash is the task, moved. No such line, or several, is a conflict: the tick is refused and nothing is written. Just before the write it reads the box and its brackets once more and checks them.
+- **The route.** `POST /.tachylite/task?note=<path>&at=<line>-<hash>&to=done|todo`, with no body. The checks run in this order. The `Host` must be the loopback or a name in `hosts`, even when `hosts` is unset: else 421. The `Origin` must be present and name that same host and port: else 403. So another site's page, a rebound DNS name, and a sandboxed html page from the vault cannot tick a task. The note must end in `.md` and have a page: else 404. A malformed token or status is 400. Then the write, off the runtime thread: 204 when written or already so, 409 on a conflict, 404 when the file is gone, 403 when the file refuses writes, 500 on any other I/O error.
+- **No leak through the route.** The server keeps the set of vault paths that have a page, and a tick for any other path gets the same 404, with the same body, and the vault is not opened: an excluded note, a note that lost its URL to another, a missing path. During the rescan after a config save the set is empty, so a tick sent in that second or two is refused. The new config may exclude its note.
+- **No second render path.** The write's close sends the watcher its normal `CLOSE_WRITE`, and the watcher renders and pushes the page as after any save. The server holds a duplicate of the watcher's open vault directory, so a tick lands in the vault being watched.
+- **The client.** One `change` listener sets the task's look at once, marks it as waiting, and adds `[note, token, status]` to a queue in `localStorage`. A newer tick for the same box replaces the older. The client sends the queue one tick at a time. A 204 removes the tick. Any other answer below 500 removes it and puts the box back. A network error or a 5xx keeps it, and the client sends again when its event stream next opens and when a page loads. After every swap of `<main>`, and at load, each queued tick on screen shows as it asks and as waiting. The queue is read from storage at each use, so two browser tabs share it. If storage refuses, it lives in memory. The service worker passes every POST to the network, so none is answered from the cache.
+- **What it costs.** No new crate. A tick reaches its push in about 1 ms on the budget vault. The client's part is about 1.1 KB compressed, of a typical page's 13.4 KB.
+
+The limits:
+
+- Another writer that replaces the note between the read and the write can lose a tick. The window is a few microseconds.
+- A tick is refused when its line's text changed since the page was rendered, or when the line moved and another line has the same text. The reader sees the box go back, and the next push brings the current page.
+- A queued tick is sent the next time a page is open with a connection. Nothing sends it while the app is closed.
+- The hash covers the raw line, so it covers text the page hides, such as a comment on the task's line. It reveals nothing unless a reader guesses the whole line. A keyed hash would close that, and would need a stored key. It is not built.
+- A tick the server answers with a 5xx stays queued, and the client sends it again at each connection. The queue goes in order, so a note that fails every time holds back the ticks behind it.
+- A task in an embedded note has no token. Tick it on its own note's page.
+- These tasks render with a disabled box, since the write path could not find them: a task in a note that holds a carriage return with no newline after it, a task whose box a `%%comment%%` covers in part, a task on the first line of a note that starts with a byte order mark, and a task with no space between its box and its text.
+- A line with bytes that are not UTF-8 hashes as the renderer reads it, with each bad byte replaced, so its token still matches.
+- If a note defines a link reference named `x`, as `[x]: https://example.com`, a ticked `[x]` parses as a link, and the line stops being a task. The tick lands, and the line then renders as a list item with a link. Rename the reference.
+- A note the server cannot write, as on a read-only mount, answers 403 and the box goes back.
 
 ### Look and feel
 
@@ -202,6 +231,7 @@ Optional `tachylite.toml` in the vault root. Any other top-level key is an error
 - `pins`: list of vault paths, each with an optional `|label`. A path the publish list names, such as `a.md` or `map.html`, is a file; any other is a folder.
 - `title`: the home page's name: its `<title>` and its screen-reader heading. It defaults to Tachylite.
 - `hosts`: names the server answers besides `127.0.0.1` and `localhost`, for the proxy in front. When set, any other `Host` gets 421, which defeats DNS rebinding. When absent, any `Host` is answered. It is read at start only, from the same read as the first sync's exclusions.
+- `writes`: `true` lets a reader tick a task, which changes the note (see Writes). It defaults to `false`, and any value but `true` or `false` is an error. A config save applies it at once, both ways.
 
 ### Performance budgets
 
@@ -210,6 +240,7 @@ Budgets run against a synthetic vault of 2,000 notes and about 20 MB of text. A 
 | Budget | Target |
 |---|---|
 | File event to SSE push sent for the changed note itself | ≤ 10 ms |
+| A tick, from its POST to the SSE push of the ticked page | ≤ 10 ms |
 | Dependent pages (backlinks, transclusions) and manifest updated and pushed | ≤ 250 ms |
 | Save to screen, phone on a direct connection | ≤ 100 ms end to end. Headless Chrome measures it on localhost in CI; the reference phone, by hand |
 | Tab switch, from the release of the swipe to the paint of the new tab | ≤ 50 ms with 4x CPU throttling, in headless Chrome |

@@ -1,6 +1,6 @@
 //! The HTTP edge: serves the output directory on 127.0.0.1.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::convert::Infallible;
 use std::fs;
 use std::future::IntoFuture;
@@ -25,7 +25,10 @@ use futures_util::stream;
 use tokio::sync::broadcast::{self, error::RecvError};
 use tokio::sync::oneshot;
 
+use crate::config::Exclude;
 use crate::site::Push;
+use crate::tick::{To, Token};
+use crate::vault::{Kind, TickError, VaultDir, classify};
 use crate::watch::{Live, Watcher};
 use crate::{Error, output, report};
 
@@ -189,6 +192,8 @@ pub struct App {
     pub live: Live,
     /// The names answered besides `127.0.0.1` and `localhost`. `None` answers any `Host`.
     pub hosts: Option<Vec<String>>,
+    /// The vault, for its one write: a tick.
+    pub vault: VaultDir,
 }
 
 /// The main origin's policy: no inline script, and no requests off the origin but images.
@@ -207,6 +212,14 @@ async fn file(
     uri: Uri,
     headers: HeaderMap,
 ) -> Response {
+    if method == Method::POST && uri.path() == TASK {
+        let lock = app.live.ticks.lock();
+        let notes = lock.unwrap_or_else(PoisonError::into_inner).clone();
+        // With `writes` off there is no such route, and this is a path like any other.
+        if let Some(notes) = notes {
+            return tick(app, &notes, &uri, &headers).await;
+        }
+    }
     if method != Method::GET && method != Method::HEAD {
         return status(StatusCode::METHOD_NOT_ALLOWED);
     }
@@ -229,6 +242,59 @@ async fn file(
         );
     }
     response
+}
+
+/// The write route: `POST /.tachylite/task?note=<path>&at=<line>-<hash>&to=done|todo`.
+const TASK: &str = "/.tachylite/task";
+
+/// Ticks a task in a note of `notes`, the vault paths that have a page. A path outside them
+/// is answered as a missing one is, and the vault is not opened for it: an excluded note, a
+/// note that lost its URL and a path that names nothing read the same.
+async fn tick(app: Arc<App>, notes: &BTreeSet<String>, uri: &Uri, headers: &HeaderMap) -> Response {
+    // Unset, `hosts` lists no name, so a tick takes the loopback's alone.
+    if !known_host(Some(app.hosts.as_deref().unwrap_or_default()), headers) {
+        return status(StatusCode::MISDIRECTED_REQUEST);
+    }
+    if !same_origin(headers) {
+        return status(StatusCode::FORBIDDEN);
+    }
+    let note = query(uri, "note")
+        .filter(|n| classify(n, &Exclude::default()) == Some(Kind::Note) && notes.contains(n));
+    let Some(note) = note else {
+        return status(StatusCode::NOT_FOUND);
+    };
+    let token = query(uri, "at").and_then(|at| Token::parse(&at));
+    let to = query(uri, "to").and_then(|to| To::parse(&to));
+    let (Some(token), Some(to)) = (token, to) else {
+        return status(StatusCode::BAD_REQUEST);
+    };
+    let ticked = blocking(move || {
+        let ticked = app.vault.tick(&note, token, to);
+        if let Err(TickError::Io(e)) = &ticked {
+            eprintln!("{note}: a tick failed: {e}");
+        }
+        Ok(ticked)
+    });
+    match ticked.await {
+        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Err(TickError::Missing)) => status(StatusCode::NOT_FOUND),
+        Ok(Err(TickError::Conflict)) => status(StatusCode::CONFLICT),
+        Ok(Err(TickError::ReadOnly)) => status(StatusCode::FORBIDDEN),
+        Ok(Err(TickError::Io(_))) | Err(_) => status(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+/// True when `Origin` names the host and port the request came to, in any case, as a page
+/// of this site sends with a POST. Another site's page sends its own origin, so it cannot
+/// tick a task for a reader who opens it.
+fn same_origin(headers: &HeaderMap) -> bool {
+    let text = |name| headers.get(name).and_then(|v| v.to_str().ok());
+    let (Some(origin), Some(host)) = (text(header::ORIGIN), text(header::HOST)) else {
+        return false;
+    };
+    origin
+        .split_once("://")
+        .is_some_and(|(_, at)| at.eq_ignore_ascii_case(host))
 }
 
 fn io_status(e: &io::Error) -> Response {
@@ -639,7 +705,13 @@ pub fn serve(vault: &Path, out: &Path, port: u16) -> Result<(), Error> {
         pushes,
         versions: Arc::new(Mutex::new(HashMap::new())),
         manifest: Arc::default(),
+        ticks: Arc::default(),
     };
+    // The same open directory as the watcher's, so a tick lands in the vault it watches.
+    let ticks = vault.try_clone().map_err(|source| Error::Io {
+        path: vault.root().to_path_buf(),
+        source,
+    })?;
     let watcher = Watcher::start(vault, out.clone(), live.clone(), config)?;
     // The start rereads the config, and may wait out a save the first read saw half of.
     // Only the watcher's copy is current, and only it saw the whole scan.
@@ -661,7 +733,12 @@ pub fn serve(vault: &Path, out: &Path, port: u16) -> Result<(), Error> {
             .local_addr()
             .map_err(|source| Error::Bind { port, source })?;
         eprintln!("serving http://{addr}");
-        let app = App { out, live, hosts };
+        let app = App {
+            out,
+            live,
+            hosts,
+            vault: ticks,
+        };
         let server = axum::serve(listener, router(app)).into_future();
         match future::select(pin!(server), failed_rx).await {
             Either::Left((served, _)) => served.map_err(Error::Serve),
@@ -698,6 +775,7 @@ mod tests {
             pushes,
             versions: Arc::new(Mutex::new(HashMap::from([("n".into(), "v9".into())]))),
             manifest: Arc::default(),
+            ticks: Arc::default(),
         };
         let rx = live.pushes.subscribe();
         // Ten pushes into four slots: the stream lags, and v6 to v9 stay queued.
@@ -708,6 +786,7 @@ mod tests {
             out: dir.path().to_path_buf(),
             live: live.clone(),
             hosts: None,
+            vault: VaultDir::open(dir.path()).unwrap(),
         });
         let stream = Stream {
             app,

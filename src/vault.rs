@@ -2,7 +2,7 @@ use std::fs::{self, File};
 use std::io::{self, Read};
 use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -11,6 +11,7 @@ use rustix::io::Errno;
 
 use crate::Error;
 use crate::config::Exclude;
+use crate::tick::{self, To, Token};
 
 const IMAGE_EXTENSIONS: [&str; 7] = ["png", "jpg", "jpeg", "gif", "svg", "webp", "avif"];
 
@@ -196,6 +197,89 @@ mod tests {
         }
     }
 
+    /// Each file of `src/` that holds `needle`, with its count. A `|` in a needle keeps
+    /// this test from holding it.
+    fn holding(files: &[(String, String)], needle: &str) -> Vec<(String, usize)> {
+        let needle = needle.replace('|', "");
+        files
+            .iter()
+            .map(|(name, text)| (name.clone(), text.matches(&needle).count()))
+            .filter(|(_, count)| *count > 0)
+            .collect()
+    }
+
+    /// Tachylite writes one byte of a note, in `VaultDir::tick`. Every other open of a
+    /// vault file reads, and the only other code that writes a file writes the output, or
+    /// generates the budget vault.
+    #[test]
+    fn tick_is_the_only_write_to_the_vault() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        for entry in fs::read_dir(&src).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|ext| ext == "rs") {
+                let name = path.file_name().unwrap().to_str().unwrap().to_string();
+                files.push((name, fs::read_to_string(&path).unwrap()));
+            }
+        }
+        files.sort();
+        let only = |name: &str, count| vec![(name.to_string(), count)];
+        // The opens beneath the vault, and the one that may write.
+        assert_eq!(holding(&files, "open|at2("), only("vault.rs", 3));
+        assert_eq!(holding(&files, "RD|WR"), only("vault.rs", 1));
+        assert_eq!(holding(&files, "write_|all_at"), only("vault.rs", 1));
+        for needle in [
+            "WR|ONLY",
+            "OFlags::CRE|ATE",
+            "OFlags::TR|UNC",
+            "OFlags::APP|END",
+            "write_|at(",
+            "write_|vectored_at",
+            "pwr|ite",
+            "ftrunc|ate",
+            "rename|at",
+            "unlink|at",
+            "mkdir|at",
+            "link|at(",
+        ] {
+            assert_eq!(holding(&files, needle), [], "{needle}");
+        }
+        // The shipped code of every other file: what comes before its tests. This file's
+        // tests sit mid-file, so it is read whole.
+        let shipped: Vec<(String, String)> = files
+            .into_iter()
+            .map(|(name, text)| {
+                let end = match name.as_str() {
+                    "vault.rs" => text.len(),
+                    _ => text.find("#[cfg(test)]").unwrap_or(text.len()),
+                };
+                (name, text[..end].to_string())
+            })
+            .collect();
+        let mut writers = std::collections::BTreeSet::new();
+        for needle in [
+            "fs::wr|ite",
+            "File::cre|ate",
+            "Open|Options",
+            "File::opt|ions",
+            "fs::ren|ame",
+            "remove_|file",
+            "remove_|dir",
+            "create_|dir",
+            "set_perm|issions",
+            "set_|len",
+            "set_mod|ified",
+            "set_tim|es",
+            "fs::co|py",
+            "hard_|link",
+            "fs::sym|link",
+        ] {
+            writers.extend(holding(&shipped, needle).into_iter().map(|(name, _)| name));
+        }
+        let writers: Vec<&str> = writers.iter().map(String::as_str).collect();
+        assert_eq!(writers, ["budget_vault.rs", "build.rs", "output.rs"]);
+    }
+
     fn segment() -> impl Strategy<Value = &'static str> {
         prop::sample::select(vec![
             "a",
@@ -260,7 +344,20 @@ pub fn hold() -> Duration {
         .map_or(HOLD, Duration::from_millis)
 }
 
-/// An open vault directory. Every read resolves beneath it and never follows a symlink.
+/// Why a tick wrote nothing.
+#[derive(Debug)]
+pub enum TickError {
+    /// Gone, a symlink, or not a regular file.
+    Missing,
+    /// The task changed since its page was rendered, or the note is too large to render.
+    Conflict,
+    /// The note does not take writes.
+    ReadOnly,
+    Io(io::Error),
+}
+
+/// An open vault directory. Every open resolves beneath it and never follows a symlink.
+/// Every open reads, but the one in `tick`.
 #[derive(Debug)]
 pub struct VaultDir {
     fd: OwnedFd,
@@ -290,6 +387,14 @@ impl VaultDir {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// A second handle on the same open directory.
+    pub fn try_clone(&self) -> io::Result<VaultDir> {
+        Ok(VaultDir {
+            fd: self.fd.try_clone()?,
+            root: self.root.clone(),
+        })
     }
 
     /// Whether the root path no longer names the open vault, as after its parent is renamed.
@@ -337,6 +442,62 @@ impl VaultDir {
             Ok(_) => Err(ReadError::Missing),
             Err(e) => Err(ReadError::Skip(SkipReason::Unreadable(e.kind()))),
         }
+    }
+
+    /// Sets the box of the task `token` names in the note at `rel`: Tachylite's one write to
+    /// the vault. It changes one byte in place, so the file keeps its inode, size, owner and
+    /// mode. A task already as asked takes no write. The close tells the watcher, as any
+    /// save does.
+    pub fn tick(&self, rel: &str, token: Token, to: To) -> Result<(), TickError> {
+        let flags = OFlags::RDWR | OFlags::NONBLOCK | OFlags::CLOEXEC | OFlags::NOCTTY;
+        let mut file = match openat2(&self.fd, rel, flags, Mode::empty(), RESOLVE) {
+            Ok(fd) => File::from(fd),
+            // A path that leaves the vault, through `..` or a symlink, names no note.
+            Err(
+                Errno::NOENT
+                | Errno::NOTDIR
+                | Errno::LOOP
+                | Errno::XDEV
+                | Errno::ISDIR
+                | Errno::NXIO,
+            ) => {
+                return Err(TickError::Missing);
+            }
+            Err(Errno::ACCESS | Errno::PERM | Errno::ROFS | Errno::TXTBSY) => {
+                return Err(TickError::ReadOnly);
+            }
+            Err(e) => return Err(TickError::Io(e.into())),
+        };
+        let meta = file.metadata().map_err(TickError::Io)?;
+        if !meta.is_file() {
+            return Err(TickError::Missing);
+        }
+        if meta.len() > NOTE_MAX {
+            return Err(TickError::Conflict);
+        }
+        let mut bytes = Vec::new();
+        (&mut file)
+            .take(NOTE_MAX + 1)
+            .read_to_end(&mut bytes)
+            .map_err(TickError::Io)?;
+        // The file can grow after the check.
+        if bytes.len() as u64 > NOTE_MAX {
+            return Err(TickError::Conflict);
+        }
+        let plan = tick::plan(&bytes, token, to).map_err(|tick::Conflict| TickError::Conflict)?;
+        let Some((at, byte)) = plan else {
+            return Ok(());
+        };
+        // The box as it stands now, with its brackets: another writer may have changed the
+        // line since the read.
+        let mut now = [0; 3];
+        match file.read_exact_at(&mut now, at as u64 - 1) {
+            Ok(()) if now[..] == bytes[at - 1..=at + 1] => {}
+            Ok(()) => return Err(TickError::Conflict),
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Err(TickError::Conflict),
+            Err(e) => return Err(TickError::Io(e)),
+        }
+        file.write_all_at(&[byte], at as u64).map_err(TickError::Io)
     }
 
     pub fn read(&self, rel: &str) -> Result<Vec<u8>, ReadError> {

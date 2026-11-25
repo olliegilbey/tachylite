@@ -3,7 +3,7 @@ name = "tachylite"
 version = "0.1.1"
 edition = "2024"
 rust-version = "1.99"
-description = "A fast, offline-first, read-only web viewer for Obsidian-style Markdown vaults."
+description = "A fast, offline-first web viewer for Obsidian-style Markdown vaults. It reads the vault, and can tick a task."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/olliegilbey/tachylite"
 

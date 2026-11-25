@@ -5,8 +5,9 @@ mod common;
 use tachylite::build::build;
 use tachylite::links::Index;
 use tachylite::render::{
-    Body, Broken, Page, Sources, embed_targets, note_title, render_body, render_page,
+    Body, Broken, Page, Sources, embed_targets, note_title, render_body, render_page, render_with,
 };
+use tachylite::tick::{self, To, Token};
 
 /// The header of a site with no config.
 const HEADER: &str = "<header><a href=\"/\">Home</a><a href=\"/.tachylite/recent\">Recent</a><button type=\"button\" class=\"find\" title=\"Find a note (Ctrl-K)\">Find</button></header>\n";
@@ -24,6 +25,7 @@ fn render_note(title: &str, markdown: &str) -> Page {
         "",
         &render_body("x.md", markdown, &Index::default(), &Sources::new()).html,
         &[],
+        false,
     )
 }
 
@@ -225,6 +227,7 @@ fn backlinks_list_at_the_foot_of_main() {
         "",
         "<p>body</p>\n",
         &[("a<1>".to_string(), "/a%3C1%3E".to_string())],
+        false,
     );
     assert!(
         page.html.contains(
@@ -235,7 +238,7 @@ fn backlinks_list_at_the_foot_of_main() {
         page.html
     );
     assert!(
-        !render_page(HEADER, "b.md", "b", "", "<p>body</p>\n", &[])
+        !render_page(HEADER, "b.md", "b", "", "<p>body</p>\n", &[], false)
             .html
             .contains("backlinks")
     );
@@ -245,8 +248,8 @@ fn backlinks_list_at_the_foot_of_main() {
 fn version_covers_backlinks() {
     let link = [("a".to_string(), "/a".to_string())];
     assert_ne!(
-        render_page(HEADER, "b.md", "b", "", "x", &[]).version,
-        render_page(HEADER, "b.md", "b", "", "x", &link).version
+        render_page(HEADER, "b.md", "b", "", "x", &[], false).version,
+        render_page(HEADER, "b.md", "b", "", "x", &link, false).version
     );
 }
 
@@ -1684,4 +1687,229 @@ proptest::proptest! {
             .replace("[x]", &format!("[{symbol}]"));
         proptest::prop_assert_eq!(plain(&shape.replace('@', &symbol.to_string())), done);
     }
+}
+
+/// The body of `md` with `writes` on.
+fn ticked(md: &str) -> String {
+    render_with("a.md", md, &Index::default(), &Sources::new(), true).html
+}
+
+/// The token of the box on line `number` of `md`.
+fn token(md: &str, number: usize) -> String {
+    let (_, raw) = tick::lines(md.as_bytes()).nth(number - 1).unwrap();
+    Token::of(number, raw).unwrap().0.to_string()
+}
+
+/// Each task of `html` a client may tick, as its token and status, in page order.
+fn boxes(html: &str) -> Vec<(String, String)> {
+    html.split("<li data-task=\"")
+        .skip(1)
+        .filter_map(|item| {
+            let (status, rest) = item.split_once('"')?;
+            let token = rest.strip_prefix(" data-box=\"")?.split_once('"')?.0;
+            Some((token.to_string(), status.to_string()))
+        })
+        .collect()
+}
+
+#[test]
+fn a_task_a_client_may_tick_carries_its_token() {
+    let md = "- [ ] a\n- [/] b\n- [x] c\n- [-] d\n- e\n";
+    let want = format!(
+        "<ul>\n\
+         <li data-task=\"todo\" data-box=\"{}\"><input type=\"checkbox\"> a</li>\n\
+         <li data-task=\"doing\" data-box=\"{}\"><input type=\"checkbox\"> b</li>\n\
+         <li data-task=\"done\" data-box=\"{}\"><input type=\"checkbox\" checked> c</li>\n\
+         {}d</li>\n<li>e</li>\n</ul>\n",
+        token(md, 1),
+        token(md, 2),
+        token(md, 3),
+        task("cancelled"),
+    );
+    assert_eq!(ticked(md), want);
+    // With writes off, the same note renders as it always did.
+    assert!(!plain(md).contains("data-box"));
+}
+
+#[test]
+fn a_token_counts_lines_from_the_top_of_the_file() {
+    for md in [
+        "---\ntitle: t\n---\n\n- [ ] a\n",
+        "---\r\ntitle: t\r\n---\r\n\r\n- [ ] a\r\n",
+        "\n\n\n\n> - [ ] a\n",
+        "%% a\ncomment %%\n\n- one\n  - [ ] a\n",
+    ] {
+        let html = ticked(md);
+        assert_eq!(
+            boxes(&html),
+            [(token(md, 5), "todo".to_string())],
+            "{md:?} gave {html}"
+        );
+    }
+}
+
+#[test]
+fn a_task_the_write_path_cannot_find_stays_read_only() {
+    for md in [
+        // A lone carriage return ends a line for the parser alone.
+        "one\rtwo\n- [ ] a\n",
+        // A comment hides the line's first box, and the parser reads the second.
+        "%% open\n- [x] hidden %% - [ ] shown\n",
+        // The parser takes a box with no space after it; the finder does not.
+        "- [ ]a\n",
+        // A byte order mark before the first line.
+        "\u{feff}- [ ] a\n",
+    ] {
+        let html = ticked(md);
+        assert!(!html.contains("data-box"), "{md:?} gave {html}");
+        assert_eq!(html, plain(md), "{md:?}");
+    }
+}
+
+#[test]
+fn an_embedded_task_has_no_token() {
+    let notes = [("b.md", "- [ ] embedded\n")];
+    let index = Index::new(["a.md", "b.md"]);
+    let md = "- [ ] own\n\n![[b]]\n";
+    let body = render_with("a.md", md, &index, &sources(&notes), true);
+    assert_eq!(
+        boxes(&body.html),
+        [(token(md, 1), "todo".to_string())],
+        "{}",
+        body.html
+    );
+    let want = task("todo") + "embedded";
+    assert!(body.html.contains(&want), "{want} not in {}", body.html);
+}
+
+#[test]
+fn the_board_line_of_a_task_carries_its_token() {
+    let md = "- [x] done\n- [ ] a\n- [-] no\n- [/] b\n";
+    let body = render_with("a.md", md, &Index::default(), &Sources::new(), true);
+    let shown: Vec<(bool, Option<String>)> = body
+        .tasks
+        .shown
+        .iter()
+        .map(|line| (line.doing, line.token.clone()))
+        .collect();
+    assert_eq!(
+        shown,
+        [(false, Some(token(md, 2))), (true, Some(token(md, 4)))]
+    );
+    let off = render_body("a.md", md, &Index::default(), &Sources::new());
+    assert!(off.tasks.shown.iter().all(|line| line.token.is_none()));
+}
+
+#[test]
+fn raw_html_cannot_forge_a_token_or_a_source() {
+    let html = ticked(
+        "<ul data-src=\"other.md\"><li data-box=\"1-00000000\">a</li></ul>\n\n\
+         <main data-src=\"other.md\">\n\n<div data-src=\"other.md\" data-pending>\n\n\
+         - [ ] real\n\n</div>\n\n- b <span data-box=\"1-00000000\" data-src=\"x.md\">c</span>\n",
+    );
+    assert_eq!(html.matches("data-box").count(), 1, "{html}");
+    assert!(
+        !html.contains("data-src") && !html.contains("data-pending"),
+        "{html}"
+    );
+}
+
+#[test]
+fn a_page_names_its_note_only_for_a_task_a_client_may_tick() {
+    let page = |ticks| render_page(HEADER, "d/a \"b\".md", "a", "", "x", &[], ticks).html;
+    assert!(page(true).contains("</header>\n<main data-src=\"d/a &quot;b&quot;.md\">\n"));
+    assert!(page(false).contains("</header>\n<main>\n"));
+}
+
+/// Lines a generated note is made of: tasks in every container, lines that look like one,
+/// and the text that moves a line number.
+const NOTE_LINES: &[&str] = &[
+    "- [ ] water the fern",
+    "- [ ] water the fern",
+    "- [x] sweep the porch",
+    "- [X] oil the gate",
+    "- [/] repot the basil #shed",
+    "- [-] paint the fence",
+    "- [?] not a task",
+    "  - [ ] nested",
+    "    - [x] nested deeper",
+    "> - [ ] quoted",
+    "> [!tip] callout",
+    "> - [/] in a callout",
+    "1. [ ] numbered",
+    "* [ ] star, see [[b]]",
+    "- [ ]",
+    "- [ ]no space",
+    "- plain item",
+    "text",
+    "",
+    "",
+    "# heading",
+    "%% a comment %%",
+    "%% an open comment",
+    "closes here %% - [ ] after a comment",
+    "```",
+    "<div>",
+    "caf\u{e9} - [ ] not at the start",
+];
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(1000))]
+
+    /// The write path takes each token the renderer writes. The tick changes one byte, and
+    /// the note rendered again shows that task with its new status and every other task as
+    /// it was.
+    #[test]
+    fn a_rendered_token_ticks_its_own_task(
+        picks in proptest::collection::vec(proptest::sample::select(NOTE_LINES), 1..16),
+        front in proptest::bool::ANY,
+        crlf in proptest::bool::ANY,
+        pick in proptest::prelude::any::<proptest::sample::Index>(),
+        done in proptest::bool::ANY,
+    ) {
+        let end = if crlf { "\r\n" } else { "\n" };
+        let mut note = String::new();
+        if front {
+            note = format!("---{end}title: t{end}---{end}");
+        }
+        note.push_str(&picks.join(end));
+        let before = boxes(&ticked(&note));
+        proptest::prop_assume!(!before.is_empty());
+        let at = pick.index(before.len());
+        let (text, status) = &before[at];
+        let to = if done { To::Done } else { To::Todo };
+        let plan = tick::plan(note.as_bytes(), Token::parse(text).unwrap(), to);
+        let Ok(Some((offset, byte))) = plan else {
+            // Already so: the only answer that writes nothing for a rendered token.
+            proptest::prop_assert_eq!(plan, Ok(None), "note={:?}", note);
+            proptest::prop_assert_eq!(done, status == "done", "note={:?}", note);
+            return Ok(());
+        };
+        let mut bytes = note.clone().into_bytes();
+        proptest::prop_assert!(matches!(bytes[offset], b' ' | b'/' | b'x' | b'X'));
+        proptest::prop_assert_eq!(bytes[offset - 1], b'[');
+        bytes[offset] = byte;
+        let after = boxes(&ticked(&String::from_utf8(bytes).unwrap()));
+        let mut want = before.clone();
+        want[at].1 = if done { "done" } else { "todo" }.to_string();
+        proptest::prop_assert_eq!(after, want, "note={:?}", note);
+    }
+}
+
+/// The fixture vault built with `writes = true`: the page for `key`.
+fn built_with_writes(key: &str) -> String {
+    let dirs = common::Dirs::fixture();
+    std::fs::write(dirs.vault().join("tachylite.toml"), "writes = true\n").unwrap();
+    build(&dirs.vault(), &dirs.out()).unwrap();
+    std::fs::read_to_string(dirs.out().join(format!("pages/{key}.html"))).unwrap()
+}
+
+#[test]
+fn tasks_with_writes_snapshot() {
+    insta::assert_snapshot!(built_with_writes("chores/week"));
+}
+
+#[test]
+fn board_with_writes_snapshot() {
+    insta::assert_snapshot!(built_with_writes(".tachylite/tasks"));
 }

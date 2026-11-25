@@ -62,6 +62,7 @@ pub fn build(vault: &Path, out: &Path) -> Result<Summary, Error> {
     let mut writer = Writer::new(&out, &dir, |_| {});
     let mut site = Site::new(config.exclude);
     site.set_nav(config.nav);
+    site.set_writes(config.writes);
     site.set_obsidian(crate::config::obsidian_daily(&dir));
     let report = site.apply_to(
         vec![Change::Sync {

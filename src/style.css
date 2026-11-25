@@ -105,6 +105,11 @@ th { background: var(--raise); }
   content: ""; display: block; width: 0.2em; height: 0.4em; margin: 0 0 0 0.23em;
   border: solid var(--bg); border-width: 0 2px 2px 0; transform: rotate(45deg);
 }
+/* A box a reader may tick takes a tap on a line's height around it, and on nothing beside it. */
+[data-box] > input { position: relative; cursor: pointer; }
+[data-box] > input::after { content: ""; position: absolute; inset: -0.4em -0.4em -0.4em -1.2em; }
+/* A tick the server has not taken yet. */
+[data-pending] > input { outline: 1.5px dashed var(--accent); outline-offset: 2px; }
 [data-task="cancelled"] { color: var(--dim); text-decoration: line-through; }
 [data-task="cancelled"] > input { background: linear-gradient(currentColor, currentColor) center / 60% 1.5px no-repeat; }
 /* A line-through stops at an inline block, so a list under a cancelled task keeps its own look. */

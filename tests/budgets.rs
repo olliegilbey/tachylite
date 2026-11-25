@@ -160,6 +160,56 @@ fn push_latency() {
     assert_timed("file event to push, budget vault", times, push_limit());
 }
 
+/// A tick, from its POST to the push of the page with the task's new status.
+#[test]
+#[ignore = "budget: run with make budget or make check"]
+fn tick_latency() {
+    use tachylite::tick::{Token, lines};
+    let dir = tempfile::tempdir().unwrap();
+    let vault = dir.path().join("vault");
+    tachylite::budget_vault::write(&vault, 1, 2000).unwrap();
+    fs::write(vault.join("tachylite.toml"), "writes = true\n").unwrap();
+    let note = tachylite::budget_vault::generate(1, 2000)
+        .into_iter()
+        .map(|(path, _)| path)
+        .find(|p| p.ends_with(".md"))
+        .unwrap();
+    let path = vault.join(&note);
+    let text = format!(
+        "{}\n\n- [ ] a task to tick\n",
+        fs::read_to_string(&path).unwrap()
+    );
+    fs::write(&path, &text).unwrap();
+    let (last, (_, raw)) = lines(text.as_bytes()).enumerate().last().unwrap();
+    let token = Token::of(last + 1, raw).unwrap().0;
+    let server = Server::start(&vault, &dir.path().join("out"));
+    let page = url(&note);
+    let mut events = server.subscribe(&page, &version_of(&server.get(&page).text()), None);
+
+    let mut times = Vec::new();
+    for i in 0..50 {
+        let (to, checked) = if i % 2 == 0 {
+            ("done", " checked")
+        } else {
+            ("todo", "")
+        };
+        let tick = format!(
+            "/.tachylite/task?note={}&at={token}&to={to}",
+            common::encode(&note)
+        );
+        let start = Instant::now();
+        assert_eq!(server.post(&tick).status, 204);
+        let event = events.expect("page");
+        times.push(start.elapsed());
+        let shown =
+            format!("data-box=\"{token}\"><input type=\"checkbox\"{checked}> a task to tick");
+        assert!(event.data.contains(&shown), "{shown}");
+        // Each tick starts once the last apply is done, as a reader's next tap would.
+        await_manifest(&dir.path().join("out"), &page, &version(&event));
+    }
+    assert_timed("tick to push, budget vault", times, push_limit());
+}
+
 /// The watch thread's work for each manifest it writes: the diff from the last, the tag,
 /// and the step recorded. It runs on the path the dependents budget times.
 #[test]

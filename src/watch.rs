@@ -29,6 +29,10 @@ pub struct Live {
     pub versions: Arc<Mutex<HashMap<String, String>>>,
     /// The current manifest and the steps that lead to it.
     pub manifest: Arc<Mutex<delta::Log>>,
+    /// The vault paths with a page or a file in the output, while a client may tick a task:
+    /// the site's own set, shared. `None` while `writes` is off, and while a new config's
+    /// rescan runs.
+    pub ticks: Arc<Mutex<Option<Arc<BTreeSet<String>>>>>,
 }
 
 const MASK: WatchFlags = WatchFlags::CLOSE_WRITE
@@ -159,6 +163,7 @@ impl Watcher {
         let watched = config.exclude.clone();
         let mut site = Site::new(config.exclude);
         site.set_nav(config.nav);
+        site.set_writes(config.writes);
         site.set_obsidian(config::obsidian_daily(&vault));
         let mut watcher = Watcher {
             inotify,
@@ -395,7 +400,11 @@ impl Watcher {
             paths.insert(path);
         }
         if reload {
-            let previous = (self.site.exclude().clone(), self.site.nav().clone());
+            let previous = (
+                self.site.exclude().clone(),
+                self.site.nav().clone(),
+                self.site.writes(),
+            );
             if self.reload_config()? == Reload::Loaded {
                 return self.resync_reloaded(previous, removed);
             }
@@ -459,7 +468,10 @@ impl Watcher {
             Ok(Some(config)) => {
                 self.site.set_exclude(config.exclude);
                 self.site.set_nav(config.nav);
+                self.site.set_writes(config.writes);
                 self.hosts = config.hosts;
+                // No tick lands until the rescan ends: the new config may exclude its note.
+                self.share(false);
                 Ok(Reload::Loaded)
             }
             Ok(None) => Ok(Reload::Kept),
@@ -532,13 +544,14 @@ impl Watcher {
     /// stalled in between got past the reload's check. The rescan gave it time to queue.
     fn resync_reloaded(
         &mut self,
-        (exclude, nav): (Exclude, Nav),
+        (exclude, nav, writes): (Exclude, Nav, bool),
         removed: HashSet<String>,
     ) -> Result<(Vec<Change>, HashSet<String>), Error> {
         let (changes, removed) = self.resync(removed)?;
         if self.config_written()? {
             self.site.set_exclude(exclude);
             self.site.set_nav(nav);
+            self.site.set_writes(writes);
             return self.resync(removed);
         }
         report::unmatched(&self.site.exclude().unmatched());
@@ -668,11 +681,22 @@ impl Watcher {
             self.held.insert(path, end);
         }
         let failed = writer.finish()?;
+        self.share(self.site.writes());
         report::notices(&report.notices);
         report::skipped(&report.skipped);
         report::skipped(&failed);
         report::broken(&report.broken);
         Ok(report.unpublished)
+    }
+
+    /// Tells the server which notes take a tick: every path with a page, or none.
+    fn share(&self, writes: bool) {
+        let ticks = writes.then(|| self.site.winners());
+        *self
+            .live
+            .ticks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = ticks;
     }
 
     /// Writes the index pages and the manifest that the applies since the last left due.
@@ -738,6 +762,7 @@ mod tests {
             pushes: broadcast::channel(4).0,
             versions: Arc::default(),
             manifest: Arc::default(),
+            ticks: Arc::default(),
         };
         Watcher::start(vault, out, live, Config::default()).unwrap()
     }
@@ -864,7 +889,7 @@ mod tests {
         // A write that slipped past the reload's check, queued by the rescan's end.
         fs::write(&toml, "# half\n").unwrap();
         watcher
-            .resync_reloaded((previous, Nav::default()), HashSet::new())
+            .resync_reloaded((previous, Nav::default(), false), HashSet::new())
             .unwrap();
         assert!(watcher.site.exclude().path("d/n.md"));
     }

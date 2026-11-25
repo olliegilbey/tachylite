@@ -1,6 +1,6 @@
 # Tachylite
 
-Tachylite serves a folder of Obsidian-style Markdown as a fast, offline-capable website. It is a read-only viewer, and a phone on a bad connection is its main client.
+Tachylite serves a folder of Obsidian-style Markdown as a fast, offline-capable website. It reads the vault, and can tick a task in it when you turn that on. A phone on a bad connection is its main client.
 
 One small static binary renders the vault, re-renders only what changes, and pushes updates to open pages. After the first sync, every note and full-text search work with no network.
 
@@ -18,7 +18,7 @@ Tachylite renders the vault into `<out>`, watches it, and serves the site on `ht
 
 - It binds `127.0.0.1` only. To reach it from a phone, put a proxy in front, such as `tailscale serve` on a tailnet-only port.
 - `<out>` must sit outside the vault. Tachylite writes only to a directory that is empty or holds its own earlier output.
-- It never writes to the vault.
+- It never writes to the vault, unless you set `writes = true`. Then a tick changes one character of a note: the one in a task's box.
 - It needs Linux 5.6 or later.
 
 ## Find your way
@@ -122,6 +122,21 @@ daily = { folder = "journal", format = "YYYY-MM-DD" }
 - `pins` adds links under the header. Each is a vault path. A path ending in `.md`, `.html` or another published type is a file; any other is a folder. Add `|label` to name it; the label defaults to the file or folder name. A pin to an excluded path is dropped, and a pin that matches nothing is logged.
 - `daily` sets where daily notes live and how they are named. It replaces Obsidian's own daily-notes settings whole: with no `folder`, daily notes sit in the vault root. The format reads `YYYY`, `MM` and `DD`, with any separators and `/` for subfolders, as in `YYYY/MM/YYYY-MM-DD`. A format with another token, such as `ddd`, or an excluded daily folder gives no Today page, and the log says why.
 - A change to `pins`, or one that adds or removes the Today tab, changes every page, and every installed phone syncs every page once. A change to `daily` that keeps the Today tab changes the daily notes and the Home, Today and Recent pages. A new `title` changes the home page alone.
+
+## Tick tasks
+
+Tachylite only reads the vault unless you add this to `tachylite.toml`:
+
+```toml
+writes = true
+```
+
+- A tap on a task's box, on its note page or on the board, ticks the task. A second tap unticks it. Tachylite changes one character in the note, the one between the brackets, and nothing else in the vault.
+- A task in progress, `[/]`, ticks to done, and unticks to todo. A cancelled task, `[-]`, cannot be ticked. A task shown inside another note through an embed is ticked on its own note's page.
+- Offline, a tick waits on the phone, marked with a dashed outline. It is sent the next time a page is open with a connection.
+- A tick is refused when the task's line changed after the page was rendered, and the box goes back. The page then updates, and you can tick again.
+- A saved change to `writes` takes effect at once. `writes = false`, or no key, turns ticks off.
+- There is no login. With `writes = true`, anyone who can reach the server can tick and untick tasks. Keep the route tailnet-only, and set `hosts` to the proxy's name. A tick is accepted only from a page of the site itself, opened at `127.0.0.1`, `localhost` or a name in `hosts`. Without `hosts`, a tick works only from the machine itself.
 
 ## Who it is for
 
