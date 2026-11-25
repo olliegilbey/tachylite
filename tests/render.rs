@@ -1836,7 +1836,7 @@ fn the_board_line_of_a_task_carries_its_token() {
         .tasks
         .shown
         .iter()
-        .map(|line| (line.doing, line.token.clone()))
+        .map(|line| (line.doing, line.token.as_deref().map(str::to_string)))
         .collect();
     assert_eq!(
         shown,

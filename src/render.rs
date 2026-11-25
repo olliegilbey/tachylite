@@ -92,9 +92,9 @@ pub struct Tasks {
 pub struct TaskLine {
     pub doing: bool,
     /// Its line's HTML.
-    pub html: String,
+    pub html: Box<str>,
     /// The token of its box, when a client may tick it.
-    pub token: Option<String>,
+    pub token: Option<Box<str>>,
 }
 
 /// The token of each task a client may tick, by the line and column its list item starts
@@ -923,10 +923,14 @@ fn collect_tasks<'a>(
         }
         tasks.shown.push(TaskLine {
             doing,
-            html: task_line(from, item, options),
-            token: boxes.get(&item_start(item)).cloned(),
+            html: task_line(from, item, options).into(),
+            token: boxes
+                .get(&item_start(item))
+                .map(|token| token.as_str().into()),
         });
     }
+    // The site keeps every note's lines, so they take no room they do not fill.
+    tasks.shown.shrink_to_fit();
     tasks
 }
 
