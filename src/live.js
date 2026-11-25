@@ -229,7 +229,7 @@
   const queue = () => {
     try {
       const q = ticks ?? JSON.parse(localStorage.tachyliteTicks ?? "[]");
-      return Array.isArray(q) ? q : [];
+      return Array.isArray(q) ? q.filter(Array.isArray) : [];
     } catch {
       return (ticks = []);
     }
@@ -264,6 +264,15 @@
   let busy = false;
   let again = 0;
   let later = 2e3;
+  // One timer sends a waiting tick again, and a tap leaves it be. Its gap starts at 2 s and
+  // doubles, up to a minute, each time it fires and the tick still gets no answer.
+  const arm = () => {
+    again ||= setTimeout(() => {
+      again = 0;
+      later = Math.min(later * 2, 6e4);
+      flush();
+    }, later);
+  };
   const flush = async () => {
     if (busy) return;
     busy = true;
@@ -272,15 +281,13 @@
         const [note, at, to] = tick;
         const url = `/.tachylite/task?note=${encodeURIComponent(note)}&at=${at}&to=${to}`;
         const { status } = await fetch(url, { method: "POST" });
-        // The server is rescanning, or a proxy has none behind it: the tick waits, and one
-        // timer sends it again, from 2 s, doubling to a minute while the server stays away.
-        // The server's own 500 is a refusal, like any lower status.
+        // The server is rescanning, or a proxy has none behind it: the tick waits. The
+        // server's own 500 is a refusal, like any lower status.
         if (status > 500) {
-          clearTimeout(again);
-          again = setTimeout(flush, later);
-          later = Math.min(later * 2, 6e4);
+          arm();
           break;
         }
+        again = clearTimeout(again);
         later = 2e3;
         // A newer tick for the box stays queued.
         keep(queue().filter((t) => JSON.stringify(t) !== JSON.stringify(tick)));
@@ -292,8 +299,10 @@
         }
         paint();
       }
-      // No answer: the tick waits for the event stream to open again.
-    } catch {}
+    } catch {
+      // No answer: the tick waits for the timer, or for the event stream to open again.
+      arm();
+    }
     busy = false;
   };
   document.addEventListener("change", (e) => {

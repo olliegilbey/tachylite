@@ -29,6 +29,47 @@ async function visit(page: Page, path: string) {
   await page.waitForFunction(() => (window as any).liveOpen === true);
 }
 
+/**
+ * Holds each timer of 2 s or more, the retry's among them: a test reads the gap each asked
+ * for, and fires the oldest. Counts each answer to a tick, or its failure, before the page
+ * reads it, so a test knows the page has dealt with it.
+ */
+async function hold(page: Page) {
+  await page.addInitScript(() => {
+    const w = window as any;
+    const [set, clear, send] = [window.setTimeout, window.clearTimeout, window.fetch];
+    w.gaps = [];
+    w.held = [];
+    w.answers = 0;
+    w.setTimeout = (run: () => void, ms = 0, ...rest: unknown[]) => {
+      if (ms < 2000) return set(run, ms, ...rest);
+      w.gaps.push(ms);
+      return -w.held.push(run);
+    };
+    w.clearTimeout = (id?: number) => (id! < 0 ? delete w.held[-id! - 1] : clear(id));
+    w.fetch = (...request: Parameters<typeof fetch>) => {
+      const sent = send(...request);
+      const count = () => w.answers++;
+      if (String(request[0]).includes("/.tachylite/task")) sent.then(count, count);
+      return sent;
+    };
+    w.fire = () => {
+      const at = w.held.findIndex(Boolean);
+      const run = w.held[at];
+      delete w.held[at];
+      run();
+    };
+  });
+}
+/** Waits until the page has dealt with `count` answers to its ticks. */
+const answered = (page: Page, count: number) =>
+  expect.poll(() => page.evaluate(() => (window as any).answers)).toBe(count);
+/** The gap each held timer asked for, in order, and how many still wait. */
+const timers = (page: Page) =>
+  page.evaluate(() => ({ gaps: (window as any).gaps, waiting: (window as any).held.filter(Boolean).length }));
+/** Fires the oldest held timer. */
+const fire = (page: Page) => page.evaluate(() => (window as any).fire());
+
 test.beforeEach(async ({ page, allowedErrors }, info) => {
   // Each test ends by stopping its server under an open stream.
   allowedErrors.push(lost);
@@ -282,15 +323,22 @@ test("storage that refuses keeps the queue in memory", async ({ page }) => {
 
 test("a stored queue that is not a list starts empty", async ({ page }) => {
   await visit(page, "/n");
-  for (const stored of ["null", "{}", "7"]) {
+  // Then lists whose entries are no ticks.
+  for (const stored of ["null", "{}", "7", "[null]", "[7]", '[{"a":1}]']) {
     await page.evaluate((s) => (localStorage.tachyliteTicks = s), stored);
     // A script that throws at load fails the test, and leaves the page with no stream.
     await page.reload();
     await page.waitForFunction(() => (window as any).liveOpen === true);
   }
+  // A tick among them is still sent.
+  const at = await task(page, "repot the basil").getAttribute("data-box");
+  await page.evaluate((tick) => (localStorage.tachyliteTicks = JSON.stringify([null, 7, { a: 1 }, tick])), ["n.md", at, "done"]);
+  await page.reload();
+  await expect.poll(saved).toBe(TASKS.replace("[/] repot", "[x] repot"));
+  await expect.poll(() => queued(page)).toBe("[]");
   const water = task(page, "water the fern");
   await box(water).click();
-  await expect.poll(saved).toBe(TASKS.replace("[ ] water", "[x] water"));
+  await expect.poll(saved).toBe("# N\n\n- [x] water the fern\n- [x] repot the basil\n");
   await expect.poll(() => queued(page)).toBe("[]");
 });
 
@@ -312,6 +360,89 @@ test("a busy server keeps the tick, and it lands on the retry", async ({ page, a
   expect(JSON.parse(await queued(page))).toEqual([["n.md", at, "done"]]);
   expect(saved()).toBe(TASKS);
   // The stream never dropped, so only the client's own timer sends the tick again.
+  await expect.poll(saved).toBe(TASKS.replace("[ ] water", "[x] water"));
+  expect(posts).toBe(2);
+  await expect(water).not.toHaveAttribute("data-pending");
+  await expect(box(water)).toBeChecked();
+  expect(await queued(page)).toBe("[]");
+});
+
+test("taps while the server is busy leave the retry's one timer be", async ({ page, allowedErrors }) => {
+  allowedErrors.push(/503 \(Service Unavailable\)/);
+  await hold(page);
+  await visit(page, "/n");
+  let busy = true;
+  let posts = 0;
+  await page.route(ROUTE, async (route) => {
+    posts++;
+    if (busy) await route.fulfill({ status: 503, body: "busy" });
+    else await route.continue();
+  });
+  await box(task(page, "water the fern")).click();
+  await answered(page, 1);
+  await box(task(page, "repot the basil")).click();
+  await answered(page, 2);
+  // Two busy answers, and one timer: the second tap neither moved it nor added one.
+  expect(await timers(page)).toEqual({ gaps: [2000], waiting: 1 });
+  expect(saved()).toBe(TASKS);
+  busy = false;
+  await fire(page);
+  await expect.poll(saved).toBe("# N\n\n- [x] water the fern\n- [x] repot the basil\n");
+  await expect.poll(() => queued(page)).toBe("[]");
+  expect(posts).toBe(4);
+  expect(await timers(page)).toEqual({ gaps: [2000], waiting: 0 });
+});
+
+test("the retry's gap doubles up to a minute, and an answer sets it back", async ({ page, allowedErrors }) => {
+  allowedErrors.push(/503 \(Service Unavailable\)/);
+  await hold(page);
+  await visit(page, "/n");
+  let busy = true;
+  await page.route(ROUTE, async (route) => {
+    if (busy) await route.fulfill({ status: 503, body: "busy" });
+    else await route.continue();
+  });
+  const water = task(page, "water the fern");
+  await box(water).click();
+  await answered(page, 1);
+  // Each time the timer fires and the server is still busy, the next gap is twice as long.
+  for (let fired = 1; fired <= 6; fired++) {
+    await fire(page);
+    await answered(page, 1 + fired);
+  }
+  const gaps = [2000, 4000, 8000, 16000, 32000, 60000, 60000];
+  expect(await timers(page)).toEqual({ gaps, waiting: 1 });
+  // A tap meets the server back: both ticks land, and the timer is dropped.
+  busy = false;
+  await box(task(page, "repot the basil")).click();
+  await expect.poll(saved).toBe("# N\n\n- [x] water the fern\n- [x] repot the basil\n");
+  await expect.poll(() => queued(page)).toBe("[]");
+  expect(await timers(page)).toEqual({ gaps, waiting: 0 });
+  // The next busy spell starts from 2 s again.
+  busy = true;
+  await box(water).click();
+  await answered(page, 10);
+  expect(await timers(page)).toEqual({ gaps: [...gaps, 2000], waiting: 1 });
+});
+
+test("a POST that fails on the network is sent again while the stream stays open", async ({ page, allowedErrors }) => {
+  allowedErrors.push(/net::ERR_CONNECTION_RESET/);
+  await hold(page);
+  await visit(page, "/n");
+  let posts = 0;
+  await page.route(ROUTE, async (route) => {
+    if (++posts === 1) await route.abort("connectionreset");
+    else await route.continue();
+  });
+  const water = task(page, "water the fern");
+  await box(water).click();
+  await answered(page, 1);
+  await expect(water).toHaveAttribute("data-pending", "");
+  expect(saved()).toBe(TASKS);
+  expect(await timers(page)).toEqual({ gaps: [2000], waiting: 1 });
+  // The stream never dropped, so only the timer sends the tick again.
+  expect(await page.evaluate(() => (window as any).liveOpen)).toBe(true);
+  await fire(page);
   await expect.poll(saved).toBe(TASKS.replace("[ ] water", "[x] water"));
   expect(posts).toBe(2);
   await expect(water).not.toHaveAttribute("data-pending");
