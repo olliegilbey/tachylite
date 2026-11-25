@@ -808,6 +808,19 @@ fn a_page_with_no_task_to_tick_is_the_same_with_writes_on_and_off() {
 }
 
 #[test]
+fn a_note_rendered_again_for_an_embed_found_late_keeps_its_tokens() {
+    // An embed in a table cell escapes its pipe, so only the render finds its note. The
+    // note is then rendered a second time, with that note read.
+    let host = "- [ ] own task\n\n| t |\n|---|\n| ![[b\\|label]] |\n";
+    let d = vault(ON, &[("a.md", host), ("b.md", "embedded text\n")]);
+    tachylite::build::build(&d.vault(), &d.out()).unwrap();
+    let page = fs::read_to_string(d.out().join("pages/a.html")).unwrap();
+    assert!(page.contains("embedded text"), "{page}");
+    assert_eq!(shown(&page, "own task"), token(host, 1).to_string());
+    assert!(page.contains("<main data-src=\"a.md\">"), "{page}");
+}
+
+#[test]
 fn the_board_escapes_the_path_of_a_task_list() {
     let name = "a \"b\" & <c>.md";
     let d = vault(ON, &[(name, "- [ ] water\n")]);
