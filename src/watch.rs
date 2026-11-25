@@ -105,6 +105,25 @@ pub struct Watcher {
     /// Whether the config on disk is missing, broken or mid-save. The previous config stays
     /// for all it says but `writes`: until a config loads, no tick lands.
     shut: bool,
+    /// What the log last said of the write route.
+    said: &'static str,
+}
+
+/// What the log says of a route with no config that asks for one. A vault that never set
+/// `writes` starts here and stays, so its log says nothing of ticks.
+const WRITES_OFF: &str = "ticks are off: `writes` is off";
+
+/// What the log says of the write route in state `ticks`, when the config in force has
+/// `writes` as given.
+fn route_line(ticks: &Ticks, writes: bool) -> &'static str {
+    match ticks {
+        Ticks::On(_) => "ticks are on",
+        Ticks::Busy => "ticks wait: the vault is being scanned under the new config",
+        Ticks::Off if writes => {
+            "ticks are off: the config is being saved, is missing or does not parse"
+        }
+        Ticks::Off => WRITES_OFF,
+    }
 }
 
 fn join(dir: &str, name: &str) -> String {
@@ -193,6 +212,7 @@ impl Watcher {
             hosts: config.hosts,
             floor: 0,
             shut: false,
+            said: WRITES_OFF,
         };
         watcher.watch_tree("")?;
         // A config saved before the root watch existed sent no event. One still being saved
@@ -737,7 +757,7 @@ impl Watcher {
 
     /// Tells the server which notes take a tick: every path with a page, or none while
     /// `writes` is off or the route is shut.
-    fn share(&self) {
+    fn share(&mut self) {
         self.set_ticks(if self.site.writes() && !self.shut {
             Ticks::On(self.site.winners())
         } else {
@@ -745,7 +765,13 @@ impl Watcher {
         });
     }
 
-    fn set_ticks(&self, ticks: Ticks) {
+    fn set_ticks(&mut self, ticks: Ticks) {
+        // One line for each change of the route, not for each apply.
+        let line = route_line(&ticks, self.site.writes());
+        if line != self.said {
+            eprintln!("{line}");
+            self.said = line;
+        }
         *self
             .live
             .ticks

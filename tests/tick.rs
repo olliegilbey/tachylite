@@ -8,7 +8,7 @@ use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::Path;
 use std::process::Command;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use common::{Dirs, Response, Server, encode, send, version_of};
 use tachylite::tick::{self, To, Token};
@@ -756,6 +756,84 @@ fn a_config_that_does_not_load_shuts_the_route() {
             "{case:?}"
         );
     }
+}
+
+/// The log's lines about ticks, up to the first line that `mark` takes.
+fn said(server: &Server, mark: impl Fn(&str) -> bool) -> Vec<String> {
+    let lines = std::cell::RefCell::new(Vec::new());
+    let take = |l: &str| {
+        if l.starts_with("ticks ") {
+            lines.borrow_mut().push(l.to_string());
+        }
+        mark(l)
+    };
+    server
+        .wait_line(take, Duration::from_secs(30))
+        .expect("the log never reached its mark");
+    lines.into_inner()
+}
+
+const SAYS_ON: &str = "ticks are on";
+const SAYS_BUSY: &str = "ticks wait: the vault is being scanned under the new config";
+const SAYS_SHUT: &str = "ticks are off: the config is being saved, is missing or does not parse";
+const SAYS_OFF: &str = "ticks are off: `writes` is off";
+
+#[test]
+fn the_log_says_once_each_time_the_route_shuts_or_opens() {
+    let (d, server) = serving(ON, &[("n.md", "- [ ] water\n"), ("bar.md", "# b0")]);
+    let toml = d.vault().join("tachylite.toml");
+    let ticks = |lines: &[String]| -> Vec<String> {
+        let about = lines.iter().filter(|l| l.starts_with("ticks "));
+        about.cloned().collect()
+    };
+    // The start's own scan runs under the config it read.
+    assert_eq!(ticks(&server.start_lines), [SAYS_BUSY, SAYS_ON]);
+    let mut pushes = server.subscribe("/bar", &version_of(&server.get("/bar").text()), None);
+    // A note's save is an apply, and the route stays as it was: the log says nothing.
+    let mut apply = |mark: &str| {
+        fs::write(d.vault().join("bar.md"), format!("# {mark}")).unwrap();
+        pushes.expect("page");
+    };
+    apply("b1");
+    apply("b2");
+
+    fs::write(&toml, "writes = flase\n").unwrap();
+    let kept = |l: &str| l.contains("keeping the previous config");
+    assert_eq!(said(&server, kept), [SAYS_SHUT]);
+    apply("b3");
+    // A second save that does not load leaves the route shut: nothing new to say.
+    fs::write(&toml, "writes = flase\n# again\n").unwrap();
+    assert_eq!(said(&server, kept), [] as [&str; 0]);
+
+    fs::write(&toml, ON).unwrap();
+    assert_eq!(said(&server, |l| l == SAYS_ON), [SAYS_BUSY, SAYS_ON]);
+    apply("b4");
+
+    fs::write(&toml, "writes = false\n").unwrap();
+    assert_eq!(said(&server, |l| l == SAYS_OFF), [SAYS_SHUT, SAYS_OFF]);
+    apply("b5");
+    // With `writes` off, a config save moves no route.
+    let unmatched = |l: &str| l.starts_with("exclude \"zz\" matched no published path");
+    fs::write(&toml, "exclude = [\"zz\"]\n").unwrap();
+    assert_eq!(said(&server, unmatched), [] as [&str; 0]);
+}
+
+#[test]
+fn a_vault_that_never_set_writes_logs_nothing_of_ticks() {
+    let (d, server) = serving("exclude = [\"yy\"]\n", &[("n.md", "- [ ] water\n")]);
+    let toml = d.vault().join("tachylite.toml");
+    let about = |l: &&String| l.starts_with("ticks ");
+    assert_eq!(server.start_lines.iter().filter(about).count(), 0);
+    fs::write(&toml, "exclude = [\"zz\"]\n").unwrap();
+    let unmatched = |l: &str| l.starts_with("exclude \"zz\" matched no published path");
+    assert_eq!(said(&server, unmatched), [] as [&str; 0]);
+    fs::write(&toml, "exclude = [\n").unwrap();
+    let kept = |l: &str| l.contains("keeping the previous config");
+    assert_eq!(said(&server, kept), [] as [&str; 0]);
+    fs::remove_file(&toml).unwrap();
+    fs::write(&toml, "exclude = [\"zz\", \"xx\"]\n").unwrap();
+    let unmatched = |l: &str| l.starts_with("exclude \"xx\" matched no published path");
+    assert_eq!(said(&server, unmatched), [] as [&str; 0]);
 }
 
 /// Every file of an output's `pages/`, by its path below it.
