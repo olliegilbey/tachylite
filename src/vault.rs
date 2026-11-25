@@ -488,11 +488,19 @@ impl VaultDir {
         let Some((at, byte)) = plan else {
             return Ok(());
         };
-        // The box as it stands now, with its brackets: another writer may have changed the
-        // line since the read.
-        let mut now = [0; 3];
-        match file.read_exact_at(&mut now, at as u64 - 1) {
-            Ok(()) if now[..] == bytes[at - 1..=at + 1] => {}
+        // The task's line as it stands now: another writer may have changed the note since
+        // the read.
+        let start = bytes[..at]
+            .iter()
+            .rposition(|b| *b == b'\n')
+            .map_or(0, |n| n + 1);
+        let end = bytes[at..]
+            .iter()
+            .position(|b| *b == b'\n')
+            .map_or(bytes.len(), |n| at + n);
+        let mut now = vec![0; end - start];
+        match file.read_exact_at(&mut now, start as u64) {
+            Ok(()) if now[..] == bytes[start..end] => {}
             Ok(()) => return Err(TickError::Conflict),
             Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Err(TickError::Conflict),
             Err(e) => return Err(TickError::Io(e)),
