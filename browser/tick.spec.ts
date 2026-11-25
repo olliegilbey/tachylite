@@ -46,7 +46,10 @@ async function hold(page: Page) {
       w.gaps.push(ms);
       return -w.held.push(run);
     };
-    w.clearTimeout = (id?: number) => (id! < 0 ? delete w.held[-id! - 1] : clear(id));
+    w.clearTimeout = (id?: number) => {
+      if (id! < 0) delete w.held[-id! - 1];
+      else clear(id);
+    };
     w.fetch = (...request: Parameters<typeof fetch>) => {
       const sent = send(...request);
       const count = () => w.answers++;

@@ -118,7 +118,7 @@ const WRITES_OFF: &str = "ticks are off: `writes` is off";
 fn route_line(ticks: &Ticks, writes: bool) -> &'static str {
     match ticks {
         Ticks::On(_) => "ticks are on",
-        Ticks::Busy => "ticks wait: the vault is being scanned under the new config",
+        Ticks::Busy => "ticks wait: the vault is being scanned",
         Ticks::Off if writes => {
             "ticks are off: the config is being saved, is missing or does not parse"
         }

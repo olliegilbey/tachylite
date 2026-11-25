@@ -140,6 +140,37 @@ fn the_write_changes_one_byte_in_place() {
 }
 
 #[test]
+fn a_tick_lands_on_a_line_with_any_ending() {
+    for (text, line, want) in [
+        ("- [ ] water", 1, "- [x] water"),
+        ("- [ ]", 1, "- [x]"),
+        (
+            "# n\n\n- [ ] water\n- [ ] repot",
+            4,
+            "# n\n\n- [ ] water\n- [x] repot",
+        ),
+        (
+            "# n\r\n\r\n- [ ] water\r\n- [ ] repot\r\n",
+            3,
+            "# n\r\n\r\n- [x] water\r\n- [ ] repot\r\n",
+        ),
+        (
+            "- [ ] water\r\n- [ ] repot",
+            2,
+            "- [ ] water\r\n- [x] repot",
+        ),
+    ] {
+        let d = vault("", &[("n.md", text)]);
+        let dir = VaultDir::open(&d.vault()).unwrap();
+        dir.tick("n.md", token(text, line), To::Done).unwrap();
+        let path = d.vault().join("n.md");
+        assert_eq!(fs::read_to_string(&path).unwrap(), want);
+        dir.tick("n.md", token(text, line), To::Todo).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), text);
+    }
+}
+
+#[test]
 fn a_task_already_as_asked_takes_no_write() {
     let text = "- [x] done\n- [ ] todo\n- [/] doing\n- [-] cancelled\n";
     let d = vault("", &[("n.md", text)]);
@@ -774,7 +805,7 @@ fn said(server: &Server, mark: impl Fn(&str) -> bool) -> Vec<String> {
 }
 
 const SAYS_ON: &str = "ticks are on";
-const SAYS_BUSY: &str = "ticks wait: the vault is being scanned under the new config";
+const SAYS_BUSY: &str = "ticks wait: the vault is being scanned";
 const SAYS_SHUT: &str = "ticks are off: the config is being saved, is missing or does not parse";
 const SAYS_OFF: &str = "ticks are off: `writes` is off";
 

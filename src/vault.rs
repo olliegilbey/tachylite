@@ -488,22 +488,27 @@ impl VaultDir {
         let Some((at, byte)) = plan else {
             return Ok(());
         };
-        // The task's line as it stands now: another writer may have changed the note since
-        // the read.
+        // The task's line as it stands now, with its newline: another writer may have changed
+        // the note since the read.
         let start = bytes[..at]
             .iter()
             .rposition(|b| *b == b'\n')
             .map_or(0, |n| n + 1);
-        let end = bytes[at..]
-            .iter()
-            .position(|b| *b == b'\n')
-            .map_or(bytes.len(), |n| at + n);
-        let mut now = vec![0; end - start];
-        match file.read_exact_at(&mut now, start as u64) {
-            Ok(()) if now[..] == bytes[start..end] => {}
-            Ok(()) => return Err(TickError::Conflict),
-            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Err(TickError::Conflict),
-            Err(e) => return Err(TickError::Io(e)),
+        let newline = bytes[at..].iter().position(|b| *b == b'\n');
+        let end = newline.map_or(bytes.len(), |n| at + n + 1);
+        // A last line with no newline must still end the file, so one byte more is asked for.
+        let mut now = vec![0; end - start + usize::from(newline.is_none())];
+        let mut got = 0;
+        while got < now.len() {
+            match file.read_at(&mut now[got..], (start + got) as u64) {
+                Ok(0) => break,
+                Ok(n) => got += n,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(TickError::Io(e)),
+            }
+        }
+        if now[..got] != bytes[start..end] {
+            return Err(TickError::Conflict);
         }
         file.write_all_at(&[byte], at as u64).map_err(TickError::Io)
     }
