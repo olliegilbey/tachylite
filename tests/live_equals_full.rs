@@ -55,8 +55,8 @@ enum Op {
     DeleteFolder,
     Burst,
     /// Writes `tachylite.toml`, excluding `d`, or excluding nothing and naming pins and a
-    /// daily folder in `d`.
-    Config(bool),
+    /// daily folder in `d`. With or without `writes`.
+    Config(bool, bool),
     /// Writes a daily note, or deletes it, so daily notes come and go beside their
     /// neighbours.
     Day(usize, bool),
@@ -77,7 +77,7 @@ fn op() -> impl Strategy<Value = Op> {
         1 => Just(Op::RenameFolder),
         1 => Just(Op::DeleteFolder),
         1 => Just(Op::Burst),
-        1 => any::<bool>().prop_map(Op::Config),
+        1 => any::<(bool, bool)>().prop_map(|(exclude, writes)| Op::Config(exclude, writes)),
         3 => (0..DAYS, any::<bool>()).prop_map(|(d, write)| Op::Day(d, write)),
         2 => any::<bool>().prop_map(Op::Html),
     ]
@@ -133,12 +133,13 @@ fn apply(vault: &Path, op: &Op) {
             let limit = usize::try_from(tachylite::vault::NOTE_MAX).unwrap();
             write(vault.join("d/h.html"), &vec![b'x'; limit + 1]);
         }
-        Op::Config(exclude) => {
+        Op::Config(exclude, writes) => {
             let text = if *exclude {
                 "exclude = [\"d\"]\n"
             } else {
                 "exclude = []\npins = [\"d/n.md|N\", \"d\"]\ndaily = { folder = \"d\" }\n"
             };
+            let text = format!("writes = {writes}\n{text}");
             write(vault.join("tachylite.toml"), text.as_bytes());
         }
         Op::Burst => {
@@ -182,12 +183,17 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(cases()))]
 
     #[test]
-    fn live_output_equals_full_build(ops in prop::collection::vec((op(), any::<bool>()), 1..12)) {
+    fn live_output_equals_full_build(
+        ops in prop::collection::vec((op(), any::<bool>()), 1..12),
+        writes in any::<bool>(),
+    ) {
         let d = Dirs::empty();
         fs::write(d.vault().join("zz-barrier.md"), "# 0").unwrap();
         // Two daily notes that link to each other from the start, until a config op says
-        // otherwise. So most cases move a neighbour.
-        fs::write(d.vault().join("tachylite.toml"), "daily = { folder = \"d\" }\n").unwrap();
+        // otherwise. So most cases move a neighbour. Half the cases start with writes on, so
+        // every render path writes the tokens a full build writes.
+        let config = format!("writes = {writes}\ndaily = {{ folder = \"d\" }}\n");
+        fs::write(d.vault().join("tachylite.toml"), config).unwrap();
         fs::create_dir(d.vault().join("d")).unwrap();
         for day in [PATHS.len() - DAYS, PATHS.len() - 1] {
             fs::write(d.vault().join(PATHS[day]), "day").unwrap();

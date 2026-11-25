@@ -5,7 +5,7 @@ description: How Tachylite reads a vault. Use when writing or editing a note, a 
 
 # Writing for a Tachylite vault
 
-Tachylite serves a vault of Obsidian-style Markdown as a website. It only reads the vault. Its reader is on a phone, often offline. You write plain files; this says how Tachylite reads them.
+Tachylite serves a vault of Obsidian-style Markdown as a website. It reads the vault, and a reader can tick a task when the vault turns that on. Its reader is on a phone, often offline. You write plain files; this says how Tachylite reads them.
 
 ## Pick a form
 
@@ -76,7 +76,9 @@ A task is a list item that starts with a checkbox. Four statuses exist:
 - The note is the task list. Tachylite keeps line order, so put the most important task first.
 - A `#tag` or a `[[link]]` on the line works. Keep the line short and link to the detail.
 - Indent a task to nest it. A task works in a callout and in an embedded note.
-- Tasks are read-only in the browser. To change a status, edit the character in the note.
+- A reader can tick a task in the browser when the vault's `tachylite.toml` sets `writes = true`. A tick changes the character in the box to `x`, or back to a space. Any other change is an edit to the note.
+- Put a space after the box, and do not define a link reference named `x`, as `[x]: https://example.com`: a ticked `[x]` would become a link.
+- Keep `%%comments%%` off a task's line: a task on a line that a comment touches cannot be ticked.
 - Due dates and plugin fields show as plain text.
 
 ## Daily notes

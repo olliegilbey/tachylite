@@ -43,4 +43,4 @@ A task is a list line that starts with a checkbox. The note is the task list, in
 
 The Tasks tab gathers the open tasks of every note onto one board. On a wide screen its doing tasks sit beside its todo tasks.
 
-Tasks are read-only in the browser. To change one, edit its character in the note.
+A tap on a box ticks its task when the vault's `tachylite.toml` sets `writes = true`. Without it, tasks are read-only in the browser: to change one, edit its character in the note.

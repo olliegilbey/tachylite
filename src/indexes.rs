@@ -328,6 +328,8 @@ pub fn today(header: &str, days: &[(&str, &str, String)]) -> Page {
 /// A task list as the board shows it.
 pub struct TaskList<'a> {
     pub title: &'a str,
+    /// The note's vault path.
+    pub path: &'a str,
     pub url: String,
     pub tasks: &'a crate::render::Tasks,
 }
@@ -335,23 +337,35 @@ pub struct TaskList<'a> {
 /// `/.tachylite/tasks`: the task lists in board order, and how many more there are. Each
 /// shows its lines, a link to the note for the open tasks it leaves out, and its counts of
 /// done and cancelled tasks. The stylesheet sets each list's doing tasks beside its todo
-/// tasks on a wide screen. The Tasks tab names the page.
+/// tasks on a wide screen. The Tasks tab names the page. A line a client may tick carries its
+/// token in `data-box`, and its task list names its note in `data-src`.
 pub fn tasks(header: &str, lists: &[TaskList], more: usize) -> Page {
     let mut main = String::from("<h1 class=\"sr\">Tasks</h1>\n");
     if lists.is_empty() {
         main.push_str("<p>No open tasks.</p>\n");
     }
     for list in lists {
+        let src = if list.tasks.shown.iter().any(|line| line.token.is_some()) {
+            format!(" data-src=\"{}\"", escape(list.path))
+        } else {
+            String::new()
+        };
         main.push_str(&format!(
-            "<section class=\"tasks\"><h2><a href=\"{}\">{}</a></h2>\n<ul>",
+            "<section class=\"tasks\"{src}><h2><a href=\"{}\">{}</a></h2>\n<ul>",
             list.url,
             escape(list.title)
         ));
-        for (doing, line) in &list.tasks.shown {
-            let status = if *doing { "doing" } else { "todo" };
-            main.push_str(&format!(
-                "<li data-task=\"{status}\"><input type=\"checkbox\" disabled> {line}</li>"
-            ));
+        for line in &list.tasks.shown {
+            let status = if line.doing { "doing" } else { "todo" };
+            let html = &line.html;
+            main.push_str(&match &line.token {
+                Some(token) => format!(
+                    "<li data-task=\"{status}\" data-box=\"{token}\"><input type=\"checkbox\"> {html}</li>"
+                ),
+                None => format!(
+                    "<li data-task=\"{status}\"><input type=\"checkbox\" disabled> {html}</li>"
+                ),
+            });
         }
         main.push_str("</ul>\n");
         let mut counts = Vec::new();

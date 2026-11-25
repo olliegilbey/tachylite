@@ -16,6 +16,7 @@ use crate::config::Exclude;
 use crate::front::{self, Value};
 use crate::links::{Index, Resolved, resolve, split};
 use crate::sanitize::sanitize;
+use crate::tick;
 use crate::vault::{Kind, classify, is_image};
 
 /// The file stem of the last path segment: `people/Jane Doe.md` gives `Jane Doe`.
@@ -76,15 +77,29 @@ pub struct Body {
 /// A note's tasks as the board shows them: the lines it may show, and counts of the rest.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Tasks {
-    /// Each open task the board shows, in line order: whether it is doing, and its line's
-    /// HTML. Every doing task, then todo tasks from the top, up to `indexes::TASK_LINES`.
-    pub shown: Vec<(bool, String)>,
+    /// Each open task the board shows, in line order. Every doing task, then todo tasks from
+    /// the top, up to `indexes::TASK_LINES`.
+    pub shown: Vec<TaskLine>,
     /// How many tasks are open: todo or doing.
     pub open: usize,
     pub doing: usize,
     pub done: usize,
     pub cancelled: usize,
 }
+
+/// An open task as the board shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskLine {
+    pub doing: bool,
+    /// Its line's HTML.
+    pub html: Box<str>,
+    /// The token of its box, when a client may tick it.
+    pub token: Option<Box<str>>,
+}
+
+/// The token of each task a client may tick, by the line and column its list item starts
+/// at in the parsed text.
+type Boxes = HashMap<(usize, usize), String>;
 
 /// The notes an embed may read, by path.
 pub type Sources = HashMap<String, Vec<u8>>;
@@ -278,7 +293,7 @@ fn embed(
             seen.insert(target.to_string());
             // `seen` grows by one per embed, so its size numbers the embeds on the page.
             let prefix = format!("e{}.", seen.len() - 1);
-            let inner = render(&target, &markdown, index, sources, (depth + 1, seen));
+            let inner = render(&target, &markdown, index, sources, (depth + 1, seen, false));
             body.missing.extend(inner.missing);
             let title = front::meta(&markdown)
                 .title
@@ -425,18 +440,31 @@ fn properties(body: &mut Body, from: &str, yaml: &str, index: &Index) -> String 
 /// holds the notes its embeds may read; an embed of a note missing from it renders as a
 /// link.
 pub fn render_body(from: &str, markdown: &str, index: &Index, sources: &Sources) -> Body {
-    let mut seen = HashSet::from([from.to_string()]);
-    render(from, markdown, index, sources, (0, &mut seen))
+    render_with(from, markdown, index, sources, false)
 }
 
-fn render(
+/// Renders like `render_body`. With `writes`, each task a client may tick carries its token
+/// in `data-box`, and its checkbox is not disabled.
+pub fn render_with(
     from: &str,
     markdown: &str,
     index: &Index,
     sources: &Sources,
-    (depth, seen): (usize, &mut HashSet<String>),
+    writes: bool,
 ) -> Body {
-    let (yaml, raw) = front::split(markdown);
+    let mut seen = HashSet::from([from.to_string()]);
+    render(from, markdown, index, sources, (0, &mut seen, writes))
+}
+
+fn render(
+    from: &str,
+    file: &str,
+    index: &Index,
+    sources: &Sources,
+    (depth, seen, writes): (usize, &mut HashSet<String>, bool),
+) -> Body {
+    let (yaml, raw) = front::split(file);
+    let text = raw;
     let Stripped {
         text: markdown,
         unclosed,
@@ -682,8 +710,13 @@ fn render(
         );
     }
     // An embedded note's tasks are its own, not this note's.
+    let boxes = if writes && depth == 0 {
+        tokens(file, text, &markdown, &tasks)
+    } else {
+        Boxes::new()
+    };
     if depth == 0 {
-        body.tasks = collect_tasks(from, &tasks, &options);
+        body.tasks = collect_tasks(from, &tasks, &options, &boxes);
     }
     let mut html = props;
     let mut plugins = Plugins::default();
@@ -692,7 +725,7 @@ fn render(
         .codefence_renderers
         .insert("mermaid".to_string(), &Mermaid);
     // Writing into a String cannot fail.
-    let _ = format_document_with_formatter(root, &options, &mut html, &plugins, format_node, ());
+    let _ = format_document_with_formatter(root, &options, &mut html, &plugins, format_node, boxes);
     if unclosed {
         html.push_str(
             "<p class=\"comment-error\">A comment in this note is not closed, so the text \
@@ -760,10 +793,69 @@ fn task_status(symbol: Option<char>) -> &'static str {
     }
 }
 
+/// Where a task's list item starts in the parsed text.
+fn item_start<'a>(item: &'a AstNode<'a>) -> (usize, usize) {
+    let start = item.data().sourcepos.start;
+    (start.line, start.column)
+}
+
+/// The token of each of `tasks` a client may tick. `file` is the note as read, `text` its
+/// body after the frontmatter, and `parsed` that body as the parser read it, without its
+/// comments. A task has a token when its line of the file holds a box by `tick::boxes`, the
+/// box holds the task's status, and no comment touches the line. A cancelled task has none.
+fn tokens<'a>(file: &str, text: &str, parsed: &str, tasks: &[&'a AstNode<'a>]) -> Boxes {
+    let mut boxes = Boxes::new();
+    if tasks.is_empty() || !tick::numbered(file.as_bytes()) {
+        return boxes;
+    }
+    // Over the whole file, as the write path reads it, so both count a text's lines alike.
+    let found = tick::boxes(file.as_bytes());
+    // The lines the frontmatter takes, which the parser never saw.
+    let before = file.as_bytes()[..file.len() - text.len()]
+        .iter()
+        .filter(|b| **b == b'\n')
+        .count();
+    // Without a comment, the parser read the body as it is. With one, a line the comment
+    // touches lost bytes, and the box the parser read may not be the file's first.
+    let read = (!std::ptr::eq(parsed, text)).then(|| (split_lines(parsed), split_lines(file)));
+    for item in tasks {
+        let NodeValue::TaskItem(task) = &item.data().value else {
+            continue;
+        };
+        let (line, column) = item_start(item);
+        let Some(above) = line.checked_sub(1) else {
+            continue;
+        };
+        let Ok(place) = found.binary_search_by_key(&(before + line), |boxed| boxed.line) else {
+            continue;
+        };
+        let boxed = found[place];
+        let symbol = file.as_bytes()[boxed.at];
+        let status = match symbol {
+            b' ' => "todo",
+            b'/' => "doing",
+            b'x' | b'X' => "done",
+            _ => continue,
+        };
+        let same = read
+            .as_ref()
+            .is_none_or(|(parsed, file)| parsed.get(above) == file.get(before + above));
+        if same && task_status(task.symbol) == status {
+            boxes.insert((line, column), boxed.token.to_string());
+        }
+    }
+    boxes
+}
+
+fn split_lines(text: &str) -> Vec<&[u8]> {
+    tick::lines(text.as_bytes()).map(|(_, line)| line).collect()
+}
+
 /// comrak's HTML for a node, but for a task: its list item carries its status in
-/// `data-task`, which no raw HTML can write.
+/// `data-task`, which no raw HTML can write, and its token in `data-box` when a client may
+/// tick it.
 fn format_node<'a>(
-    context: &mut Context,
+    context: &mut Context<Boxes>,
     node: &'a AstNode<'a>,
     entering: bool,
 ) -> Result<ChildRendering, std::fmt::Error> {
@@ -773,14 +865,24 @@ fn format_node<'a>(
     };
     if entering {
         let status = task_status(item.symbol);
+        let checked = if status == "done" { " checked" } else { "" };
         context.cr()?;
         context.write_str("<li data-task=\"")?;
         context.write_str(status)?;
-        context.write_str(if status == "done" {
-            "\"><input type=\"checkbox\" checked disabled> "
-        } else {
-            "\"><input type=\"checkbox\" disabled> "
-        })?;
+        match context.user.remove(&item_start(node)) {
+            Some(token) => {
+                context.write_str("\" data-box=\"")?;
+                context.write_str(&token)?;
+                context.write_str("\"><input type=\"checkbox\"")?;
+                context.write_str(checked)?;
+                context.write_str("> ")?;
+            }
+            None => {
+                context.write_str("\"><input type=\"checkbox\"")?;
+                context.write_str(checked)?;
+                context.write_str(" disabled> ")?;
+            }
+        }
     } else {
         context.write_str("</li>\n")?;
     }
@@ -788,7 +890,12 @@ fn format_node<'a>(
 }
 
 /// The counts of `items`' tasks, and the lines of the open ones the board shows.
-fn collect_tasks<'a>(from: &str, items: &[&'a AstNode<'a>], options: &Options) -> Tasks {
+fn collect_tasks<'a>(
+    from: &str,
+    items: &[&'a AstNode<'a>],
+    options: &Options,
+    boxes: &Boxes,
+) -> Tasks {
     let mut tasks = Tasks::default();
     let mut open = Vec::new();
     for item in items {
@@ -811,8 +918,16 @@ fn collect_tasks<'a>(from: &str, items: &[&'a AstNode<'a>], options: &Options) -
             }
             todo -= 1;
         }
-        tasks.shown.push((doing, task_line(from, item, options)));
+        tasks.shown.push(TaskLine {
+            doing,
+            html: task_line(from, item, options).into(),
+            token: boxes
+                .get(&item_start(item))
+                .map(|token| token.as_str().into()),
+        });
     }
+    // The site keeps every note's lines, so they take no room they do not fill.
+    tasks.shown.shrink_to_fit();
     tasks
 }
 
@@ -1689,8 +1804,18 @@ pub fn day_links(days: [Option<(&str, &str)>; 2]) -> String {
     html
 }
 
+/// The opening tag of a page's `<main>`. With `src`, it names the note whose tasks a client
+/// may tick, by vault path.
+pub fn main_open(src: Option<&str>) -> String {
+    match src {
+        Some(path) => format!("<main data-src=\"{}\">\n", escape(path)),
+        None => "<main>\n".to_string(),
+    }
+}
+
 /// Wraps a note's body in the page shell, under `header`, links to its folders and `days`,
-/// its `day_links`, and above its backlinks, given as `(title, url)` pairs.
+/// its `day_links`, and above its backlinks, given as `(title, url)` pairs. With `ticks`,
+/// the page names its note for the tasks a client may tick.
 pub fn render_page(
     header: &str,
     path: &str,
@@ -1698,6 +1823,7 @@ pub fn render_page(
     days: &str,
     body: &str,
     backlinks: &[(String, String)],
+    ticks: bool,
 ) -> Page {
     let folder = path.rsplit_once('/').map_or("", |(folder, _)| folder);
     let mut main = crumbs(folder);
@@ -1710,12 +1836,16 @@ pub fn render_page(
         }
         main.push_str("</ul></section>\n");
     }
-    shell(header, title, &main)
+    page(header, title, &main_open(ticks.then_some(path)), &main)
 }
 
 /// Every page's template: the head, `header`, and `main`. `header` is HTML, from config
 /// alone; `title` is plain text.
 pub fn shell(header: &str, title: &str, main: &str) -> Page {
+    page(header, title, &main_open(None), main)
+}
+
+fn page(header: &str, title: &str, open: &str, main: &str) -> Page {
     let title = escape(title);
     let before = "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
                   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
@@ -1727,7 +1857,7 @@ pub fn shell(header: &str, title: &str, main: &str) -> Page {
     let after = format!(
         "\">\n<title>{title}</title>\n\
          <script src=\"/.tachylite/live.js\" defer></script>\n</head>\n<body>\n\
-         {header}<main>\n{main}</main>\n</body>\n</html>\n"
+         {header}{open}{main}</main>\n</body>\n</html>\n"
     );
     // The version hashes the whole page but itself, so a new template re-syncs every client.
     let version = version((before, &after));

@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Tachylite serves a folder of Obsidian-style Markdown as a fast, offline-capable website. It is a read-only viewer, and a phone on a bad connection is its main client.
+Tachylite serves a folder of Obsidian-style Markdown as a fast, offline-capable website. It reads the vault, and with `writes = true` it makes one write: a tick. A phone on a bad connection is its main client.
 
 You are working here with a pair: build paths are agreed first, so the maintainer can follow the reasoning and defend it later. You bring software fundamentals, Rust, and the web platform, and your knowledge from having read _Rust for Rustaceans_ - Gjengset, _High Performance Browser Networking_ - Grigorik, and _The Design of Everyday Things_ - Norman. Apply these principles freely. Tachylite is a new project and you are seeing it with fresh eyes: read the design and the code before you build, and build to its conventions. Where the work leans on a crate, a browser API, or Obsidian's behaviour, WebSearch the current documentation before relying on it, or brief a subagent to research and come back with findings.
 
@@ -12,7 +12,7 @@ These hold for every change.
 
 1. **Speed is the first feature.** A saved note reaches an open page on the phone in about 100 ms. A cached page opens at once. Each speed target is a budget. CI enforces the budgets it can measure, and `make budget` measures the timed ones on the reference host.
 2. **Offline after the first sync.** Every note and full search work on the device with no network.
-3. **The vault is the owner's, and Tachylite only reads it.** Notes stay plain Markdown, YAML frontmatter and `[[wikilinks]]`. Agents write the vault in a format they already know, and Tachylite changes how it is read, never how it is written.
+3. **The vault is the owner's.** Notes stay plain Markdown, YAML frontmatter and `[[wikilinks]]`. Agents write the vault in a format they already know, and Tachylite changes how it is read, never how it is written. It reads the vault. With `writes = true` it changes one byte of a note, a task's box, when a reader ticks the task.
 4. **Light enough for a Raspberry Pi.** One small static binary, no runtime dependencies, idle at zero CPU. The Pi is the bar. CI builds the `aarch64` binary on an ARM runner, and builds the fixture vault with it. No real Pi has run it yet.
 
 ## A note from Ollie
@@ -43,6 +43,7 @@ The smallest thing that works, made fast, beats the clever thing. Fight scope cr
 - **budget**: a performance limit with a test that enforces it.
 - **task**: one checkbox line in a note, with one of four statuses: todo, doing, done, cancelled. Avoid "todo" and "ticket" as synonyms.
 - **task list**: the tasks in one note, in line order.
+- **tick**: a reader's tap on a task's box, which sets the task done, or todo again. With `writes = true` it changes one byte of the note. It is Tachylite's only write to the vault.
 - **board**: the `/.tachylite/tasks` page, the open tasks grouped by task list.
 - **tab**: a top-level page linked from the header: Home, Today, Recent, Tasks.
 - **tab bar**: the row of tabs in the header.
@@ -51,7 +52,7 @@ The smallest thing that works, made fast, beats the clever thing. Fight scope cr
 
 ## The four ways to hurt yourself
 
-1. **Writing to a vault.** Tachylite opens vault files read-only. Tests run against the fixture vault, the showcase vault or a vault generated in a temp directory. Output goes to a directory outside the vault.
+1. **Writing to a vault.** One function writes to the vault: `VaultDir::tick` changes one byte of a note, a task's box, and only with `writes = true`. Every other open of a vault file is read-only, and a test fails on a second write path. Tests run against the fixture vault, the showcase vault or a vault generated in a temp directory, and a test that ticks runs against a temp copy. Output goes to a directory outside the vault.
 2. **Leaking content.** This repo is public. Code, fixtures, test names, snapshots, issues, commits, PR bodies and screenshots carry synthetic content only. Nothing from the reference vault, and no paths or names from the owner's machine. An excluded note reaches no output file in any form: page, search index, backlink, manifest or metadata.
 3. **Touching the network edge.** Tachylite binds `127.0.0.1` only. A port that carries a public Funnel route is public on every path, so a wrong `tailscale serve` command can publish the vault.
    - An agent may add one tailnet-only route, to Tachylite's own port: `tailscale serve --bg --https=<port> http://127.0.0.1:<tachylite-port>`. Never serve a path on disk.
@@ -67,7 +68,7 @@ Ordered by weight. When two collide, the earlier one wins.
 
 - **KISS.** Build the smallest correct thing.
 - **Budgets are law.** A change that breaks a budget is a broken change, however good the feature.
-- **Read-only vault, explicit publish list.** Only `.md`, `.html`, images and PDF reach the output. Every other file type stays out.
+- **One write to the vault, explicit publish list.** A tick is the only write, in one function, behind `writes = true`. Only `.md`, `.html`, images and PDF reach the output. Every other file type stays out.
 - **Functional core, I/O at the edges.** Rendering, link resolution and indexing are pure functions over data. Watching, serving and file writes stay thin at the edges.
 - **One code path for full and incremental builds.** A full build is an incremental build of every note. Two paths drift apart.
 - **The platform before a library.** HTML, CSS, a service worker and a few hundred lines of vanilla JS. No client framework, no npm and no client build step in anything that ships.

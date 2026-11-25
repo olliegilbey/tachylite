@@ -23,7 +23,7 @@ pub const DAILY_NOTES: &str = ".obsidian/daily-notes.json";
 const DAILY_FORMAT: &str = "YYYY-MM-DD";
 
 /// The top-level keys the design names.
-const KEYS: [&str; 5] = ["exclude", "daily", "pins", "title", "hosts"];
+const KEYS: [&str; 6] = ["exclude", "daily", "pins", "title", "hosts", "writes"];
 
 // The publish list ignores case, so an exclusion must too, or `Day.MD` slips past `*.md`.
 const MATCH: MatchOptions = MatchOptions {
@@ -50,6 +50,7 @@ pub enum ConfigError {
     },
     NotStrings(&'static str),
     NotString(&'static str),
+    NotBool(&'static str),
     /// A key inside `daily` other than `folder` and `format`.
     DailyKey(String),
     DailyTable,
@@ -73,7 +74,7 @@ impl fmt::Display for ConfigError {
             ConfigError::Syntax { line, message } => write!(f, "line {line}: {message}"),
             ConfigError::UnknownKey(key) => write!(
                 f,
-                "unknown key {key:?}; the keys are exclude, daily, pins, title and hosts"
+                "unknown key {key:?}; the keys are exclude, daily, pins, title, hosts and writes"
             ),
             ConfigError::Nested { table } => write!(
                 f,
@@ -81,6 +82,7 @@ impl fmt::Display for ConfigError {
             ),
             ConfigError::NotStrings(key) => write!(f, "{key} must be a list of strings"),
             ConfigError::NotString(key) => write!(f, "{key} must be a string"),
+            ConfigError::NotBool(key) => write!(f, "{key} must be true or false"),
             ConfigError::DailyTable => f.write_str(
                 "daily must be a table, as daily = { folder = \"journal\", format = \"YYYY-MM-DD\" }",
             ),
@@ -231,6 +233,8 @@ pub struct Config {
     /// The names the server answers besides `127.0.0.1` and `localhost`. `None` answers any.
     pub hosts: Option<Vec<String>>,
     pub nav: Nav,
+    /// Whether a client may tick a task, which writes to the vault. Off unless set.
+    pub writes: bool,
 }
 
 /// What the page header shows. Every page holds it, so it comes from config alone.
@@ -493,6 +497,11 @@ pub fn parse(text: &str) -> Result<Config, ConfigError> {
             title: string(table, "title", "title")?,
             pins: strings(table, "pins")?.unwrap_or_default(),
             daily: daily(table)?,
+        },
+        writes: match table.get("writes").map(|v| v.get_ref()) {
+            None => false,
+            Some(DeValue::Boolean(writes)) => *writes,
+            Some(_) => return Err(ConfigError::NotBool("writes")),
         },
     })
 }

@@ -29,6 +29,21 @@ pub struct Live {
     pub versions: Arc<Mutex<HashMap<String, String>>>,
     /// The current manifest and the steps that lead to it.
     pub manifest: Arc<Mutex<delta::Log>>,
+    /// Whether a client may tick a task now.
+    pub ticks: Arc<Mutex<Ticks>>,
+}
+
+/// What the write route does with a tick.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Ticks {
+    /// There is no route: `writes` is off, or the config on disk is not one that loaded.
+    #[default]
+    Off,
+    /// A new config with `writes` on is in force and its rescan runs, so the notes with a
+    /// page are not known yet. The tick is refused, to be sent again.
+    Busy,
+    /// The vault paths with a page or a file in the output: the site's own set, shared.
+    On(Arc<BTreeSet<String>>),
 }
 
 const MASK: WatchFlags = WatchFlags::CLOSE_WRITE
@@ -87,6 +102,28 @@ pub struct Watcher {
     hosts: Option<Vec<String>>,
     /// Resident memory after the last trim, in bytes.
     floor: usize,
+    /// Whether the config on disk is missing, broken or mid-save. The previous config stays
+    /// for all it says but `writes`: until a config loads, no tick lands.
+    shut: bool,
+    /// What the log last said of the write route.
+    said: &'static str,
+}
+
+/// What the log says of a route with no config that asks for one. A vault that never set
+/// `writes` starts here and stays, so its log says nothing of ticks.
+const WRITES_OFF: &str = "ticks are off: `writes` is off";
+
+/// What the log says of the write route in state `ticks`, when the config in force has
+/// `writes` as given.
+fn route_line(ticks: &Ticks, writes: bool) -> &'static str {
+    match ticks {
+        Ticks::On(_) => "ticks are on",
+        Ticks::Busy => "ticks wait: the vault is being scanned",
+        Ticks::Off if writes => {
+            "ticks are off: the config is being saved, is missing or does not parse"
+        }
+        Ticks::Off => WRITES_OFF,
+    }
 }
 
 fn join(dir: &str, name: &str) -> String {
@@ -159,6 +196,7 @@ impl Watcher {
         let watched = config.exclude.clone();
         let mut site = Site::new(config.exclude);
         site.set_nav(config.nav);
+        site.set_writes(config.writes);
         site.set_obsidian(config::obsidian_daily(&vault));
         let mut watcher = Watcher {
             inotify,
@@ -173,6 +211,8 @@ impl Watcher {
             pending: Vec::new(),
             hosts: config.hosts,
             floor: 0,
+            shut: false,
+            said: WRITES_OFF,
         };
         watcher.watch_tree("")?;
         // A config saved before the root watch existed sent no event. One still being saved
@@ -355,6 +395,12 @@ impl Watcher {
                     .intersects(ReadFlags::MODIFY | ReadFlags::CREATE)
                 {
                     reload = false;
+                    self.shut();
+                } else if event
+                    .flags
+                    .intersects(ReadFlags::DELETE | ReadFlags::MOVED_FROM)
+                {
+                    self.shut();
                 }
                 continue;
             }
@@ -395,7 +441,11 @@ impl Watcher {
             paths.insert(path);
         }
         if reload {
-            let previous = (self.site.exclude().clone(), self.site.nav().clone());
+            let previous = (
+                self.site.exclude().clone(),
+                self.site.nav().clone(),
+                self.site.writes(),
+            );
             if self.reload_config()? == Reload::Loaded {
                 return self.resync_reloaded(previous, removed);
             }
@@ -447,27 +497,54 @@ impl Watcher {
         Ok((changes, removed))
     }
 
-    /// Rereads `tachylite.toml`. A missing, broken or mid-save file keeps the previous config.
+    /// Rereads `tachylite.toml`. A missing, broken or mid-save file keeps the previous
+    /// config, and shuts the write route until a config loads.
     fn reload_config(&mut self) -> Result<Reload, Error> {
         let read = config::reload(&self.vault);
         // The kernel queues IN_MODIFY for each truncate and write just after it lands. One
         // queued after the read means the read may have seen the file empty or half written.
         if self.config_written()? {
+            self.shut();
             return Ok(Reload::MidSave);
         }
         match read {
             Ok(Some(config)) => {
                 self.site.set_exclude(config.exclude);
                 self.site.set_nav(config.nav);
+                self.site.set_writes(config.writes);
                 self.hosts = config.hosts;
+                self.shut = false;
+                // No tick lands until the rescan's apply ends: the new config may exclude
+                // its note.
+                self.set_ticks(if config.writes {
+                    Ticks::Busy
+                } else {
+                    Ticks::Off
+                });
                 Ok(Reload::Loaded)
             }
-            Ok(None) => Ok(Reload::Kept),
+            Ok(None) => {
+                self.shut();
+                Ok(Reload::Kept)
+            }
             Err(e) => {
-                eprintln!("{e}; keeping the previous config");
+                let ticks = if self.site.writes() {
+                    ", and no tick lands until it loads"
+                } else {
+                    ""
+                };
+                eprintln!("{e}; keeping the previous config{ticks}");
+                self.shut();
                 Ok(Reload::Kept)
             }
         }
+    }
+
+    /// Shuts the write route: the config on disk is not the one in force, and may not say
+    /// `writes = true`.
+    fn shut(&mut self) {
+        self.shut = true;
+        self.share();
     }
 
     /// Moves every queued event to `pending`, and says whether one is a write to the config,
@@ -532,13 +609,15 @@ impl Watcher {
     /// stalled in between got past the reload's check. The rescan gave it time to queue.
     fn resync_reloaded(
         &mut self,
-        (exclude, nav): (Exclude, Nav),
+        (exclude, nav, writes): (Exclude, Nav, bool),
         removed: HashSet<String>,
     ) -> Result<(Vec<Change>, HashSet<String>), Error> {
         let (changes, removed) = self.resync(removed)?;
         if self.config_written()? {
             self.site.set_exclude(exclude);
             self.site.set_nav(nav);
+            self.site.set_writes(writes);
+            self.shut();
             return self.resync(removed);
         }
         report::unmatched(&self.site.exclude().unmatched());
@@ -668,11 +747,36 @@ impl Watcher {
             self.held.insert(path, end);
         }
         let failed = writer.finish()?;
+        self.share();
         report::notices(&report.notices);
         report::skipped(&report.skipped);
         report::skipped(&failed);
         report::broken(&report.broken);
         Ok(report.unpublished)
+    }
+
+    /// Tells the server which notes take a tick: every path with a page, or none while
+    /// `writes` is off or the route is shut.
+    fn share(&mut self) {
+        self.set_ticks(if self.site.writes() && !self.shut {
+            Ticks::On(self.site.winners())
+        } else {
+            Ticks::Off
+        });
+    }
+
+    fn set_ticks(&mut self, ticks: Ticks) {
+        // One line for each change of the route, not for each apply.
+        let line = route_line(&ticks, self.site.writes());
+        if line != self.said {
+            eprintln!("{line}");
+            self.said = line;
+        }
+        *self
+            .live
+            .ticks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = ticks;
     }
 
     /// Writes the index pages and the manifest that the applies since the last left due.
@@ -738,6 +842,7 @@ mod tests {
             pushes: broadcast::channel(4).0,
             versions: Arc::default(),
             manifest: Arc::default(),
+            ticks: Arc::default(),
         };
         Watcher::start(vault, out, live, Config::default()).unwrap()
     }
@@ -759,6 +864,113 @@ mod tests {
         let vault = tmp.path().join("vault");
         fs::create_dir(&vault).unwrap();
         (tmp, vault)
+    }
+
+    /// What the watcher tells the server about ticks.
+    fn ticks(watcher: &Watcher) -> Ticks {
+        watcher.live.ticks.lock().unwrap().clone()
+    }
+
+    /// The route open for `notes`.
+    fn open(notes: &[&str]) -> Ticks {
+        Ticks::On(Arc::new(notes.iter().map(|n| n.to_string()).collect()))
+    }
+
+    /// Saves the config and reads the save's own events, as the batch that reloads it does.
+    fn save_config(watcher: &mut Watcher, vault: &Path, text: &str) {
+        fs::write(vault.join(config::FILE), text).unwrap();
+        watcher.config_written().unwrap();
+        watcher.pending.clear();
+    }
+
+    #[test]
+    fn a_config_with_writes_is_busy_until_its_rescan_is_applied() {
+        let (_tmp, vault) = vault();
+        fs::write(vault.join(config::FILE), "writes = true\n").unwrap();
+        fs::write(vault.join("n.md"), "- [ ] a").unwrap();
+        fs::create_dir(vault.join("d")).unwrap();
+        fs::write(vault.join("d/m.md"), "- [ ] b").unwrap();
+        let mut watcher = watcher(&vault);
+        assert_eq!(ticks(&watcher), open(&["d/m.md", "n.md"]));
+        let root = wd(&watcher, "");
+
+        // A save that leaves writes on: the notes with a page are not known until the apply.
+        save_config(&mut watcher, &vault, "writes = true\nexclude = [\"d\"]\n");
+        let save = vec![event(root, ReadFlags::CLOSE_WRITE, config::FILE)];
+        let (changes, removed) = watcher.changes(save).unwrap();
+        assert_eq!(ticks(&watcher), Ticks::Busy);
+        watcher.apply(changes, removed).unwrap();
+        assert_eq!(ticks(&watcher), open(&["n.md"]));
+
+        // A save that turns writes off shuts the route at once.
+        save_config(&mut watcher, &vault, "writes = false\n");
+        let save = vec![event(root, ReadFlags::CLOSE_WRITE, config::FILE)];
+        let (changes, removed) = watcher.changes(save).unwrap();
+        assert_eq!(ticks(&watcher), Ticks::Off);
+        watcher.apply(changes, removed).unwrap();
+        assert_eq!(ticks(&watcher), Ticks::Off);
+    }
+
+    #[test]
+    fn a_config_being_saved_or_gone_shuts_the_route_until_one_loads() {
+        let (_tmp, vault) = vault();
+        fs::write(vault.join(config::FILE), "writes = true\n").unwrap();
+        fs::write(vault.join("n.md"), "- [ ] a").unwrap();
+        let mut watcher = watcher(&vault);
+        let root = wd(&watcher, "");
+        let note = |watcher: &mut Watcher| {
+            let save = vec![event(root, ReadFlags::CLOSE_WRITE, "n.md")];
+            let (changes, removed) = watcher.changes(save).unwrap();
+            assert_eq!(changes, [Change::Touch("n.md".into())]);
+            watcher.apply(changes, removed).unwrap();
+        };
+        let load = |watcher: &mut Watcher| {
+            save_config(watcher, &vault, "writes = true\n");
+            let save = vec![event(root, ReadFlags::CLOSE_WRITE, config::FILE)];
+            let (changes, removed) = watcher.changes(save).unwrap();
+            watcher.apply(changes, removed).unwrap();
+            assert_eq!(ticks(watcher), open(&["n.md"]));
+        };
+        for gone in [
+            ReadFlags::MODIFY,
+            ReadFlags::CREATE,
+            ReadFlags::DELETE,
+            ReadFlags::MOVED_FROM,
+        ] {
+            let (changes, _) = watcher
+                .changes(vec![event(root, gone, config::FILE)])
+                .unwrap();
+            assert_eq!(changes, []);
+            assert_eq!(ticks(&watcher), Ticks::Off, "{gone:?}");
+            // The previous config stays, and a note's apply does not open the route.
+            assert!(watcher.site.writes());
+            note(&mut watcher);
+            assert_eq!(ticks(&watcher), Ticks::Off, "{gone:?}");
+            load(&mut watcher);
+        }
+        // An attribute change says nothing about the file's text.
+        watcher
+            .changes(vec![event(root, ReadFlags::ATTRIB, config::FILE)])
+            .unwrap();
+        assert_eq!(ticks(&watcher), open(&["n.md"]));
+
+        // A save that does not parse, and one that is gone by its reload.
+        for broken in [Some("writes = flase\n"), None] {
+            match broken {
+                Some(text) => save_config(&mut watcher, &vault, text),
+                None => {
+                    fs::remove_file(vault.join(config::FILE)).unwrap();
+                    watcher.config_written().unwrap();
+                    watcher.pending.clear();
+                }
+            }
+            let save = vec![event(root, ReadFlags::CLOSE_WRITE, config::FILE)];
+            assert_eq!(watcher.changes(save).unwrap().0, []);
+            assert_eq!(ticks(&watcher), Ticks::Off, "{broken:?}");
+            note(&mut watcher);
+            assert_eq!(ticks(&watcher), Ticks::Off, "{broken:?}");
+            load(&mut watcher);
+        }
     }
 
     #[test]
@@ -822,17 +1034,25 @@ mod tests {
         let (_tmp, vault) = vault();
         fs::write(vault.join(config::FILE), "exclude = [\"d\"]\n").unwrap();
         let mut watcher = watcher(&vault);
+        save_config(&mut watcher, &vault, "exclude = [\"d\"]\nwrites = true\n");
+        assert_eq!(watcher.reload_config().unwrap(), Reload::Loaded);
+        let sync = watcher.sync("").unwrap();
+        watcher.apply(vec![sync], HashSet::new()).unwrap();
+        assert_eq!(ticks(&watcher), open(&[]));
         let mut file = fs::File::create(vault.join(config::FILE)).unwrap();
         file.write_all(b"# half\n").unwrap();
         let from = watcher.pending.len();
         assert_eq!(watcher.reload_config().unwrap(), Reload::MidSave);
         assert!(watcher.site.exclude().path("d/n.md"));
+        // The half may not say `writes = true`.
+        assert_eq!(ticks(&watcher), Ticks::Off);
         file.write_all(b"exclude = [\"e\"]\n").unwrap();
         drop(file);
         // Returns at once: the save's close is queued.
         watcher.await_config_close(from).unwrap();
         assert_eq!(watcher.reload_config().unwrap(), Reload::Loaded);
         assert!(watcher.site.exclude().path("e/n.md"));
+        assert_eq!(ticks(&watcher), Ticks::Off);
     }
 
     #[test]
@@ -856,17 +1076,39 @@ mod tests {
         fs::write(&toml, "exclude = [\"d\"]\n").unwrap();
         let mut watcher = watcher(&vault);
         let previous = watcher.site.exclude().clone();
-        fs::write(&toml, "exclude = []\n").unwrap();
+        fs::write(&toml, "exclude = []\nwrites = true\n").unwrap();
         // The save's own events, read as the batch that reloads it.
         watcher.config_written().unwrap();
         watcher.pending.clear();
         assert_eq!(watcher.reload_config().unwrap(), Reload::Loaded);
+        assert_eq!(ticks(&watcher), Ticks::Busy);
         // A write that slipped past the reload's check, queued by the rescan's end.
         fs::write(&toml, "# half\n").unwrap();
-        watcher
-            .resync_reloaded((previous, Nav::default()), HashSet::new())
+        let (changes, removed) = watcher
+            .resync_reloaded((previous, Nav::default(), false), HashSet::new())
             .unwrap();
         assert!(watcher.site.exclude().path("d/n.md"));
+        // The previous config said nothing of writes, and the half may not either.
+        assert!(!watcher.site.writes());
+        watcher.apply(changes, removed).unwrap();
+        assert_eq!(ticks(&watcher), Ticks::Off);
+    }
+
+    #[test]
+    fn a_config_reverted_to_one_with_writes_stays_shut_until_the_save_loads() {
+        let (_tmp, vault) = vault();
+        let toml = vault.join(config::FILE);
+        fs::write(&toml, "writes = true\n").unwrap();
+        fs::write(vault.join("n.md"), "- [ ] a").unwrap();
+        let mut watcher = watcher(&vault);
+        save_config(&mut watcher, &vault, "writes = true\ntitle = \"t\"\n");
+        assert_eq!(watcher.reload_config().unwrap(), Reload::Loaded);
+        fs::write(&toml, "# half\n").unwrap();
+        let previous = (watcher.site.exclude().clone(), Nav::default(), true);
+        let (changes, removed) = watcher.resync_reloaded(previous, HashSet::new()).unwrap();
+        watcher.apply(changes, removed).unwrap();
+        assert!(watcher.site.writes());
+        assert_eq!(ticks(&watcher), Ticks::Off);
     }
 
     #[test]

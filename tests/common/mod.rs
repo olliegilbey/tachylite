@@ -126,6 +126,14 @@ impl Server {
     pub fn get(&self, path: &str) -> Response {
         get(self.addr, path, &[])
     }
+
+    /// Posts as a page of this site does: to the address it was loaded from, with that
+    /// address as its origin.
+    pub fn post(&self, path: &str) -> Response {
+        let host = self.addr.to_string();
+        let origin = format!("http://{host}");
+        send(self.addr, "POST", path, &host, &[("Origin", &origin)])
+    }
 }
 
 impl Drop for Server {
@@ -154,11 +162,25 @@ impl Response {
 }
 
 pub fn get(addr: SocketAddr, path: &str, headers: &[(&str, &str)]) -> Response {
+    send(addr, "GET", path, "test", headers)
+}
+
+/// Sends one request with no body, to `host`, and reads the whole response.
+pub fn send(
+    addr: SocketAddr,
+    method: &str,
+    path: &str,
+    host: &str,
+    headers: &[(&str, &str)],
+) -> Response {
     let mut stream = TcpStream::connect(addr).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
-    let mut request = format!("GET {path} HTTP/1.1\r\nHost: test\r\nConnection: close\r\n");
+    let mut request = format!("{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n");
+    if method != "GET" {
+        request.push_str("Content-Length: 0\r\n");
+    }
     for (name, value) in headers {
         request.push_str(&format!("{name}: {value}\r\n"));
     }

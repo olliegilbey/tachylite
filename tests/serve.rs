@@ -641,7 +641,7 @@ fn a_bad_config_leaves_the_output_untouched() {
     let stderr = String::from_utf8_lossy(&run.stderr);
     assert_eq!(
         stderr,
-        "error: tachylite.toml: unknown key \"excludes\"; the keys are exclude, daily, pins, title and hosts\n"
+        "error: tachylite.toml: unknown key \"excludes\"; the keys are exclude, daily, pins, title, hosts and writes\n"
     );
     assert_eq!(snapshot(&d.out()), before);
 }

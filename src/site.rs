@@ -12,7 +12,7 @@ use crate::indexes::{self, Folder, Item, Tab};
 use crate::links::{Index, key};
 use crate::render::{
     Body, Broken, EMBED_DEPTH, NAME_MAX, Page, Sources, Tasks, crumbs, day_links, embed_targets,
-    encode, folder_url, note_title, render_body, render_page, url,
+    encode, folder_url, main_open, note_title, render_page, render_with, url,
 };
 use crate::vault::{Entry, Kind, ReadError, SkipReason, Skipped, VaultDir, classify};
 
@@ -389,6 +389,8 @@ pub struct Site {
     /// What each folder's recent page was built from, hashed, so a derive rebuilds only the
     /// pages of the folders a save reached.
     scoped: HashMap<String, u64>,
+    /// Whether a rendered task carries the token a tick names it by.
+    writes: bool,
 }
 
 /// One note's outgoing links.
@@ -535,10 +537,11 @@ fn render_all<'p>(
     notes: &[(&'p str, Vec<u8>)],
     index: &Index,
     sources: &Sources,
+    writes: bool,
 ) -> Vec<(&'p str, Body)> {
     let render = |(path, bytes): &(&'p str, Vec<u8>)| {
         let text = String::from_utf8_lossy(bytes);
-        (*path, render_body(path, &text, index, sources))
+        (*path, render_with(path, &text, index, sources, writes))
     };
     let threads = threads(notes.len(), 16);
     if threads <= 1 {
@@ -583,6 +586,24 @@ impl Site {
     pub fn set_nav(&mut self, nav: Nav) {
         self.nav = nav;
         self.renav();
+    }
+
+    /// Sets whether a client may tick a task. A note page takes it as it takes `set_nav`.
+    pub fn set_writes(&mut self, writes: bool) {
+        if self.writes != writes {
+            self.writes = writes;
+            self.due = true;
+            self.board_due = true;
+        }
+    }
+
+    pub fn writes(&self) -> bool {
+        self.writes
+    }
+
+    /// The vault paths that have a page or a file in the output, shared without a copy.
+    pub fn winners(&self) -> Arc<BTreeSet<String>> {
+        Arc::clone(&self.winners)
     }
 
     /// Sets Obsidian's daily-notes settings, as `set_nav` sets the config's. Returns
@@ -967,7 +988,9 @@ impl Site {
             let backlinks = self.backlinks(path);
             let days = self.day_links(path);
             let title = self.title(path);
-            let page = render_page(&self.header, path, title, &days, body, &backlinks);
+            // Text escapes its quotes, so only a task's token writes this.
+            let ticks = self.writes && body.contains(" data-box=\"");
+            let page = render_page(&self.header, path, title, &days, body, &backlinks, ticks);
             let new = !self.winners.contains(path) && !done.pushed.contains(path);
             if !new && self.versions.get(path) == Some(&page.version) {
                 continue;
@@ -980,10 +1003,11 @@ impl Site {
             }
             // Where the body sits in the page, so a new footer can go around it unrendered.
             let folder = path.rsplit_once('/').map_or("", |(folder, _)| folder);
+            let open = main_open(ticks.then_some(path));
             let start = page
                 .html
-                .find("<main>\n")
-                .map(|at| at + "<main>\n".len() + crumbs(folder).len() + days.len());
+                .find(&open)
+                .map(|at| at + open.len() + crumbs(folder).len() + days.len());
             match start.filter(|&at| page.html.get(at..at + body.len()) == Some(body)) {
                 Some(at) => self.spans.insert(path.to_string(), (at, body.len())),
                 None => self.spans.remove(path),
@@ -1399,6 +1423,7 @@ impl Site {
             .into_iter()
             .map(|(_, _, path, tasks)| indexes::TaskList {
                 title: self.title(path),
+                path,
                 url: url(path),
                 tasks,
             })
@@ -1820,7 +1845,7 @@ impl Site {
             }
             level = next;
         }
-        let mut rendered = render_all(notes, &self.index, &sources);
+        let mut rendered = render_all(notes, &self.index, &sources, self.writes);
         loop {
             let mut loaded = false;
             for (_, body) in &rendered {
@@ -1839,7 +1864,7 @@ impl Site {
             for ((path, body), (_, bytes)) in rendered.iter_mut().zip(notes) {
                 if !body.missing.is_empty() {
                     let markdown = String::from_utf8_lossy(bytes);
-                    *body = render_body(path, &markdown, &self.index, &sources);
+                    *body = render_with(path, &markdown, &self.index, &sources, self.writes);
                 }
             }
         }
